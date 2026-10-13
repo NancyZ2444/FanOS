@@ -78,7 +78,7 @@ services:
       context: .
       dockerfile: deploy/docker/admin.Dockerfile
     ports:
-    - 127.0.0.1:5173:80
+    - ${ADMIN_BIND_ADDRESS:-127.0.0.1}:5173:80
     depends_on:
       api:
         condition: service_started

@@ -9,7 +9,7 @@ RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/
     && rm -rf /var/lib/apt/lists/*
 COPY apps/api/pyproject.toml ./
 COPY apps/api/app ./app
-RUN pip install --no-cache-dir ".[ai]"
+RUN pip install --no-cache-dir --index-url https://mirrors.cloud.tencent.com/pypi/simple --timeout 60 --retries 3 ".[ai]"
 COPY apps/api/migrations ./migrations
 COPY apps/api/alembic.ini ./alembic.ini
 
