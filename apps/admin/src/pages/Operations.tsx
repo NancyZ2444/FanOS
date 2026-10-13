@@ -1,17 +1,22 @@
+import { TableToolbar } from "../components/admin";
+import { useSingleSubmit } from "../components/admin";
+import {
+  FilterBar,
+  RowActions,
+  RecordId,
+  DetailFields,
+} from "../components/admin";
+import { PageHeader } from "../components/admin";
+import { Drawer, Form, Modal, Table } from "../components/admin";
 import { useEffect, useState } from "react";
 import {
   Alert,
   App,
   Button,
-  Descriptions,
-  Drawer,
-  Form,
   Input,
   InputNumber,
-  Modal,
   Select,
   Space,
-  Table,
   Tabs,
 } from "antd";
 import { EyeOutlined, PlusOutlined, SearchOutlined } from "@ant-design/icons";
@@ -115,7 +120,7 @@ export default function Operations({ kind }: { kind: string }) {
   const selectedCards = Form.useWatch("card_ids", form) || [];
   const targetType = Form.useWatch("target_type", form);
   const audience = Form.useWatch("audience", form);
-  const save = async () => {
+  const save = useSingleSubmit(async () => {
     try {
       const data = await form.validateFields();
       if (kind === "daily") {
@@ -139,7 +144,7 @@ export default function Operations({ kind }: { kind: string }) {
     } finally {
       setBusy(false);
     }
-  };
+  });
   const execute = async () => {
     if (!actionModal) return;
     const needsReason =
@@ -201,7 +206,14 @@ export default function Operations({ kind }: { kind: string }) {
       return [
         {
           key: r.status === "OFFLINE" ? "publish" : "offline",
-          label: r.status === "OFFLINE" ? "发布 / 启用" : "下架 / 停用",
+          label:
+            kind === "accounts"
+              ? r.status === "OFFLINE"
+                ? "启用"
+                : "停用"
+              : r.status === "OFFLINE"
+                ? "发布"
+                : "下架",
         },
       ];
     return [];
@@ -281,11 +293,10 @@ export default function Operations({ kind }: { kind: string }) {
                     ];
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <div className="eyebrow">OPERATIONS / {kind.toUpperCase()}</div>
-          <h1>{title}</h1>
-          <p>
+      <PageHeader
+        title={<>{title}</>}
+        description={
+          <>
             {
               {
                 social: "统一维护艺人动态，连接相关小卡与粉丝。",
@@ -299,9 +310,9 @@ export default function Operations({ kind }: { kind: string }) {
                 reports: "记录举报受理、审核意见与处理结果。",
               }[kind]
             }
-          </p>
-        </div>
-      </div>
+          </>
+        }
+      />
       {error && (
         <Alert
           showIcon
@@ -310,7 +321,12 @@ export default function Operations({ kind }: { kind: string }) {
           action={<Button onClick={load}>重试</Button>}
         />
       )}
-      <section className="panel filters">
+      <FilterBar
+        onReset={() => {
+          setQ("");
+          setStatus("ALL");
+        }}
+      >
         <Input
           allowClear
           prefix={<SearchOutlined aria-hidden="true" />}
@@ -319,9 +335,29 @@ export default function Operations({ kind }: { kind: string }) {
           placeholder="搜索名称、内容或 ID"
           style={{ width: 350 }}
         />
-      </section>
+      </FilterBar>
       <section className="panel table-panel">
-        <div className="table-toolbar">
+        <TableToolbar
+          actions={
+            <>
+              {" "}
+              {writable && roleAllowed && (
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined aria-hidden="true" />}
+                  onClick={() => edit()}
+                >
+                  新增
+                  {kind === "daily"
+                    ? "卡池"
+                    : kind === "accounts"
+                      ? "数据源"
+                      : title.replace("管理", "")}
+                </Button>
+              )}{" "}
+            </>
+          }
+        >
           <Tabs
             activeKey={status}
             onChange={setStatus}
@@ -333,24 +369,16 @@ export default function Operations({ kind }: { kind: string }) {
               })),
             ]}
           />
-          {writable && roleAllowed && (
-            <Button
-              type="primary"
-              icon={<PlusOutlined aria-hidden="true" />}
-              onClick={() => edit()}
-            >
-              新建
-              {kind === "daily"
-                ? "卡池"
-                : kind === "accounts"
-                  ? "数据源"
-                  : title.replace("管理", "")}
-            </Button>
-          )}
-        </div>
+        </TableToolbar>
         <Table
           rowKey="id"
           dataSource={visible}
+          filtered={!!q || status !== "ALL"}
+          onReset={() => {
+            setQ("");
+            setStatus("ALL");
+          }}
+          onCreate={writable && roleAllowed ? () => edit() : undefined}
           loading={loading}
           scroll={{ x: 1050 }}
           pagination={{
@@ -366,11 +394,12 @@ export default function Operations({ kind }: { kind: string }) {
                 <div className="cell-stack">
                   <button
                     className="table-title truncate"
+                    title={r.title}
                     onClick={() => setDetail(r)}
                   >
                     {r.title}
                   </button>
-                  <span className="record-id">{r.id}</span>
+                  <RecordId value={r.id} />
                 </div>
               ),
             },
@@ -390,34 +419,37 @@ export default function Operations({ kind }: { kind: string }) {
             {
               title: "操作",
               key: "actions",
-              width: 260,
+              width: 200,
               fixed: "right",
               render: (_, r) => (
-                <Space wrap size={12}>
-                  <button className="text-button" onClick={() => setDetail(r)}>
-                    详情
-                  </button>
-                  {writable &&
-                    roleAllowed &&
-                    (!managed ||
-                      ["DRAFT", "REJECTED", "OFFLINE"].includes(r.status)) && (
-                      <button className="text-button" onClick={() => edit(r)}>
-                        编辑
-                      </button>
-                    )}
-                  {["announcements", "notifications"].includes(kind) && (
-                    <button
-                      className="text-button"
-                      onClick={() => setPreview(r)}
-                    >
-                      预览
-                    </button>
-                  )}
-                  {actions(r).map((a) => (
-                    <button
-                      key={a.key}
-                      className="text-button"
-                      onClick={() => {
+                <RowActions
+                  onView={() => setDetail(r)}
+                  onEdit={writable && roleAllowed ? () => edit(r) : undefined}
+                  editDisabled={
+                    managed &&
+                    !["DRAFT", "REJECTED", "OFFLINE"].includes(r.status)
+                  }
+                  editHint={
+                    managed &&
+                    !["DRAFT", "REJECTED", "OFFLINE"].includes(r.status)
+                      ? "请先下架或驳回再编辑"
+                      : undefined
+                  }
+                  items={[
+                    ...(["announcements", "notifications"].includes(kind)
+                      ? [
+                          {
+                            key: "preview",
+                            label: "预览",
+                            onClick: () => setPreview(r),
+                          },
+                        ]
+                      : []),
+                    ...actions(r).map((a) => ({
+                      key: a.key,
+                      label: a.label,
+                      danger: a.key === "delete",
+                      onClick: () => {
                         setActionModal({
                           row: r,
                           action: a.key,
@@ -425,12 +457,10 @@ export default function Operations({ kind }: { kind: string }) {
                         });
                         setReason("");
                         setConfirmation("");
-                      }}
-                    >
-                      {a.label}
-                    </button>
-                  ))}
-                </Space>
+                      },
+                    })),
+                  ]}
+                />
               ),
             },
           ]}
@@ -438,8 +468,9 @@ export default function Operations({ kind }: { kind: string }) {
       </section>
       <Drawer
         open={open}
+        saving={busy}
         width={680}
-        title={`${record ? "编辑" : "新建"}${title}`}
+        title={`${record ? "编辑" : "新增"}${title}`}
         onClose={() => setOpen(false)}
         footer={
           <div className="drawer-footer">
@@ -684,6 +715,22 @@ export default function Operations({ kind }: { kind: string }) {
       <Drawer
         open={!!detail}
         title={`${title}详情`}
+        extra={
+          writable &&
+          roleAllowed &&
+          detail &&
+          (!managed ||
+            ["DRAFT", "REJECTED", "OFFLINE"].includes(detail.status)) ? (
+            <Button
+              onClick={() => {
+                edit(detail);
+                setDetail(undefined);
+              }}
+            >
+              编辑
+            </Button>
+          ) : undefined
+        }
         width={640}
         onClose={() => setDetail(undefined)}
       >
@@ -694,73 +741,44 @@ export default function Operations({ kind }: { kind: string }) {
             {detail.content && (
               <p className="detail-content">{detail.content}</p>
             )}
-            <Descriptions
-              bordered
-              column={1}
-              size="small"
-              items={[
-                { key: "id", label: "编号", children: detail.id },
-                {
-                  key: "time",
-                  label: "创建时间",
-                  children: new Date(detail.created_at).toLocaleString("zh-CN"),
-                },
-                ...(kind === "users"
-                  ? [
-                      { key: "phone", label: "手机号", children: detail.phone },
-                      {
-                        key: "bio",
-                        label: "个人简介",
-                        children: detail.bio || "—",
-                      },
-                      {
-                        key: "favorites",
-                        label: "本命艺人",
-                        children:
-                          detail.favorite_ids
-                            .map(
-                              (id: string) =>
-                                catalog.idols.find((i) => i.id === id)?.name ||
-                                id,
-                            )
-                            .join("、") || "未设置",
-                      },
-                      {
-                        key: "owned",
-                        label: "收藏 / 心愿",
-                        children: `${detail.collection_count} / ${detail.wishlist_count}`,
-                      },
-                    ]
-                  : []),
-                ...(detail.post_content
-                  ? [
-                      {
-                        key: "context",
-                        label: "所属动态",
-                        children: detail.post_content,
-                      },
-                    ]
-                  : []),
-                ...(detail.audience_count !== undefined
-                  ? [
-                      {
-                        key: "audience",
-                        label: "预计发送人数",
-                        children: detail.audience_count,
-                      },
-                    ]
-                  : []),
-                ...(detail.target_id
-                  ? [
-                      {
-                        key: "target",
-                        label: "关联对象",
-                        children: detail.target_id,
-                      },
-                    ]
-                  : []),
+            <DetailFields
+              title="基本信息"
+              data={detail}
+              fields={["title", "phone", "bio", "content"]}
+            />
+            <DetailFields
+              title="关联内容"
+              data={{
+                ...detail,
+                favorites: detail.favorite_ids
+                  ?.map(
+                    (id: string) =>
+                      catalog.idols.find((i) => i.id === id)?.name || id,
+                  )
+                  .join("、"),
+                collection_count: detail.collection_count,
+                wishlist_count: detail.wishlist_count,
+              }}
+              fields={[
+                "favorites",
+                "collection_count",
+                "wishlist_count",
+                "target_id",
+                "post_content",
+                "audience_count",
               ]}
             />
+            <DetailFields
+              title="发布信息"
+              data={detail}
+              fields={["status", "published_at"]}
+            />
+            <DetailFields
+              title="系统信息"
+              data={detail}
+              fields={["id", "created_at", "updated_at"]}
+            />
+
             {detail.accounts && (
               <>
                 <h3>第三方登录账号</h3>
@@ -810,10 +828,22 @@ export default function Operations({ kind }: { kind: string }) {
         confirmLoading={busy}
         onCancel={() => setActionModal(undefined)}
         onOk={execute}
-        okText="确认操作"
+        okText={
+          actionModal?.action === "delete"
+            ? "删除"
+            : actionModal?.label || "确认操作"
+        }
+        okButtonProps={{ danger: actionModal?.action === "delete" }}
         cancelText="取消"
       >
-        <p>目标：{actionModal?.row.title}</p>
+        <p>目标：{actionModal?.row.title}（1 项）</p>
+        {actionModal?.action === "delete" && (
+          <Alert
+            type="warning"
+            showIcon
+            message="删除后该评论将不可见，系统保留处理记录，可通过恢复操作恢复。"
+          />
+        )}
         {actionModal?.action === "send" && (
           <Alert
             type="warning"

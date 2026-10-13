@@ -1,3 +1,4 @@
+import { Form, Modal } from "./components/admin";
 import Tags from "./pages/Tags";
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -6,6 +7,7 @@ import {
   Route,
   Routes,
   useLocation,
+  useBlocker,
   useNavigate,
 } from "react-router-dom";
 import {
@@ -15,12 +17,10 @@ import {
   Badge,
   Button,
   Dropdown,
-  Form,
   Input,
   Result,
   Skeleton,
   Spin,
-  Modal,
 } from "antd";
 import {
   AuditOutlined,
@@ -220,21 +220,29 @@ export default function App() {
   useEffect(() => {
     if (actor) reload().catch(() => {});
   }, [actor, reload]);
-  const go = (path: string) => {
-    if (location.pathname + location.search === path) return;
-    if (document.body.dataset.unsaved === "true") {
-      modal.confirm({
-        title: "有未保存的修改",
-        content: "离开当前页面会丢失未保存的修改。",
-        okText: "离开页面",
-        cancelText: "继续编辑",
-        onOk: () => {
-          delete document.body.dataset.unsaved;
-          navigate(path);
-        },
-      });
-    } else navigate(path);
-  };
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      currentLocation.pathname !== nextLocation.pathname &&
+      (document.body.dataset.unsaved === "true" ||
+        document.body.dataset.formUnsaved === "true"),
+  );
+  useEffect(() => {
+    if (blocker.state !== "blocked") return;
+    const confirmation = modal.confirm({
+      title: "放弃未保存的修改？",
+      content: "已填写的内容尚未保存，离开后需要重新填写。",
+      okText: "放弃修改",
+      cancelText: "继续编辑",
+      onOk: () => {
+        delete document.body.dataset.unsaved;
+        delete document.body.dataset.formUnsaved;
+        blocker.proceed();
+      },
+      onCancel: () => blocker.reset(),
+    });
+    return () => confirmation.destroy();
+  }, [blocker.state, blocker.location?.key]);
+  const go = (path: string) => navigate(path);
   if (checking)
     return (
       <div className="app-loading">
@@ -261,12 +269,13 @@ export default function App() {
         { label: "艺人管理", path: "/catalog/idols" },
         { label: "AI Scan 索引", path: "/catalog/scan" },
         { label: "公司管理", path: "/catalog/companies" },
-        { label: "Tag 管理", path: "/catalog/tags" },
+        { label: "标签管理", path: "/catalog/tags" },
         {
-          label: "专辑与来源",
+          label: "专辑管理",
           path: "/catalog/albums",
-          match: ["/catalog/events", "/catalog/others"],
         },
+        { label: "活动管理", path: "/catalog/events" },
+        { label: "其他来源", path: "/catalog/others" },
         ...(contentRole
           ? [{ label: "批量导入", path: "/catalog/import" }]
           : []),
@@ -360,7 +369,10 @@ export default function App() {
       ? "审核与来源"
       : location.pathname.startsWith("/system")
         ? "系统管理"
-        : operationNames[location.pathname.split("/").pop() || ""] || "工作台";
+        : location.pathname === "/digital-albums"
+          ? "数字相册"
+          : operationNames[location.pathname.split("/").pop() || ""] ||
+            "工作台";
   return (
     <ConsoleContext.Provider value={{ actor, catalog, reload, loading }}>
       <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}>
@@ -374,15 +386,6 @@ export default function App() {
               <small>ADMIN CONSOLE</small>
             </span>
           </button>
-          <div className="workspace-switch">
-            <span className="workspace-avatar">F</span>
-            <div>
-              <b>Fan OS 工作空间</b>
-              <small>内容运营中心</small>
-            </div>
-            <span className="workspace-dot" />
-          </div>
-          <div className="nav-label">工作空间</div>
           <nav>
             {sections.map((s) => {
               const active =
@@ -428,15 +431,6 @@ export default function App() {
                         >
                           <span className="nav-child-dot" />
                           {c.label}
-                          {c.label === "小卡管理" && (
-                            <small>
-                              {
-                                catalog.cards.filter(
-                                  (c) => c.status !== "ARCHIVED",
-                                ).length
-                              }
-                            </small>
-                          )}
                         </button>
                       ))}
                     </div>
@@ -446,10 +440,6 @@ export default function App() {
             })}
           </nav>
           <div className="sidebar-bottom">
-            <div className="workspace-status">
-              <span className="live-dot" />
-              <span>Phase 1 · 运营工作台</span>
-            </div>
             <button
               className="collapse-button"
               onClick={() => setCollapsed(!collapsed)}
@@ -494,7 +484,7 @@ export default function App() {
                     setQuick(true);
                   }}
                 >
-                  + Quick Add
+                  快速创建
                 </Button>
               )}
               <Dropdown
@@ -654,36 +644,34 @@ export default function App() {
         </div>
       </div>
       <Modal
-        title="Quick Add · 快速创建"
+        title="快速创建"
         open={quick}
         onCancel={() => setQuick(false)}
         footer={null}
       >
         <Input
-          placeholder="搜索 card / 小卡 / 专辑等"
+          placeholder="搜索小卡、专辑等"
           value={quickSearch}
           onChange={(e) => setQuickSearch(e.target.value)}
         />
-        <div
-          style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16 }}
-        >
+        <div className="quick-create-grid">
           {[
-            { label: "新建组合 Group", path: "/catalog/groups?create=true" },
-            { label: "新建艺人 Idol", path: "/catalog/idols?create=true" },
-            { label: "新建专辑 Album", path: "/catalog/albums?create=true" },
-            { label: "新建活动 Event", path: "/catalog/events?create=true" },
+            { label: "新增组合", path: "/catalog/groups?create=true" },
+            { label: "新增艺人", path: "/catalog/idols?create=true" },
+            { label: "新增专辑", path: "/catalog/albums?create=true" },
+            { label: "新增活动", path: "/catalog/events?create=true" },
             {
-              label: "新建其他来源 Other",
+              label: "新增其他来源",
               path: "/catalog/others?create=true",
             },
-            { label: "新建小卡 Card", path: "/catalog/cards/new" },
+            { label: "新增小卡", path: "/catalog/cards/new" },
             {
-              label: "小卡批次 Card Batch",
+              label: "小卡批次",
               path: "/catalog/workbench?tab=batches",
             },
-            { label: "导入文件 Import File", path: "/catalog/import" },
+            { label: "导入文件", path: "/catalog/import" },
             {
-              label: "上传图片 Upload Images",
+              label: "上传图片",
               path: "/catalog/workbench?tab=images",
             },
           ]

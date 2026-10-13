@@ -1,5 +1,10 @@
+import { BusinessData, RecordId } from "../components/admin";
+import { actionLabel } from "../design/format";
+import { FilterBar } from "../components/admin";
+import { PageHeader } from "../components/admin";
+import { Drawer, Table } from "../components/admin";
 import { useEffect, useState } from "react";
-import { Alert, Button, Descriptions, Drawer, Input, Table, Tag } from "antd";
+import { Alert, Button, Descriptions, Input, Tag } from "antd";
 import { SearchOutlined } from "@ant-design/icons";
 import { consoleApi } from "../api/client";
 import { Panel } from "../components/shared";
@@ -19,26 +24,12 @@ export default function System({ tab }: { tab: "roles" | "logs" }) {
   }, [tab]);
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <div className="eyebrow">SYSTEM / {tab.toUpperCase()}</div>
-          <h1>{tab === "logs" ? "操作日志" : "角色与权限"}</h1>
-          <p>
-            {tab === "logs"
-              ? "每一次重要操作，都有据可查。"
-              : "按工作职责分配权限，发布与用户管理由后端校验。"}
-          </p>
-        </div>
-      </div>
+      <PageHeader title={<>{tab === "logs" ? "操作日志" : "角色与权限"}</>} />
       {tab === "roles" ? (
         <>
           <div className="role-grid">
             {Object.entries(roleLabels).map(([key, label]) => (
-              <Panel
-                key={key}
-                title={label}
-                extra={<Tag color="purple">{key}</Tag>}
-              >
+              <Panel key={key} title={label}>
                 <p>
                   {key === "admin"
                     ? "拥有所有后台模块权限，包括图鉴审核发布与系统日志。"
@@ -115,7 +106,7 @@ export default function System({ tab }: { tab: "roles" | "logs" }) {
               action={<Button onClick={load}>重试</Button>}
             />
           )}
-          <section className="panel filters">
+          <FilterBar onReset={() => setQ("")}>
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -123,14 +114,16 @@ export default function System({ tab }: { tab: "roles" | "logs" }) {
               placeholder="搜索操作人、操作、对象 ID"
               style={{ width: 380 }}
             />
-          </section>
+          </FilterBar>
           <section className="panel table-panel">
             <Table
               rowKey="id"
+              filtered={!!q}
+              onReset={() => setQ("")}
               dataSource={rows.filter((r) =>
                 [r.actor_id, r.action, r.target_id].some((v) => v.includes(q)),
               )}
-              pagination={{ pageSize: 12 }}
+              pagination={{ defaultPageSize: 12 }}
               scroll={{ x: 1000 }}
               columns={[
                 {
@@ -147,14 +140,14 @@ export default function System({ tab }: { tab: "roles" | "logs" }) {
                 { title: "对象类型", dataIndex: "target_type" },
                 { title: "对象 ID", dataIndex: "target_id", ellipsis: true },
                 {
-                  title: "详情",
+                  title: "操作",
                   key: "action",
                   render: (_, r) => (
                     <button
                       className="text-button"
                       onClick={() => setDetail(r)}
                     >
-                      查看变更
+                      查看
                     </button>
                   ),
                 },
@@ -175,21 +168,31 @@ export default function System({ tab }: { tab: "roles" | "logs" }) {
             <Descriptions
               column={1}
               items={[
-                { key: "action", label: "操作", children: detail.action },
-                { key: "actor", label: "操作人", children: detail.actor_id },
-                { key: "target", label: "对象", children: detail.target_id },
+                {
+                  key: "action",
+                  label: "操作",
+                  children: actionLabel(detail.action),
+                },
+                {
+                  key: "actor",
+                  label: "操作人",
+                  children: <RecordId value={detail.actor_id} />,
+                },
+                {
+                  key: "target",
+                  label: "对象",
+                  children: <RecordId value={detail.target_id} />,
+                },
               ]}
             />
             <div className="audit-diff">
               <div>
                 <h3>变更前</h3>
-                <pre>
-                  {JSON.stringify(detail.before, null, 2) || "新建内容"}
-                </pre>
+                <BusinessData data={detail.before} />
               </div>
               <div>
                 <h3>变更后</h3>
-                <pre>{JSON.stringify(detail.after, null, 2) || "无"}</pre>
+                <BusinessData data={detail.after} />
               </div>
             </div>
           </>

@@ -1,6 +1,8 @@
+import { PageHeader } from "../components/admin";
+import { Table } from "../components/admin";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, Button, Table, Space, Tag } from "antd";
+import { Alert, Button, Space, Tag } from "antd";
 import {
   ArrowRightOutlined,
   AuditOutlined,
@@ -55,21 +57,21 @@ export default function Dashboard() {
   ];
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <div className="eyebrow">YOUR WORKSPACE</div>
-          <h1>欢迎回来，{actor.name}</h1>
-          <p>每一次细心维护，都让粉丝的收藏更完整。</p>
-        </div>
-        <span className="dashboard-date">
-          {new Date().toLocaleDateString("zh-CN", {
-            year: "numeric",
-            month: "long",
-            day: "numeric",
-            weekday: "long",
-          })}
-        </span>
-      </div>
+      <PageHeader
+        title={<>欢迎回来，{actor.name}</>}
+        actions={
+          <>
+            <span className="dashboard-date">
+              {new Date().toLocaleDateString("zh-CN", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+                weekday: "long",
+              })}
+            </span>
+          </>
+        }
+      />
       {error && (
         <Alert
           type="error"
@@ -126,13 +128,9 @@ export default function Dashboard() {
         ))}
       </div>
       {catalogStats && (
-        <Panel title="图鉴概览与今日新增">
-          <Space wrap>
+        <Panel title="运营待办与今日新增">
+          <div className="dashboard-shortcuts">
             {Object.entries({
-              groups: "组合",
-              idols: "艺人",
-              entities: "发行 / 活动实体",
-              PUBLISHED: "已发布小卡",
               DRAFT: "草稿小卡",
               OFFLINE: "下架小卡",
               scan_unknown: "扫描待处理",
@@ -158,7 +156,7 @@ export default function Dashboard() {
                 {label} {catalogStats.counts[key]}
               </Button>
             ))}
-          </Space>
+          </div>
           <p>
             今日新增：
             <Space wrap>
@@ -192,7 +190,7 @@ export default function Dashboard() {
           <Table
             rowKey="id"
             dataSource={catalogStats.recent}
-            pagination={{ pageSize: 5 }}
+            pagination={{ defaultPageSize: 5 }}
             columns={[
               { title: "时间", dataIndex: "created_at" },
               { title: "操作人", dataIndex: "actor_id" },

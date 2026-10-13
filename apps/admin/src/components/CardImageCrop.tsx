@@ -1,6 +1,7 @@
+import { Modal } from "./admin";
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { Alert, Button, InputNumber, Modal, Select, Space, Spin } from "antd";
+import { Alert, Button, InputNumber, Select, Space, Spin } from "antd";
 import { consoleApi } from "../api/client";
 
 type Point = { x: number; y: number };

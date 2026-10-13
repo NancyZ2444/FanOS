@@ -173,7 +173,7 @@ test("album import keeps one parent for collaborative release versions and appen
     expect.arrayContaining([expect.objectContaining({ field: "versions" })]),
   );
   await expect(
-    page.getByRole("cell", { name: "versions", exact: true }),
+    page.getByRole("cell", { name: "版本", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: /^确认导入 \d+ 行$/ }),

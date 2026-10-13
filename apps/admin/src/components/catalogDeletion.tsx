@@ -1,3 +1,4 @@
+import { valueLabels } from "../design/format";
 import { Button } from "antd";
 import { consoleApi, send } from "../api/client";
 
@@ -18,9 +19,15 @@ export async function confirmCatalogDeletion(
           <div>
             <p>
               {check.blockers
-                .map((b: any) => `${b.label} ${b.count} 条`)
+                .map(
+                  (b: any) =>
+                    `${String(b.label).replace(/\b[a-z_]+\b/g, (code) => valueLabels[code] || code)} ${b.count} 条`,
+                )
                 .join("；") || "当前状态不允许删除"}
             </p>
+            <Button href={`/catalog/${kind}/${id}/detail`} target="_blank">
+              查看关联内容并处理
+            </Button>
             {!["groups", "idols"].includes(kind) &&
               ["OFFLINE", "ARCHIVED"].includes(check.status) && (
                 <Button
@@ -53,11 +60,11 @@ export async function confirmCatalogDeletion(
       return;
     }
     modal.confirm({
-      title: `永久删除「${name}」？`,
+      title: `删除「${name}」？`,
       content: check.ever_published
-        ? "已核实全部上下游关联解除。删除不可恢复，保留操作审计。"
-        : "该记录未上架，删除草稿不可恢复；已有下游引用会阻止删除。",
-      okText: "永久删除",
+        ? "将删除 1 条记录。已核实全部上下游关联解除，删除不可恢复，保留操作审计。"
+        : "将删除 1 条未上架记录，删除不可恢复；已有下游引用会阻止删除。",
+      okText: "删除",
       cancelText: "取消",
       okButtonProps: { danger: true },
       onOk: async () => {
@@ -70,6 +77,7 @@ export async function confirmCatalogDeletion(
           message.success("已永久删除");
         } catch (e) {
           message.error((e as Error).message);
+          throw e;
         }
       },
     });

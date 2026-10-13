@@ -1,19 +1,10 @@
+import { fieldLabels, displayValue } from "../design/format";
+import { PageHeader, BusinessData, useFormGuard } from "../components/admin";
+import { Form, Modal, Table } from "../components/admin";
 import TagSelect from "../components/TagSelect";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import {
-  App,
-  Alert,
-  Button,
-  Form,
-  Input,
-  Modal,
-  Select,
-  Space,
-  Table,
-  Tabs,
-  Tag,
-} from "antd";
+import { App, Alert, Button, Input, Select, Space, Tabs, Tag } from "antd";
 import { consoleApi, send } from "../api/client";
 import { useConsole } from "../state";
 import RecordManager from "./RecordManager";
@@ -23,7 +14,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
   const { catalog, actor, reload } = useConsole();
   const { message, modal } = App.useApp();
   const navigate = useNavigate();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const [rows, setRows] = useState<any[]>([]);
   const [quality, setQuality] = useState<any[]>([]);
   const [q, setQ] = useState("");
@@ -31,6 +22,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
   const [preview, setPreview] = useState<any[]>([]);
   const [changes, setChanges] = useState<any>();
   const [form] = Form.useForm();
+  const guard = useFormGuard(mode === "workbench");
   const selectedGroup = Form.useWatch("group_id", form);
   const [review, setReview] = useState<any>();
   const [target, setTarget] = useState<string>();
@@ -100,6 +92,8 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
         setPreview([]);
         setSelected([]);
         message.success("整批修改成功");
+        guard.reset();
+        form.resetFields();
         await reload();
       } else {
         setChanges(filtered);
@@ -199,11 +193,16 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
           { title: "版本", dataIndex: "version" },
         ]}
       />
-      <Form form={form} layout="inline">
+      <Form
+        form={form}
+        layout="vertical"
+        className="bulk-form-grid"
+        onValuesChange={guard.mark}
+      >
         <Form.Item name="version" label="版本">
           <Input />
         </Form.Item>
-        <Form.Item name="edition" label="Edition">
+        <Form.Item name="edition" label="版次">
           <Input />
         </Form.Item>
         <Form.Item name="card_type" label="卡类型">
@@ -302,27 +301,32 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
   );
   return (
     <>
-      <Space style={{ marginBottom: 16 }}>
-        <h2>
+      <PageHeader
+        title={
           {
-            {
-              workbench: "批次与批量编辑",
-              review: "图鉴审核与质量",
-              scan: "AI Scan 索引",
-              companies: "公司管理",
-            }[mode]
-          }
-        </h2>
-        <Button onClick={load}>刷新</Button>
-      </Space>
+            workbench: "批次与批量编辑",
+            review: "图鉴审核与质量",
+            scan: "AI Scan 索引",
+            companies: "公司管理",
+          }[mode]
+        }
+        actions={
+          mode !== "companies" ? (
+            <Button onClick={load}>刷新</Button>
+          ) : undefined
+        }
+      />
       {mode === "companies" && (
-        <section className="panel" style={{ padding: 16 }}>
+        <section className="panel table-panel">
           <RecordManager kind="companies" />
         </section>
       )}
       {mode === "workbench" && (
         <Tabs
-          key={params.get("tab")}
+          activeKey={params.get("tab") || "batches"}
+          onChange={(tab) =>
+            guard.close(() => setParams({ ...Object.fromEntries(params), tab }))
+          }
           defaultActiveKey={params.get("tab") || "batches"}
           items={[
             {
@@ -566,7 +570,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
                               );
                             }}
                           >
-                            查看 / 审核
+                            查看
                           </Button>
                         ),
                       },
@@ -602,7 +606,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
                               )
                             }
                           >
-                            查看完善
+                            查看
                           </Button>
                         ),
                       },
@@ -632,14 +636,20 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
               title: "修改前",
               render: (_, r) =>
                 changedFields(r)
-                  .map((k) => `${k}: ${JSON.stringify(r.before[k])}`)
+                  .map(
+                    (k) =>
+                      `${fieldLabels[k] || "补充信息"}：${displayValue(r.before[k])}`,
+                  )
                   .join("；"),
             },
             {
               title: "修改后",
               render: (_, r) =>
                 changedFields(r)
-                  .map((k) => `${k}: ${JSON.stringify(r.after[k])}`)
+                  .map(
+                    (k) =>
+                      `${fieldLabels[k] || "补充信息"}：${displayValue(r.after[k])}`,
+                  )
                   .join("；"),
             },
           ]}
@@ -750,13 +760,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
               Tag。请先补齐关联与发布所需字段。
             </p>
             {!!review?.data.context?.missing_references && (
-              <pre>
-                {JSON.stringify(
-                  review.data.context.missing_references,
-                  null,
-                  2,
-                )}
-              </pre>
+              <BusinessData data={review.data.context.missing_references} />
             )}
             <Select<string>
               placeholder="补充审核字段"
@@ -780,7 +784,10 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
                 "tags",
               ]
                 .filter((field) => !suggested.some((s) => s.field === field))
-                .map((value) => ({ value, label: value }))}
+                .map((value) => ({
+                  value,
+                  label: fieldLabels[value] || value,
+                }))}
               onChange={(field) => {
                 const value = ["tags", "artists"].includes(field)
                   ? []
@@ -845,7 +852,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
             {
               title: "当前值",
               render: (_, r) =>
-                String(
+                displayValue(
                   (
                     (catalog.cards.find((c) => c.id === review?.entity_id) ||
                       Object.values(catalog)

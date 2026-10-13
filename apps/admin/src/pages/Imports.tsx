@@ -1,3 +1,5 @@
+import { PageHeader } from "../components/admin";
+import { Table, Modal, Form } from "../components/admin";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -8,10 +10,7 @@ import {
   Space,
   Select,
   Steps,
-  Table,
   Upload,
-  Modal,
-  Form,
   Input,
 } from "antd";
 import {
@@ -286,22 +285,23 @@ export default function Imports() {
   };
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <div className="eyebrow">BATCH IMPORT</div>
-          <h1>批量导入</h1>
-          <p>批量建立图鉴档案，逐行检查，确认后写入草稿。</p>
-        </div>
-        <Space>
-          <Button
-            icon={<DownloadOutlined aria-hidden="true" />}
-            onClick={() => template("xlsx")}
-          >
-            下载 Excel 模板
-          </Button>
-          <Button onClick={() => template("csv")}>下载 CSV 模板</Button>
-        </Space>
-      </div>
+      <PageHeader
+        title={<>批量导入</>}
+        description={<>批量建立图鉴档案，逐行检查，确认后写入草稿。</>}
+        actions={
+          <>
+            <Space>
+              <Button
+                icon={<DownloadOutlined aria-hidden="true" />}
+                onClick={() => template("xlsx")}
+              >
+                下载 Excel 模板
+              </Button>
+              <Button onClick={() => template("csv")}>下载 CSV 模板</Button>
+            </Space>
+          </>
+        }
+      />
       <Panel>
         <div className="import-type-control">
           <label htmlFor="import-kind">导入类型</label>
@@ -340,7 +340,7 @@ export default function Imports() {
                   : isAlbum
                     ? "name 填专辑作品名；versions 填版本名，多个版本用 | 分隔。artist_names 可填写多个组合或个人艺人名称，用 | 分隔并精确匹配已有档案。"
                     : kind === "others"
-                      ? "Other 只需 name；可选 original_name、start_date、end_date、description、tags。"
+                      ? "其他来源需填写 name，并至少关联一个组合或艺人；支持 group_id / group_name、idol_id / idol_name 或 artist_names。"
                       : "name 必填；group_id / group_name 二选一。名称需精确匹配已有组合，未发布组合也可用于建立草稿。"
           }
           description={
@@ -353,7 +353,7 @@ export default function Imports() {
                   : isAlbum
                     ? "专辑名不拼接版本名。同名且参与艺人集合相同的不同版本行归入同一专辑；新版本可追加到已有专辑，其他专辑字段保留原值。重复版本会报错。兼容 group_name / idol_name 和 artists JSON；release_date 使用 YYYY-MM-DD，tags 用 | 分隔。"
                     : kind === "others"
-                      ? "起止日期使用 YYYY-MM-DD，tags 用 | 分隔；不需要组合归属或商品字段。"
+                      ? "artist_names 多个名称用 | 分隔并匹配已有档案；也可用 artists JSON 填写准确 ID。起止日期使用 YYYY-MM-DD，tags 用 | 分隔，image_url 可选。"
                       : "name_en / name_ko / name_translated 为多语言名称；release_date 使用 YYYY-MM-DD（艺人为生日、组合为出道日期），tags 用 | 分隔。可选封面 image_url 使用 HTTP(S) 地址；同组合同名记录视为重复。"
           }
         />
@@ -518,7 +518,7 @@ export default function Imports() {
               size="small"
               rowKey="row"
               dataSource={task.rows}
-              pagination={{ pageSize: 5 }}
+              pagination={{ defaultPageSize: 5 }}
               scroll={{ x: isAlbum || isCombined ? 950 : 650 }}
               columns={[
                 { title: "表格行号", dataIndex: "row" },
@@ -606,7 +606,7 @@ export default function Imports() {
               size="small"
               rowKey={(r) => `${r.row}-${r.field}`}
               dataSource={task.errors}
-              pagination={{ pageSize: 5 }}
+              pagination={{ defaultPageSize: 5 }}
               columns={[
                 {
                   title: "操作",
@@ -679,7 +679,7 @@ export default function Imports() {
         <Table
           rowKey="id"
           dataSource={tasks}
-          pagination={{ pageSize: 5 }}
+          pagination={{ defaultPageSize: 5 }}
           columns={[
             { title: "文件名", dataIndex: "filename" },
             {

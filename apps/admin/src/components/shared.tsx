@@ -1,10 +1,11 @@
+import { displayValue } from "../design/format";
+import { Modal } from "./admin";
 import { useRef, useState } from "react";
-import { App, Button, Empty, Modal, Tag, Tooltip } from "antd";
+import { App, Button, Tag, Tooltip } from "antd";
 import {
   CheckCircleOutlined,
   CloudUploadOutlined,
   InfoCircleOutlined,
-  PictureOutlined,
   SwapOutlined,
 } from "@ant-design/icons";
 import type { Card, CatalogEntity, Status } from "../api/types";
@@ -76,7 +77,7 @@ export function StatusTag({ status }: { status: string }) {
   return (
     <Tag className="status-tag" color={colors[status] || "default"}>
       <span className="status-dot" />
-      {statusLabels[status] || status}
+      {statusLabels[status] || displayValue(status)}
     </Tag>
   );
 }
@@ -335,23 +336,8 @@ export function Panel({
     </section>
   );
 }
-export function EmptyState({
-  description = "暂无符合条件的内容",
-}: {
-  description?: string;
-}) {
-  return (
-    <Empty
-      image={
-        <PictureOutlined
-          aria-hidden="true"
-          style={{ fontSize: 40, color: "#b7afd0" }}
-        />
-      }
-      description={description}
-    />
-  );
-}
+export { EmptyState } from "./admin";
+
 export function Help({ text }: { text: string }) {
   return (
     <Tooltip title={text}>

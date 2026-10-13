@@ -1,20 +1,25 @@
+import { useSingleSubmit } from "../components/admin";
+import { displayValue } from "../design/format";
+import {
+  TableToolbar,
+  RowActions,
+  BusinessData,
+  FilterBar,
+} from "../components/admin";
+import { Drawer, Form, Modal, Table } from "../components/admin";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   App,
   Button,
   Descriptions,
-  Drawer,
-  Form,
   Input,
   InputNumber,
   Image,
-  Modal,
   Select,
   Space,
   Spin,
   Tag,
-  Table,
 } from "antd";
 import { consoleApi, send } from "../api/client";
 import { useConsole } from "../state";
@@ -43,10 +48,12 @@ export default function RecordManager({
   const { catalog, actor, reload } = useConsole();
   const navigate = useNavigate();
   const { message, modal } = App.useApp();
+  const [q, setQ] = useState("");
   const [rows, setRows] = useState<any[]>([]);
   const [companies, setCompanies] = useState<any[]>([]);
   const [versions, setVersions] = useState<any[]>([]);
   const [current, setCurrent] = useState<any>();
+  const [viewRecord, setViewRecord] = useState<any>();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [companyDetailOpen, setCompanyDetailOpen] = useState(false);
@@ -95,7 +102,7 @@ export default function RecordManager({
     form.setFieldsValue(r?.data || {});
     setOpen(true);
   };
-  const save = async () => {
+  const save = useSingleSubmit(async () => {
     try {
       const data = await form.validateFields();
       setBusy(true);
@@ -122,7 +129,7 @@ export default function RecordManager({
     } finally {
       setBusy(false);
     }
-  };
+  });
   const sources = Object.entries(catalog)
     .filter(([k]) => !["groups", "idols", "cards"].includes(k))
     .flatMap(([k, items]) =>
@@ -198,21 +205,49 @@ export default function RecordManager({
   ];
   return (
     <>
-      <Space style={{ marginBottom: 12 }}>
-        {actor.role !== "operation_admin" && (
-          <Button onClick={() => edit()}>新增{labels[kind]}</Button>
-        )}
-        <Button onClick={load}>刷新</Button>
-        {kind === "companies" && actor.role !== "operation_admin" && (
-          <Button onClick={() => navigate("/catalog/import?kind=companies")}>
-            批量导入公司
-          </Button>
-        )}
-      </Space>
+      <FilterBar onReset={() => setQ("")}>
+        <Input
+          allowClear
+          placeholder={`搜索${labels[kind]}名称或编号`}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+      </FilterBar>
+      <TableToolbar
+        actions={
+          <>
+            <Button onClick={load}>刷新</Button>
+            {kind === "companies" && actor.role !== "operation_admin" && (
+              <Button
+                onClick={() => navigate("/catalog/import?kind=companies")}
+              >
+                批量导入公司
+              </Button>
+            )}
+            {actor.role !== "operation_admin" && (
+              <Button type="primary" onClick={() => edit()}>
+                新增{labels[kind]}
+              </Button>
+            )}
+          </>
+        }
+      >
+        {labels[kind]}记录
+      </TableToolbar>
       <Table
         rowKey="id"
-        dataSource={rows}
-        pagination={{ pageSize: 10 }}
+        dataSource={rows.filter(
+          (r) =>
+            !q ||
+            [r.id, r.data.name, r.data.group_id, r.data.company_id].some((v) =>
+              v?.toLowerCase().includes(q.toLowerCase()),
+            ),
+        )}
+        filtered={!!q}
+        onReset={() => setQ("")}
+        onCreate={actor.role !== "operation_admin" ? () => edit() : undefined}
+        createLabel={`新增${labels[kind]}`}
+        pagination={{ defaultPageSize: 10 }}
         columns={[
           {
             title: "名称 / 关系",
@@ -227,7 +262,7 @@ export default function RecordManager({
           {
             title: "状态 / 有效期",
             render: (_, r) =>
-              `${r.data.status || r.status} ${r.data.start_date || (r.data.date_unknown ? "开始日期待核实" : r.data.release_date || "")} ${r.data.end_date || ""}`,
+              `${displayValue(r.data.status || r.status)} ${r.data.start_date || (r.data.date_unknown ? "开始日期待核实" : r.data.release_date || "")} ${r.data.end_date || ""}`,
           },
           ...(kind === "companies"
             ? [
@@ -259,72 +294,85 @@ export default function RecordManager({
             : []),
           {
             title: "操作",
+            width: 200,
             render: (_, r) => (
-              <Space wrap>
-                {kind === "companies" && (
-                  <Button type="link" onClick={() => viewCompany(r)}>
-                    查看详情
-                  </Button>
-                )}
-                {actor.role !== "operation_admin" && (
-                  <Button type="link" onClick={() => edit(r)}>
-                    编辑
-                  </Button>
-                )}
-                {actor.role === "admin" &&
-                  !["memberships", "company_relations"].includes(kind) && (
-                    <Button
-                      type="link"
-                      danger
-                      onClick={() =>
-                        modal.confirm({
-                          title: "确认删除该记录？",
-                          content: "被引用的记录不能删除。",
-                          onOk: async () => {
-                            try {
-                              await consoleApi(`/records/${kind}/${r.id}`, {
-                                method: "DELETE",
-                              });
-                              await load();
-                            } catch (e) {
-                              message.error((e as Error).message);
-                            }
+              <RowActions
+                onView={() =>
+                  kind === "companies" ? viewCompany(r) : setViewRecord(r)
+                }
+                onEdit={
+                  actor.role !== "operation_admin" ? () => edit(r) : undefined
+                }
+                items={[
+                  ...(kind === "batches"
+                    ? [
+                        {
+                          key: "select",
+                          label: "选择批次",
+                          onClick: () => {
+                            setCurrent(r);
+                            setMembers([]);
+                            setValidation([]);
                           },
-                        })
-                      }
-                    >
-                      删除
-                    </Button>
-                  )}
-                {kind === "batches" && (
-                  <>
-                    <Button
-                      onClick={() => {
-                        setCurrent(r);
-                        setMembers([]);
-                        setValidation([]);
-                      }}
-                    >
-                      选择批次
-                    </Button>
-                    <Button onClick={() => batchAction(r.id, "validate")}>
-                      全部校验
-                    </Button>
-                    {actor.role === "admin" && (
-                      <Button
-                        onClick={() =>
-                          modal.confirm({
-                            title: "发布所有校验通过的小卡？",
-                            onOk: () => batchAction(r.id, "publish-ready"),
-                          })
-                        }
-                      >
-                        发布合格卡
-                      </Button>
-                    )}
-                  </>
-                )}
-              </Space>
+                        },
+                        {
+                          key: "validate",
+                          label: "全部校验",
+                          onClick: () => batchAction(r.id, "validate"),
+                        },
+                        ...(actor.role === "admin"
+                          ? [
+                              {
+                                key: "publish",
+                                label: "发布合格卡",
+                                onClick: () =>
+                                  modal.confirm({
+                                    title: "发布所有校验通过的小卡？",
+                                    okText: "发布",
+                                    cancelText: "取消",
+                                    onOk: () =>
+                                      batchAction(r.id, "publish-ready"),
+                                  }),
+                              },
+                            ]
+                          : []),
+                      ]
+                    : []),
+                  ...(actor.role === "admin" &&
+                  !["memberships", "company_relations"].includes(kind)
+                    ? [
+                        {
+                          key: "delete",
+                          label: "删除",
+                          danger: true,
+                          onClick: () =>
+                            modal.confirm({
+                              title: `删除「${r.data.name || labels[kind]}」？`,
+                              content:
+                                "将删除 1 条记录，删除不可恢复。被引用的记录会阻止删除，请先在关联内容中解除关系。",
+                              okText: "删除",
+                              cancelText: "取消",
+                              okButtonProps: { danger: true },
+                              onOk: async () => {
+                                try {
+                                  await consoleApi(`/records/${kind}/${r.id}`, {
+                                    method: "DELETE",
+                                  });
+                                  await load();
+                                  await reload();
+                                  onSaved?.();
+                                  message.success("已删除");
+                                } catch (e) {
+                                  message.error((e as Error).message);
+                                  throw e;
+                                }
+                              },
+                            }),
+                        },
+                      ]
+                    : []),
+                ]}
+              />
             ),
           },
         ]}
@@ -478,6 +526,18 @@ export default function RecordManager({
       )}
       <Drawer
         title={companyDetail?.company?.data?.name || "公司详情"}
+        extra={
+          companyDetail?.company && actor.role !== "operation_admin" ? (
+            <Button
+              onClick={() => {
+                edit(companyDetail.company);
+                setCompanyDetailOpen(false);
+              }}
+            >
+              编辑
+            </Button>
+          ) : undefined
+        }
         open={companyDetailOpen}
         onClose={() => setCompanyDetailOpen(false)}
         width={820}
@@ -491,7 +551,7 @@ export default function RecordManager({
                   {companyDetail.company.id}
                 </Descriptions.Item>
                 <Descriptions.Item label="状态">
-                  {companyDetail.company.status}
+                  {displayValue(companyDetail.company.status)}
                 </Descriptions.Item>
                 <Descriptions.Item label="当前关联组合">
                   {companyDetail.company.group_count || 0}
@@ -528,6 +588,25 @@ export default function RecordManager({
             </Space>
           )}
         </Spin>
+      </Drawer>
+      <Drawer
+        open={!!viewRecord}
+        title={`${labels[kind]}详情`}
+        onClose={() => setViewRecord(undefined)}
+        extra={
+          actor.role !== "operation_admin" ? (
+            <Button
+              onClick={() => {
+                edit(viewRecord);
+                setViewRecord(undefined);
+              }}
+            >
+              编辑
+            </Button>
+          ) : undefined
+        }
+      >
+        <BusinessData data={viewRecord?.data} />
       </Drawer>
       <Modal
         title={`${current ? "编辑" : "新增"}${labels[kind]}`}
@@ -620,7 +699,7 @@ export default function RecordManager({
               <Form.Item name="relationship_type" label="身份">
                 <Select
                   options={["MEMBER", "SUB_UNIT", "SOLO", "PROJECT_GROUP"].map(
-                    (value) => ({ value, label: value }),
+                    (value) => ({ value, label: displayValue(value) }),
                   )}
                 />
               </Form.Item>

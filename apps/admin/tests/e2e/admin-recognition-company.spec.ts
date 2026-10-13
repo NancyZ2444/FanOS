@@ -96,7 +96,7 @@ test("company detail lists linked groups and idols", async ({
   await page.goto("/catalog/companies");
   const companyRow = page.getByRole("row").filter({ hasText: companyName });
   await expect(companyRow).toContainText("1当前");
-  await companyRow.getByRole("button", { name: "查看详情" }).click();
+  await companyRow.getByRole("button", { name: "查看" }).click();
   const drawer = page.locator(".ant-drawer").filter({ hasText: companyName });
   await expect(drawer).toContainText("当前关联组合");
   await expect(drawer).toContainText("当前关联艺人");
@@ -192,9 +192,7 @@ test("upload recognition opens existing draft and unknown image enters manual cr
     .click();
   expect((await (await response).json()).data.status).toBe("matched");
   await expect(page).toHaveURL(new RegExp(`/catalog/cards/${card.id}$`));
-  await expect(
-    page.getByLabel("小卡名称 Card Name", { exact: true }),
-  ).toHaveValue(title);
+  await expect(page.locator(".breadcrumb-detail")).toContainText(title);
   await page.goto("/catalog/cards");
   await page
     .getByLabel("上传小卡识别图片")
@@ -218,9 +216,7 @@ test("upload recognition opens existing draft and unknown image enters manual cr
   await expect(
     page.getByAltText("小卡正面", { exact: true }).first(),
   ).toBeVisible();
-  await page
-    .getByLabel("小卡名称 Card Name", { exact: true })
-    .fill("Manually completed scan card");
+
   const saved = page.waitForResponse(
     (r) =>
       r.url().endsWith("/console/cards") && r.request().method() === "POST",

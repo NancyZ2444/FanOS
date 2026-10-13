@@ -181,7 +181,7 @@ export const names: Record<Kind, string> = {
   idols: "艺人管理",
   albums: "专辑管理",
   events: "活动管理",
-  others: "Other 管理",
+  others: "其他来源",
 };
 export const sourceKinds: Record<string, Kind> = {
   ALBUM: "albums",
@@ -189,9 +189,9 @@ export const sourceKinds: Record<string, Kind> = {
   OTHER: "others",
 };
 export const sourceLabels: Record<string, string> = {
-  ALBUM: "专辑 Album",
-  EVENT: "活动 Event",
-  OTHER: "其他 Other",
+  ALBUM: "专辑",
+  EVENT: "活动",
+  OTHER: "其他来源",
 };
 export const statusLabels: Record<string, string> = {
   DRAFT: "草稿",

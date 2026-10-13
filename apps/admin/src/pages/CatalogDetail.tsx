@@ -1,13 +1,17 @@
+import { displayValue } from "../design/format";
+import { DetailFields, BusinessData } from "../components/admin";
+import { editable } from "../components/shared";
+import { Table } from "../components/admin";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
+  Skeleton,
   Alert,
   App,
   Button,
   Descriptions,
   Image,
   Space,
-  Table,
   Tabs,
   Tag,
 } from "antd";
@@ -31,17 +35,28 @@ export default function CatalogDetail() {
       ? ["source", "scan", "feedback"]
       : ["groups", "idols"].includes(kind)
         ? ["members", "company", "social"]
-        : kind === "others" ? [] : ["versions", "sources"]),
+        : kind === "others"
+          ? []
+          : ["versions", "sources"]),
   ];
   const requestedTab = params.get("tab") || "overview";
   const activeTab = tabKeys.includes(requestedTab) ? requestedTab : "overview";
   const { message } = App.useApp();
   const [data, setData] = useState<any>();
   const [error, setError] = useState("");
-  const load = () =>
-    consoleApi(`/entities/${kind}/${id}/detail`)
-      .then(setData)
-      .catch((e) => setError(e.message));
+  const [loading, setLoading] = useState(true);
+  const load = async () => {
+    setLoading(true);
+    setData(undefined);
+    setError("");
+    try {
+      setData(await consoleApi(`/entities/${kind}/${id}/detail`));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
   useEffect(() => {
     load();
   }, [kind, id]);
@@ -64,6 +79,20 @@ export default function CatalogDetail() {
         ? catalog.idols.find((i) => i.id === m.idol_id)?.name
         : catalog.groups.find((g) => g.id === m.group_id)?.name,
   }));
+  if (loading)
+    return (
+      <section className="panel" aria-label="正在加载详情">
+        <Skeleton active paragraph={{ rows: 8 }} />
+      </section>
+    );
+  if (error && !data)
+    return (
+      <Alert
+        type="error"
+        message={error}
+        action={<Button onClick={load}>重试</Button>}
+      />
+    );
   return (
     <>
       <div className="catalog-detail-heading">
@@ -73,9 +102,29 @@ export default function CatalogDetail() {
         </div>
         {(kind === "cards" || actor.role !== "operation_admin") && (
           <Space wrap className="catalog-detail-actions">
+            {actor.role !== "operation_admin" && (
+              <Button
+                type="primary"
+                disabled={!entity || !editable(entity.status)}
+                title={
+                  entity && !editable(entity.status)
+                    ? "已发布内容需先下架，待审核内容需先驳回"
+                    : "编辑资料"
+                }
+                onClick={() =>
+                  navigate(
+                    kind === "cards"
+                      ? `/catalog/cards/${id}`
+                      : `/catalog/${kind}?edit=${encodeURIComponent(id)}`,
+                  )
+                }
+              >
+                编辑
+              </Button>
+            )}
             {kind === "cards" ? (
               <Button onClick={() => navigate(`/catalog/cards/${id}`)}>
-                打开小卡编辑器
+                维护与审核
               </Button>
             ) : (
               [
@@ -90,7 +139,7 @@ export default function CatalogDetail() {
                   新增
                   {type === "cards"
                     ? "小卡"
-                    : names[type as keyof typeof names]}
+                    : names[type as keyof typeof names].replace("管理", "")}
                 </Button>
               ))
             )}
@@ -137,71 +186,132 @@ export default function CatalogDetail() {
             key: "overview",
             label: "概览",
             children: content(
-              <Descriptions
-                column={2}
-                items={Object.entries(entity || {})
-                  .filter(
-                    ([key, value]) =>
-                      value !== null &&
-                      [
-                        "id",
-                        "name",
-                        "original_name",
-                        "start_date",
-                        "tags",
-                        "name_en",
-                        "name_ko",
-                        "name_translated",
-                        "artist_name",
-                        "description",
-                        "release_date",
-                        "status",
-                        "company",
-                        "region",
-                        "city",
-                        "platform",
-                        "venue",
-                        "business_status",
-                        "end_date",
-                        "title",
-                        "idol_name",
-                        "group_name",
-                        "source",
-                        "source_entity_type",
-                        "source_entity_id",
-                        "version",
-                        "edition",
-                        "card_number",
-                        "is_online",
-                        "album_id",
-                        "parent_event_id",
-                      ].includes(key),
-                  )
-                  .map(([key, value]) => ({
-                    key,
-                    label:
-                      (
-                        {
-                          id: "ID",
-                          name: "名称",
-                          original_name: "原始名称",
-                          start_date: "开始日期",
-                          tags: "Tags",
-                          artist_name: "艺人",
-                          description: "简介",
-                          release_date: "日期",
-                          status: "发布状态",
-                          company: "公司",
-                          region: "地区",
-                          city: "城市",
-                          venue: "场馆",
-                          business_status: "业务状态",
-                          end_date: "结束日期",
-                        } as Record<string, string>
-                      )[key] || key,
-                    children: String(value),
-                  }))}
-              />,
+              <div>
+                <DetailFields
+                  title="基本信息"
+                  data={entity || {}}
+                  fields={[
+                    ...(kind === "cards"
+                      ? [
+                          "title",
+                          "title_translated",
+                          "title_en",
+                          "title_ko",
+                          "card_type",
+                          "rarity",
+                          "is_group_pc",
+                          "is_double_sided",
+                          "is_official",
+                          "is_limited",
+                          "is_random",
+                          "has_ar",
+                          "ar_type",
+                          "ar_resource",
+                          "version",
+                          "edition",
+                          "card_number",
+                        ]
+                      : ["name", "name_translated", "name_en", "name_ko"]),
+                    ...(kind === "events"
+                      ? [
+                          "original_name",
+                          "city",
+                          "venue",
+                          "is_online",
+                          "platform",
+                          "business_status",
+                        ]
+                      : kind === "others"
+                        ? ["original_name"]
+                        : kind === "groups"
+                          ? [
+                              "business_status",
+                              "fandom_name",
+                              "official_website",
+                              "aliases",
+                            ]
+                          : kind === "idols"
+                            ? ["real_name", "gender", "birth_date", "aliases"]
+                            : kind === "albums"
+                              ? ["type", "aliases"]
+                              : []),
+                    "description",
+                    "region",
+                    "tags",
+                  ]}
+                />
+                <DetailFields
+                  title="关联内容"
+                  data={entity || {}}
+                  fields={
+                    kind === "cards"
+                      ? [
+                          "group_name",
+                          "idol_name",
+                          "source",
+                          "source_entity_type",
+                          "source_entity_id",
+                        ]
+                      : ["groups", "idols"].includes(kind)
+                        ? ["company", "group_name"]
+                        : [
+                            "artist_name",
+                            ...(kind === "events"
+                              ? ["album_id", "parent_event_id"]
+                              : []),
+                          ]
+                  }
+                  resolve={(key, value) => {
+                    if (!value) return undefined;
+                    const kinds: Record<string, string> = {
+                      album_id: "albums",
+                      parent_event_id: "events",
+                      source_entity_id:
+                        entity?.source_entity_type === "ALBUM"
+                          ? "albums"
+                          : entity?.source_entity_type === "EVENT"
+                            ? "events"
+                            : "others",
+                    };
+                    const target = kinds[key];
+                    const row = target
+                      ? (catalog as any)[target]?.find(
+                          (r: any) => r.id === value,
+                        )
+                      : undefined;
+                    return row ? (
+                      <Button
+                        type="link"
+                        onClick={() =>
+                          navigate(`/catalog/${target}/${value}/detail`)
+                        }
+                      >
+                        {row.name}
+                      </Button>
+                    ) : undefined;
+                  }}
+                />
+                <DetailFields
+                  title="发布信息"
+                  data={entity || {}}
+                  fields={[
+                    "status",
+                    ...(["groups", "idols"].includes(kind)
+                      ? ["debut_date"]
+                      : ["events", "others"].includes(kind)
+                        ? ["start_date", "end_date"]
+                        : ["release_date"]),
+                    "published_at",
+                    "review_note",
+                  ]}
+                />
+                <DetailFields
+                  title="系统信息"
+                  data={{ ...entity, id }}
+                  fields={["id", "created_at", "updated_at", "operator"]}
+                />
+                <p className="subtle-note">时间均为北京时间（UTC+08:00）</p>
+              </div>,
             ),
           },
           {
@@ -264,7 +374,7 @@ export default function CatalogDetail() {
                           {
                             key: "kind",
                             label: "来源类型",
-                            children: entity?.source_entity_type,
+                            children: displayValue(entity?.source_entity_type),
                           },
                           {
                             key: "source",
@@ -274,9 +384,10 @@ export default function CatalogDetail() {
                           {
                             key: "copyright",
                             label: "版权状态",
-                            children:
+                            children: displayValue(
                               entity?.source_info?.copyright_status ||
-                              "UNKNOWN",
+                                "UNKNOWN",
+                            ),
                           },
                           {
                             key: "url",
@@ -303,7 +414,9 @@ export default function CatalogDetail() {
                           {
                             key: "state",
                             label: "索引状态",
-                            children: data?.scan?.status || "Pending",
+                            children: displayValue(
+                              data?.scan?.status || "Pending",
+                            ),
                           },
                           {
                             key: "reason",
@@ -379,7 +492,7 @@ export default function CatalogDetail() {
                       <Table
                         rowKey="id"
                         dataSource={members}
-                        pagination={{ pageSize: 10 }}
+                        pagination={{ defaultPageSize: 10 }}
                         columns={[
                           { title: "组合 / 艺人", dataIndex: "name" },
                           { title: "加入日期", dataIndex: "start_date" },
@@ -387,7 +500,7 @@ export default function CatalogDetail() {
                           {
                             title: "状态",
                             dataIndex: "status",
-                            render: (v) => <Tag>{v}</Tag>,
+                            render: (v) => <Tag>{displayValue(v)}</Tag>,
                           },
                         ]}
                       />
@@ -543,13 +656,16 @@ export default function CatalogDetail() {
                 dataSource={data?.history || []}
                 expandable={{
                   expandedRowRender: (r) => (
-                    <pre style={{ whiteSpace: "pre-wrap" }}>
-                      {JSON.stringify(
-                        { 修改前: r.before, 修改后: r.after },
-                        null,
-                        2,
-                      )}
-                    </pre>
+                    <div className="audit-diff">
+                      <div>
+                        <h3>变更前</h3>
+                        <BusinessData data={r.before} />
+                      </div>
+                      <div>
+                        <h3>变更后</h3>
+                        <BusinessData data={r.after} />
+                      </div>
+                    </div>
                   ),
                 }}
                 columns={[

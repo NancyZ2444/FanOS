@@ -1,6 +1,7 @@
+import { Modal, Table } from "./admin";
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, App, Button, Image, Modal, Space, Table } from "antd";
+import { Alert, App, Button, Image, Space } from "antd";
 import { ScanOutlined } from "@ant-design/icons";
 import { consoleApi } from "../api/client";
 import type { Card } from "../api/types";

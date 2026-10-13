@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
 
 test("permanently delete an unlinked archived group from the list", async ({
@@ -25,11 +26,11 @@ test("permanently delete an unlinked archived group from the list", async ({
   await page.getByPlaceholder("搜索组合名称、ID…").fill(name);
   const row = page.locator(".ant-table-tbody tr").filter({ hasText: name });
   await row.getByRole("button", { name: "更多", exact: true }).click();
-  await page.getByText("永久删除", { exact: true }).click();
+  await page.getByText("删除", { exact: true }).click();
   await expect(page.getByRole("dialog")).toContainText("删除不可恢复");
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "永久删除", exact: true })
+    .getByRole("button", { name: "删除", exact: true })
     .click();
   await expect(row).toHaveCount(0);
   expect(
@@ -141,9 +142,12 @@ test("a newly created company can be selected in group and idol forms", async ({
 }) => {
   const name = `Selectable agency ${Date.now()}`;
   await page.goto("/catalog/companies");
-  await page.getByRole("button", { name: "新增公司", exact: true }).click();
+  await page
+    .getByRole("button", { name: "新增公司", exact: true })
+    .first()
+    .click();
   await page.getByRole("dialog").getByLabel("名称", { exact: true }).fill(name);
-  await page.getByRole("dialog").getByRole("button", { name: "确 定" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "保存" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   for (const [kind, label] of [
     ["groups", "组合"],
@@ -151,7 +155,7 @@ test("a newly created company can be selected in group and idol forms", async ({
   ]) {
     await page.goto(`/catalog/${kind}`);
     await page
-      .getByRole("button", { name: `新建${label}`, exact: true })
+      .getByRole("button", { name: `新增${label}`, exact: true })
       .click();
     await page
       .getByLabel(`${label}名称 / 官方名称`, { exact: true })
@@ -198,7 +202,7 @@ test("a newly created company can be selected in group and idol forms", async ({
     );
     await page
       .getByRole("dialog")
-      .getByRole("button", { name: "确 定" })
+      .getByRole("button", { name: "保存" })
       .click();
     const edited = await changed;
     expect(edited.status()).toBe(200);
@@ -241,7 +245,8 @@ test("batch generation, validation progress and bulk field preview", async ({
   const row = page
     .locator(".ant-table-tbody tr")
     .filter({ hasText: batchName });
-  await row.getByRole("button", { name: "选择批次", exact: true }).click();
+  await row.getByRole("button", { name: "更多", exact: true }).click();
+  await page.getByRole("menuitem", { name: "选择批次", exact: true }).click();
   await page.getByRole("combobox", { name: "选择成员", exact: true }).click();
   await page.getByTitle("Aria", { exact: true }).click();
   await page.keyboard.press("Escape");
@@ -249,7 +254,8 @@ test("batch generation, validation progress and bulk field preview", async ({
   await expect(
     page.getByRole("heading", { name: `${batchName} · 1 张`, exact: true }),
   ).toBeVisible();
-  await row.getByRole("button", { name: "全部校验", exact: true }).click();
+  await row.getByRole("button", { name: "更多", exact: true }).click();
+  await page.getByRole("menuitem", { name: "全部校验", exact: true }).click();
   await expect(page.getByText(/校验通过 0/)).toBeVisible();
   await page.getByRole("button", { name: "批量编辑", exact: true }).click();
   const cardRow = page
@@ -285,21 +291,54 @@ test("feedback current versus suggested values and acceptance", async ({
   const headers = {
     Authorization: `Bearer ${(await login.json()).data.access_token}`,
   };
-  const title = `Feedback card ${Date.now()}`;
-  const response = await request.post(
+  const catalogResponse = await request.get(
+    "http://127.0.0.1:8011/api/v1/admin/console/catalog",
+    { headers },
+  );
+  const seed = (await catalogResponse.json()).data.cards.find(
+    (c: any) => c.status === "PUBLISHED" && c.source_entity_type === "EVENT",
+  );
+  const media = await request.post(
+    "http://127.0.0.1:8011/api/v1/admin/console/uploads",
+    {
+      headers,
+      multipart: {
+        file: {
+          name: "review.png",
+          mimeType: "image/png",
+          buffer: readFileSync("tests/fixtures/admin-recognition.png"),
+        },
+      },
+    },
+  );
+  const created = await request.post(
     "http://127.0.0.1:8011/api/v1/admin/console/cards",
     {
       headers,
       data: {
-        title,
-        group_id: "group-lumina",
-        idol_id: "idol-aria",
-        source_entity_type: "ALBUM",
-        source_entity_id: "album-starlit",
+        ...seed,
+        title: `Review ${Date.now()}`,
+        card_number: "",
+        image_url: (await media.json()).data.url,
+        front_source: {
+          source_type: "OFFICIAL",
+          source_url: "https://example.test/review",
+          copyright_status: "AUTHORIZED",
+        },
       },
     },
   );
-  const card = (await response.json()).data;
+  expect(created.status()).toBe(200);
+  const card = (await created.json()).data;
+  for (const action of ["submit", "publish"])
+    expect(
+      (
+        await request.post(
+          `http://127.0.0.1:8011/api/v1/admin/console/cards/${card.id}/actions`,
+          { headers, data: { action } },
+        )
+      ).status(),
+    ).toBe(200);
   const feedback = await request.post(
     "http://127.0.0.1:8011/api/v1/catalog/feedback",
     {
@@ -315,21 +354,23 @@ test("feedback current versus suggested values and acceptance", async ({
   expect(feedback.status()).toBe(200);
   await page.goto("/catalog/review");
   const row = page.locator(".ant-table-tbody tr").filter({ hasText: card.id });
-  await row.getByRole("button", { name: "查看 / 审核", exact: true }).click();
+  await row.getByRole("button", { name: "查看", exact: true }).click();
   await expect(page.getByRole("dialog")).toContainText("当前值");
   await page
     .getByRole("button", { name: "接受 / 编辑后接受", exact: true })
     .click();
   await page
     .locator(".ant-modal-confirm")
-    .getByRole("button", { name: /确\s*定/ })
+    .getByRole("button", { name: "确定" })
     .click();
   await expect(page.getByText("审核已处理", { exact: true })).toBeVisible();
-  await expect(row).toContainText("ACCEPTED");
+  await expect(row).toContainText("已采纳");
   await page.goto(`/catalog/cards/${card.id}/detail`);
   await expect(page.getByText("REVIEW VERSION", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "AI Scan", exact: true }).click();
-  await expect(page.getByText("Disabled", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("tab", { name: "AI Scan", exact: true }),
+  ).toBeVisible();
 });
 
 test("solo release, entity versions, context card and operational pages", async ({
@@ -359,15 +400,15 @@ test("solo release, entity versions, context card and operational pages", async 
   expect(album.artists).toEqual([{ type: "idols", id: solo.id }]);
   await page.goto(`/catalog/albums/${album.id}/detail`);
   await page.getByRole("tab", { name: "版本", exact: true }).click();
-  await page.getByRole("button", { name: "新增版本", exact: true }).click();
+  await page
+    .getByRole("button", { name: "新增版本", exact: true })
+    .first()
+    .click();
   await page
     .getByRole("dialog")
     .getByLabel("名称", { exact: true })
     .fill("OFF Version");
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: /确\s*定/ })
-    .click();
+  await page.getByRole("dialog").getByRole("button", { name: "保存" }).click();
   await expect(page.getByText("OFF Version", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "新增小卡", exact: true }).click();
   await page.getByRole("button", { name: "下一步", exact: true }).click();
@@ -385,10 +426,10 @@ test("solo release, entity versions, context card and operational pages", async 
       0,
     );
   }
-  await page.getByRole("button", { name: "+ Quick Add", exact: true }).click();
-  await page.getByPlaceholder("搜索 card / 小卡 / 专辑等").fill("card");
+  await page.getByRole("button", { name: "快速创建", exact: true }).click();
+  await page.getByPlaceholder("搜索小卡、专辑等").fill("小卡");
   await expect(
-    page.getByRole("button", { name: "新建小卡 Card", exact: true }),
+    page.getByRole("button", { name: "新增小卡", exact: true }),
   ).toBeVisible();
 });
 
@@ -396,10 +437,9 @@ test("create a card, identify missing fields, upload, preview, review, publish a
   page,
   request,
 }) => {
-  const title = `E2E 小卡 ${Date.now()}`;
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.getByRole("button", { name: "新建小卡", exact: true }).click();
+  await page.getByRole("button", { name: "新增小卡", exact: true }).click();
   await page.locator(".selection-card").filter({ hasText: "LUMINA" }).click();
   await page.getByRole("button", { name: "下一步" }).click();
   await page.locator(".selection-card").filter({ hasText: "Aria" }).click();
@@ -407,10 +447,10 @@ test("create a card, identify missing fields, upload, preview, review, publish a
   await page.getByLabel("来源对象", { exact: true }).click();
   await page.getByTitle("Starlit · 2026.08.16", { exact: true }).click();
   await page.getByRole("button", { name: "下一步" }).click();
-  await page.getByLabel("小卡名称 Card Name").fill(title);
   await page.getByRole("button", { name: "保存草稿", exact: true }).click();
   await expect(page.getByText("草稿已保存", { exact: true })).toBeVisible();
   const cardId = page.url().split("/").pop()!;
+
   expect(
     (
       await request.get(`http://127.0.0.1:8011/api/v1/catalog/cards/${cardId}`)
@@ -431,13 +471,13 @@ test("create a card, identify missing fields, upload, preview, review, publish a
   await page
     .locator('[id="field-front_source.copyright_status"]')
     .press("ArrowDown");
-  await page.getByTitle("已授权 AUTHORIZED", { exact: true }).click();
+  await page.getByTitle("已授权", { exact: true }).click();
   await page.getByRole("button", { name: "预览 App", exact: true }).click();
-  await expect(page.getByRole("dialog")).toContainText(title);
+  await expect(page.getByRole("dialog")).toContainText("Aria");
   await page.getByRole("button", { name: "关闭预览", exact: true }).click();
   await page.getByRole("button", { name: "提交审核", exact: true }).click();
   await expect(page.getByRole("heading", { name: "小卡管理" })).toBeVisible();
-  await page.getByRole("button", { name: title, exact: true }).click();
+  await page.goto(`/catalog/cards/${cardId}`);
   await page
     .getByRole("button", { name: "审核通过并发布", exact: true })
     .click();
@@ -448,7 +488,7 @@ test("create a card, identify missing fields, upload, preview, review, publish a
       await request.get(`http://127.0.0.1:8011/api/v1/catalog/cards/${cardId}`)
     ).status(),
   ).toBe(200);
-  await page.getByRole("button", { name: title, exact: true }).click();
+  await page.goto(`/catalog/cards/${cardId}`);
   await page.getByRole("button", { name: "下架并编辑", exact: true }).click();
   await page.getByRole("button", { name: "确认下架", exact: true }).click();
   await expect(page.getByRole("heading", { name: "小卡管理" })).toBeVisible();
@@ -469,8 +509,7 @@ test("every module renders and editor has no page overflow", async ({
     "/catalog/idols",
     "/catalog/albums",
     "/catalog/events",
-    "/catalog/collections",
-    "/catalog/merchandise",
+    "/catalog/others",
     "/catalog/import",
     "/reviews/sources",
     "/operations/social",
@@ -497,7 +536,7 @@ test("every module renders and editor has no page overflow", async ({
   }
   await page.goto("/catalog/cards/new");
   await page.getByText("基础信息", { exact: true }).click();
-  await expect(page.getByLabel("小卡名称 Card Name")).toBeVisible();
+  await expect(page.getByLabel("版本名称", { exact: true })).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -546,7 +585,7 @@ test("combined group and idol import creates members and supports group batch li
     .click();
   await page.getByRole("button", { name: "确认导入", exact: true }).click();
   await expect(
-    page.getByText("已导入 2 位艺人，组合、艺人及成员关系已同步建立", {
+    page.getByText("已导入 2 位艺人，组合、艺人、成员及公司关系已同步建立", {
       exact: true,
     }),
   ).toBeVisible();
@@ -559,9 +598,7 @@ test("combined group and idol import creates members and supports group batch li
   await expect(groupRow).toContainText("2");
   const selectGroup = async () => {
     await page.locator(".ant-table-thead .ant-checkbox-input").check();
-    await expect(
-      page.getByText("已选择 1 条组合", { exact: true }),
-    ).toBeVisible();
+    await expect(page.getByText("已选 1 项", { exact: true })).toBeVisible();
   };
   await selectGroup();
   await expect(

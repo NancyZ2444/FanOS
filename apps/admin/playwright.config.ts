@@ -29,6 +29,7 @@ export default defineConfig({
         PUBLIC_MEDIA_BASE_URL: "http://127.0.0.1:8011/media",
         CARD_MATCHER_INDEX_PATH: `${testRoot}/index.json`,
         AUTO_SEED: "true",
+        DEV_PHONE_CODE: "123456",
       },
     },
     {

@@ -1,3 +1,8 @@
+import { TableToolbar } from "../components/admin";
+import { RecordId, RowActions } from "../components/admin";
+import { FilterBar } from "../components/admin";
+import { PageHeader } from "../components/admin";
+import { Table } from "../components/admin";
 import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -8,17 +13,14 @@ import {
   Input,
   Select,
   Space,
-  Table,
   Tabs,
   Tooltip,
 } from "antd";
 import {
   AppstoreOutlined,
   BarsOutlined,
-  CheckOutlined,
   DownOutlined,
   ExportOutlined,
-  FilterOutlined,
   ImportOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -52,7 +54,6 @@ export default function Cards() {
   const [version, setVersion] = useState<string>();
   const [year, setYear] = useState<string>();
   const [status, setStatus] = useState(params.get("status") || "ALL");
-  const [advanced, setAdvanced] = useState(false);
   const [missing, setMissing] = useState(params.get("missing") === "true");
   const [selected, setSelected] = useState<React.Key[]>([]);
   const [view, setView] = useState("table");
@@ -136,13 +137,20 @@ export default function Cards() {
               : "确认归档小卡？",
       content:
         action === "delete"
-          ? "未发布草稿可删除；曾发布后下架及归档记录须解除全部上下游关联。下游引用始终阻止删除；任一不满足条件整批不删除。"
+          ? "删除不可恢复。未发布草稿可删除；曾发布后下架及归档记录须解除全部上下游关联。下游引用始终阻止删除；任一不满足条件整批不删除。"
           : action === "publish"
             ? "发布前将检查来源、图片与版权信息。通过后，小卡会在 App 图鉴中公开展示。"
             : action === "offline"
               ? "下架后 App 图鉴和每日翻卡不再展示，已有收藏与图片来源历史将保留。"
               : "归档后从默认列表移除，可在已归档中恢复。",
-      okText: "确认",
+      okText:
+        action === "delete"
+          ? "删除"
+          : action === "publish"
+            ? "发布"
+            : action === "offline"
+              ? "下架"
+              : "归档",
       okButtonProps: { danger: action === "delete" },
       cancelText: "取消",
       onOk: () => act(action, card),
@@ -183,82 +191,94 @@ export default function Cards() {
     a.click();
     URL.revokeObjectURL(a.href);
   };
+  const resetFilters = () => {
+    setQ("");
+    setGroup(undefined);
+    setIdol(undefined);
+    setType(undefined);
+    setMissing(false);
+    setSource(undefined);
+    setVersion(undefined);
+    setYear(undefined);
+    setStatus("ALL");
+    setSelected([]);
+    setParams({});
+  };
   const rowActions = (c: Card) => (
-    <Space size={16}>
-      <button
-        className="text-button"
-        onClick={() => navigate(`/catalog/cards/${c.id}`)}
-      >
-        {editable(c.status) && canEdit ? "编辑" : "查看"}
-      </button>
-      <button className="text-button muted" onClick={() => setPreview(c)}>
-        预览
-      </button>
-      {canEdit && (
-        <Dropdown
-          menu={{
-            items: [
-              ...(c.status === "PENDING" && canPublish
-                ? [{ key: "publish", label: "审核通过并发布" }]
-                : []),
-              ...(c.status === "PUBLISHED"
-                ? [{ key: "offline", label: "下架小卡" }]
-                : []),
-              ...(editable(c.status)
-                ? [
-                    { key: "submit", label: "提交审核" },
-                    ...(canPublish
-                      ? [
-                          { key: "archive", label: "归档草稿" },
-                          ...(c.status === "DRAFT" || c.status === "OFFLINE"
-                            ? [
-                                {
-                                  key: "delete",
-                                  label: "永久删除",
-                                  danger: true,
-                                },
-                              ]
-                            : []),
-                        ]
-                      : []),
-                  ]
-                : []),
-              ...(c.status === "ARCHIVED"
-                ? [
-                    { key: "restore", label: "恢复为草稿" },
-                    ...(canPublish
-                      ? [{ key: "delete", label: "永久删除", danger: true }]
-                      : []),
-                  ]
-                : []),
-              { key: "history", label: "查看图片来源" },
-            ],
-            onClick: ({ key }) =>
-              key === "history"
-                ? navigate(`/catalog/cards/${c.id}?tab=history`)
-                : ["publish", "offline", "archive", "delete"].includes(key)
-                  ? key === "delete"
-                    ? void confirmCatalogDeletion(
-                        "cards",
-                        c.id,
-                        c.title,
-                        modal,
-                        message,
-                        reload,
-                      )
-                    : confirm(key, c)
-                  : act(key, c),
-          }}
-        >
-          <button
-            className="text-button muted"
-            aria-label={`更多操作 ${c.title}`}
-          >
-            ···
-          </button>
-        </Dropdown>
-      )}
-    </Space>
+    <RowActions
+      onView={() => navigate(`/catalog/cards/${c.id}/detail`)}
+      onEdit={canEdit ? () => navigate(`/catalog/cards/${c.id}`) : undefined}
+      editDisabled={!editable(c.status)}
+      editHint={
+        !editable(c.status)
+          ? "已发布内容需先下架，待审核内容需先驳回"
+          : undefined
+      }
+      items={(canEdit
+        ? [
+            { key: "preview", label: "预览 App" },
+            ...(c.status === "PENDING" && canPublish
+              ? [{ key: "publish", label: "审核通过并发布" }]
+              : []),
+            ...(c.status === "PUBLISHED"
+              ? [{ key: "offline", label: "下架小卡" }]
+              : []),
+            ...(editable(c.status)
+              ? [
+                  { key: "submit", label: "提交审核" },
+                  ...(canPublish
+                    ? [
+                        { key: "archive", label: "归档" },
+                        ...(c.status === "DRAFT" || c.status === "OFFLINE"
+                          ? [
+                              {
+                                key: "delete",
+                                label: "删除",
+                                danger: true,
+                              },
+                            ]
+                          : []),
+                      ]
+                    : []),
+                ]
+              : []),
+            ...(c.status === "ARCHIVED"
+              ? [
+                  { key: "restore", label: "恢复为草稿" },
+                  ...(canPublish
+                    ? [{ key: "delete", label: "删除", danger: true }]
+                    : []),
+                ]
+              : []),
+            { key: "history", label: "查看图片来源" },
+          ]
+        : [
+            { key: "preview", label: "预览 App" },
+            { key: "history", label: "查看图片来源" },
+          ]
+      ).map((item) => ({
+        ...item,
+        onClick: () => {
+          const key = item.key;
+          return key === "preview"
+            ? setPreview(c)
+            : key === "history"
+              ? navigate(`/catalog/cards/${c.id}?tab=history`)
+              : ["publish", "offline", "archive", "delete"].includes(key)
+                ? key === "delete"
+                  ? void confirmCatalogDeletion(
+                      "cards",
+                      c.id,
+                      c.title,
+                      modal,
+                      message,
+                      reload,
+                    )
+                  : confirm(key, c)
+                : act(key, c);
+        },
+      }))}
+    />
   );
   const columns: ColumnsType<Card> = [
     {
@@ -271,11 +291,12 @@ export default function Cards() {
           <div>
             <button
               className="table-title"
+              title={c.title}
               onClick={() => navigate(`/catalog/cards/${c.id}`)}
             >
               {c.title}
             </button>
-            <span className="record-id">{c.card_number || c.id}</span>
+            <RecordId value={c.card_number || c.id} />
             <span className="tag-subtle">
               {c.card_type} <i /> {c.version || "未设置版本"}
             </span>
@@ -326,7 +347,7 @@ export default function Cards() {
     {
       title: "操作",
       key: "action",
-      width: 160,
+      width: 192,
       fixed: "right",
       render: (_, c) => rowActions(c),
     },
@@ -355,87 +376,21 @@ export default function Cards() {
   }));
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <div className="eyebrow">CONTENT LIBRARY</div>
-          <h1>
-            小卡管理{" "}
-            <span className="heading-count">
-              {catalog.cards.filter((c) => c.status !== "ARCHIVED").length}
-            </span>
-          </h1>
-          <p>让每一张小卡都有完整的故事与来源。</p>
-        </div>
-        <span className="page-context">
-          <span className="live-dot" /> 图鉴内容实时同步
-        </span>
-      </div>
-      <div className="catalog-tabs">
-        <button onClick={() => navigate("/catalog/groups")}>组合管理</button>
-        <button onClick={() => navigate("/catalog/idols")}>艺人管理</button>
-        <button onClick={() => navigate("/catalog/albums")}>专辑与来源</button>
-        <button className="active">小卡管理</button>
-        <button onClick={() => navigate("/catalog/import")}>批量导入</button>
-      </div>
-      <section className="panel filters">
-        <div className="filter-row">
-          <Input
-            allowClear
-            prefix={<SearchOutlined aria-hidden="true" />}
-            placeholder="搜索小卡名称、ID、艺人…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            style={{ width: 280 }}
-          />
-          <Select
-            allowClear
-            placeholder="全部组合"
-            value={group}
-            onChange={(v) => {
-              setGroup(v);
-              setIdol(undefined);
-            }}
-            options={catalog.groups.map((g) => ({
-              value: g.id,
-              label: g.name,
-            }))}
-          />
-          <Select
-            allowClear
-            placeholder="全部艺人"
-            value={idol}
-            onChange={setIdol}
-            options={catalog.idols
-              .filter(
-                (i) =>
-                  !group ||
-                  i.group_id === group ||
-                  catalog.cards.some(
-                    (c) => c.group_id === group && c.idol_id === i.id,
-                  ),
-              )
-              .map((i) => ({ value: i.id, label: i.name }))}
-          />
-          <Select
-            allowClear
-            placeholder="全部卡片类型"
-            value={type}
-            onChange={setType}
-            options={[...new Set(catalog.cards.map((c) => c.card_type))].map(
-              (v) => ({ value: v, label: v }),
-            )}
-          />
-          <Button
-            type="text"
-            icon={<FilterOutlined aria-hidden="true" />}
-            onClick={() => setAdvanced(!advanced)}
-          >
-            高级筛选{" "}
-            <DownOutlined aria-hidden="true" rotate={advanced ? 180 : 0} />
-          </Button>
-        </div>
-        {advanced && (
-          <div className="advanced-filters">
+      <PageHeader title={<>小卡管理</>} />
+      <FilterBar
+        onReset={resetFilters}
+        advanced={
+          <>
+            {" "}
+            <Select
+              allowClear
+              placeholder="全部卡片类型"
+              value={type}
+              onChange={setType}
+              options={[...new Set(catalog.cards.map((c) => c.card_type))].map(
+                (v) => ({ value: v, label: v }),
+              )}
+            />{" "}
             <Select
               allowClear
               placeholder="发行来源"
@@ -489,26 +444,119 @@ export default function Cards() {
             >
               仅显示缺少正面图片的小卡
             </Checkbox>
-            <Button
-              type="link"
-              onClick={() => {
-                setQ("");
-                setGroup(undefined);
-                setIdol(undefined);
-                setType(undefined);
-                setMissing(false);
-                setSource(undefined);
-                setVersion(undefined);
-                setYear(undefined);
-              }}
-            >
-              清空筛选
-            </Button>
-          </div>
-        )}
-      </section>
+          </>
+        }
+      >
+        <Input
+          allowClear
+          prefix={<SearchOutlined aria-hidden="true" />}
+          placeholder="搜索小卡名称、ID、艺人…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{ width: 280 }}
+        />
+        <Select
+          allowClear
+          placeholder="全部组合"
+          value={group}
+          onChange={(v) => {
+            setGroup(v);
+            setIdol(undefined);
+          }}
+          options={catalog.groups.map((g) => ({
+            value: g.id,
+            label: g.name,
+          }))}
+        />
+        <Select
+          allowClear
+          placeholder="全部艺人"
+          value={idol}
+          onChange={setIdol}
+          options={catalog.idols
+            .filter(
+              (i) =>
+                !group ||
+                i.group_id === group ||
+                catalog.cards.some(
+                  (c) => c.group_id === group && c.idol_id === i.id,
+                ),
+            )
+            .map((i) => ({ value: i.id, label: i.name }))}
+        />
+      </FilterBar>
       <section className="panel table-panel">
-        <div className="table-toolbar">
+        <TableToolbar
+          actions={
+            <>
+              {" "}
+              <Space size={8}>
+                <div className="view-switch">
+                  <button
+                    aria-label="列表视图"
+                    className={view === "table" ? "active" : ""}
+                    onClick={() => setView("table")}
+                  >
+                    <BarsOutlined aria-hidden="true" />
+                  </button>
+                  <button
+                    aria-label="网格视图"
+                    className={view === "grid" ? "active" : ""}
+                    onClick={() => setView("grid")}
+                  >
+                    <AppstoreOutlined aria-hidden="true" />
+                  </button>
+                </div>
+                <Tooltip title="刷新数据">
+                  <Button
+                    aria-label="刷新数据"
+                    icon={<ReloadOutlined aria-hidden="true" />}
+                    onClick={() => reload()}
+                    loading={loading}
+                  />
+                </Tooltip>
+                <Dropdown
+                  menu={{
+                    items: [
+                      {
+                        key: "export",
+                        label: "导出当前筛选",
+                        icon: <ExportOutlined aria-hidden="true" />,
+                      },
+                      ...(canEdit
+                        ? [
+                            {
+                              key: "import",
+                              label: "批量导入",
+                              icon: <ImportOutlined aria-hidden="true" />,
+                            },
+                          ]
+                        : []),
+                    ],
+                    onClick: ({ key }) =>
+                      key === "export"
+                        ? exportCsv()
+                        : navigate("/catalog/import"),
+                  }}
+                >
+                  <Button>
+                    更多 <DownOutlined aria-hidden="true" />
+                  </Button>
+                </Dropdown>
+                {canEdit && <CardRecognition />}
+                {canEdit && (
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined aria-hidden="true" />}
+                    onClick={() => navigate("/catalog/cards/new")}
+                  >
+                    新增小卡
+                  </Button>
+                )}
+              </Space>{" "}
+            </>
+          }
+        >
           <Tabs
             activeKey={status}
             items={statusTabs}
@@ -518,132 +566,93 @@ export default function Cards() {
               setSelected([]);
             }}
           />
-          <Space size={8}>
-            <Tooltip title="刷新数据">
-              <Button
-                aria-label="刷新数据"
-                icon={<ReloadOutlined aria-hidden="true" />}
-                onClick={() => reload()}
-                loading={loading}
-              />
-            </Tooltip>
-            <Dropdown
-              menu={{
-                items: [
-                  {
-                    key: "export",
-                    label: "导出当前筛选",
-                    icon: <ExportOutlined aria-hidden="true" />,
-                  },
-                  ...(canEdit
-                    ? [
-                        {
-                          key: "import",
-                          label: "批量导入",
-                          icon: <ImportOutlined aria-hidden="true" />,
-                        },
-                      ]
-                    : []),
-                ],
-                onClick: ({ key }) =>
-                  key === "export" ? exportCsv() : navigate("/catalog/import"),
-              }}
-            >
-              <Button>
-                更多 <DownOutlined aria-hidden="true" />
-              </Button>
-            </Dropdown>
-            {canEdit && <CardRecognition />}
-            {canEdit && (
-              <Button
-                type="primary"
-                icon={<PlusOutlined aria-hidden="true" />}
-                onClick={() => navigate("/catalog/cards/new")}
-              >
-                新建小卡
-              </Button>
-            )}
-          </Space>
-        </div>
-        <div className="table-meta">
-          <span>
-            {selected.length
-              ? `已选择 ${selected.length} 张小卡`
-              : `共 ${filtered.length} 张小卡`}
-            {selected.length > 0 && (
-              <Space className="batch-actions">
-                <Button
-                  size="small"
-                  onClick={() => act("submit")}
-                  loading={busy}
-                >
-                  提交审核
-                </Button>
-                {canPublish && (
-                  <Button size="small" onClick={() => confirm("publish")}>
-                    批量发布
-                  </Button>
-                )}
-                {canPublish && (
-                  <>
-                    <Button size="small" onClick={() => confirm("offline")}>
-                      批量下架
-                    </Button>
-                    <Button size="small" onClick={() => confirm("archive")}>
-                      批量归档
-                    </Button>
-                  </>
-                )}
-                {canPublish && (
+        </TableToolbar>
+        {selected.length > 0 && (
+          <div className="table-meta">
+            <span>
+              {selected.length
+                ? `已选 ${selected.length} 项`
+                : `共 ${filtered.length} 张小卡`}
+              {selected.length > 0 && (
+                <Space className="batch-actions">
                   <Button
-                    danger
                     size="small"
-                    disabled={
-                      !selected.length ||
-                      selected.some(
-                        (id) =>
-                          !filtered.some(
-                            (c) =>
-                              c.id === id &&
-                              ["DRAFT", "OFFLINE", "ARCHIVED"].includes(
-                                c.status,
-                              ),
-                          ),
-                      )
-                    }
-                    onClick={() => confirm("delete")}
+                    onClick={() => act("submit")}
+                    loading={busy}
                   >
-                    批量永久删除
+                    提交审核
                   </Button>
-                )}
-                <button className="text-button" onClick={() => setSelected([])}>
-                  取消选择
-                </button>
-              </Space>
-            )}
-          </span>
-          <div className="view-switch">
-            <button
-              aria-label="列表视图"
-              className={view === "table" ? "active" : ""}
-              onClick={() => setView("table")}
-            >
-              <BarsOutlined aria-hidden="true" />
-            </button>
-            <button
-              aria-label="网格视图"
-              className={view === "grid" ? "active" : ""}
-              onClick={() => setView("grid")}
-            >
-              <AppstoreOutlined aria-hidden="true" />
-            </button>
+                  {canPublish && (
+                    <Button size="small" onClick={() => confirm("publish")}>
+                      批量发布
+                    </Button>
+                  )}
+                  {canPublish && (
+                    <>
+                      <Button size="small" onClick={() => confirm("offline")}>
+                        批量下架
+                      </Button>
+                      <Button size="small" onClick={() => confirm("archive")}>
+                        批量归档
+                      </Button>
+                    </>
+                  )}
+                  {canPublish && (
+                    <Button
+                      danger
+                      size="small"
+                      disabled={
+                        !selected.length ||
+                        selected.some(
+                          (id) =>
+                            !filtered.some(
+                              (c) =>
+                                c.id === id &&
+                                ["DRAFT", "OFFLINE", "ARCHIVED"].includes(
+                                  c.status,
+                                ),
+                            ),
+                        )
+                      }
+                      onClick={() => confirm("delete")}
+                    >
+                      批量永久删除
+                    </Button>
+                  )}
+                  <button
+                    className="text-button"
+                    onClick={() => setSelected([])}
+                  >
+                    取消选择
+                  </button>
+                </Space>
+              )}
+            </span>
           </div>
-        </div>
+        )}
         {view === "table" ? (
           <Table
             rowKey="id"
             columns={columns}
             dataSource={filtered}
+            filtered={
+              !!(
+                q ||
+                group ||
+                idol ||
+                type ||
+                missing ||
+                source ||
+                version ||
+                year ||
+                status !== "ALL"
+              )
+            }
+            onReset={resetFilters}
+            onCreate={
+              canEdit ? () => navigate("/catalog/cards/new") : undefined
+            }
+            createLabel="新增小卡"
             loading={loading}
             rowSelection={
               canEdit
@@ -661,7 +670,30 @@ export default function Cards() {
               pageSizeOptions: [10, 20, 50],
               showTotal: (t) => `共 ${t} 条记录`,
             }}
-            locale={{ emptyText: <EmptyState /> }}
+            locale={{
+              emptyText: (
+                <EmptyState
+                  filtered={
+                    !!(
+                      q ||
+                      group ||
+                      idol ||
+                      type ||
+                      missing ||
+                      source ||
+                      version ||
+                      year ||
+                      status !== "ALL"
+                    )
+                  }
+                  onReset={resetFilters}
+                  onCreate={
+                    canEdit ? () => navigate("/catalog/cards/new") : undefined
+                  }
+                  createLabel="新增小卡"
+                />
+              ),
+            }}
           />
         ) : (
           <div className="card-grid">
@@ -682,16 +714,30 @@ export default function Cards() {
                 </article>
               ))
             ) : (
-              <EmptyState />
+              <EmptyState
+                filtered={
+                  !!(
+                    q ||
+                    group ||
+                    idol ||
+                    type ||
+                    missing ||
+                    source ||
+                    version ||
+                    year ||
+                    status !== "ALL"
+                  )
+                }
+                onReset={resetFilters}
+                onCreate={
+                  canEdit ? () => navigate("/catalog/cards/new") : undefined
+                }
+                createLabel="新增小卡"
+              />
             )}
           </div>
         )}
       </section>
-      <div className="page-footnote">
-        <CheckOutlined aria-hidden="true" />{" "}
-        所有发布、下架与来源变更均保留操作记录
-        <span>FAN OS ADMIN · PHASE 1</span>
-      </div>
       {preview && (
         <AppPreview card={preview} onClose={() => setPreview(undefined)} />
       )}

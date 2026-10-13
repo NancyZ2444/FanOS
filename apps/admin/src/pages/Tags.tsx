@@ -1,17 +1,11 @@
+import { useSingleSubmit } from "../components/admin";
+import { displayValue } from "../design/format";
+import { FilterBar, TableToolbar, RowActions } from "../components/admin";
+import { PageHeader } from "../components/admin";
+import { Drawer, Form, Modal, Table } from "../components/admin";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  App,
-  Button,
-  Drawer,
-  Form,
-  Input,
-  Modal,
-  Select,
-  Space,
-  Table,
-  Tag,
-} from "antd";
+import { App, Button, Input, Select, Tag } from "antd";
 import { consoleApi, send } from "../api/client";
 import { useConsole } from "../state";
 import type { CatalogTag, TagType } from "../components/TagSelect";
@@ -19,7 +13,7 @@ import { StatusTag } from "../components/shared";
 const types: TagType[] = ["ALBUM", "EVENT", "OTHER", "CARD"];
 export default function Tags() {
   const { actor, reload } = useConsole();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const navigate = useNavigate();
   const [items, setItems] = useState<CatalogTag[]>([]);
   const [scope, setScope] = useState<string>();
@@ -44,7 +38,7 @@ export default function Tags() {
     );
     setEditing(tag);
   };
-  const save = async () => {
+  const save = useSingleSubmit(async () => {
     try {
       const data = await form.validateFields();
       setBusy(true);
@@ -60,7 +54,7 @@ export default function Tags() {
     } finally {
       setBusy(false);
     }
-  };
+  });
   const toggle = async (tag: CatalogTag) => {
     try {
       await consoleApi(
@@ -83,52 +77,70 @@ export default function Tags() {
   };
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <h1>Tag 管理</h1>
-          <p>
-            按实体类型管理平级标签。同名标签可分别存在于 Album、Event、Other 和
-            Card。
-          </p>
-        </div>
-        {canEdit && (
-          <Button type="primary" onClick={() => edit(null)}>
-            创建 Tag
-          </Button>
-        )}
-      </div>
-      <section className="panel">
-        <Space wrap style={{ marginBottom: 20 }}>
-          <Input
-            aria-label="搜索 Tag"
-            placeholder="搜索 Tag Name"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            allowClear
-          />
-          <Select
-            aria-label="Tag Entity Type"
-            placeholder="全部 Entity Type"
-            allowClear
-            value={scope}
-            onChange={setScope}
-            options={types.map((value) => ({ value, label: value }))}
-            style={{ width: 190 }}
-          />
-          <Select
-            placeholder="全部状态"
-            allowClear
-            value={status}
-            onChange={setStatus}
-            options={[
-              { value: "ACTIVE", label: "启用" },
-              { value: "DISABLED", label: "停用" },
-            ]}
-            style={{ width: 140 }}
-          />
-        </Space>
+      <PageHeader
+        title="标签管理"
+        description="标签按专辑、活动、其他来源、小卡分别管理；停用后保留历史关联。"
+      />
+      <FilterBar
+        onReset={() => {
+          setQ("");
+          setScope(undefined);
+          setStatus(undefined);
+        }}
+      >
+        <Input
+          aria-label="搜索标签"
+          placeholder="搜索 标签名称"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          allowClear
+        />
+        <Select
+          aria-label="Tag Entity Type"
+          placeholder="全部对象类型"
+          allowClear
+          value={scope}
+          onChange={setScope}
+          options={types.map((value) => ({
+            value,
+            label: displayValue(value),
+          }))}
+          style={{ width: 190 }}
+        />
+        <Select
+          placeholder="全部状态"
+          allowClear
+          value={status}
+          onChange={setStatus}
+          options={[
+            { value: "ACTIVE", label: "启用" },
+            { value: "DISABLED", label: "停用" },
+          ]}
+          style={{ width: 140 }}
+        />
+      </FilterBar>
+      <section className="panel table-panel">
+        <TableToolbar
+          actions={
+            canEdit ? (
+              <Button type="primary" onClick={() => edit(null)}>
+                新增标签
+              </Button>
+            ) : undefined
+          }
+        >
+          标签库
+        </TableToolbar>
         <Table
           rowKey="id"
+          filtered={!!(q || scope || status)}
+          onReset={() => {
+            setQ("");
+            setScope(undefined);
+            setStatus(undefined);
+          }}
+          onCreate={canEdit ? () => edit(null) : undefined}
+          createLabel="新增标签"
           dataSource={items.filter(
             (t) =>
               (!scope || t.entity_type === scope) &&
@@ -136,17 +148,15 @@ export default function Tags() {
               t.name.toLocaleLowerCase().includes(q.toLocaleLowerCase()),
           )}
           columns={[
-            { title: "Tag Name", dataIndex: "name" },
-            { title: "Entity Type", dataIndex: "entity_type" },
+            { title: "标签名称", dataIndex: "name" },
+            { title: "对象类型", dataIndex: "entity_type" },
             {
-              title: "Source",
+              title: "来源",
               render: (_, t) =>
-                t.source === "INTERNAL"
-                  ? "后台创建 INTERNAL"
-                  : "用户提交 USER_SUBMITTED",
+                t.source === "INTERNAL" ? "后台创建" : "用户提交",
             },
             {
-              title: "Status",
+              title: "状态",
               render: (_, t) => (
                 <Tag color={t.status === "ACTIVE" ? "green" : "default"}>
                   {t.status === "ACTIVE" ? "启用" : "停用"}
@@ -154,7 +164,7 @@ export default function Tags() {
               ),
             },
             {
-              title: "Usage Count",
+              title: "关联内容数",
               render: (_, t) => (
                 <Button
                   type="link"
@@ -171,21 +181,40 @@ export default function Tags() {
             {
               title: "操作",
               render: (_, t) => (
-                <Space>
-                  {canEdit && <Button onClick={() => edit(t)}>编辑</Button>}
-                  {actor.role === "admin" && (
-                    <Button onClick={() => toggle(t)}>
-                      {t.status === "ACTIVE" ? "停用" : "启用"}
-                    </Button>
-                  )}
-                </Space>
+                <RowActions
+                  onView={() =>
+                    consoleApi(`/tags/${t.id}/contents`)
+                      .then(setContents)
+                      .catch((e) => message.error(e.message))
+                  }
+                  onEdit={canEdit ? () => edit(t) : undefined}
+                  items={
+                    actor.role === "admin"
+                      ? [
+                          {
+                            key: "toggle",
+                            label: t.status === "ACTIVE" ? "停用" : "启用",
+                            onClick: () =>
+                              modal.confirm({
+                                title: `${t.status === "ACTIVE" ? "停用" : "启用"}标签「${t.name}」？`,
+                                content:
+                                  "历史关联保留；停用后不再出现在新增内容的可选标签中。",
+                                okText: t.status === "ACTIVE" ? "停用" : "启用",
+                                cancelText: "取消",
+                                onOk: () => toggle(t),
+                              }),
+                          },
+                        ]
+                      : []
+                  }
+                />
               ),
             },
           ]}
         />
       </section>
       <Modal
-        title={editing ? "编辑 Tag" : "创建 Tag"}
+        title={editing ? "编辑标签" : "新增标签"}
         open={editing !== undefined}
         onCancel={() => setEditing(undefined)}
         onOk={save}
@@ -195,19 +224,22 @@ export default function Tags() {
         <Form form={form} layout="vertical">
           <Form.Item
             name="entity_type"
-            label="Entity Type"
+            label="对象类型"
             rules={[{ required: true }]}
           >
             <Select
               disabled={!!editing}
-              options={types.map((value) => ({ value, label: value }))}
+              options={types.map((value) => ({
+                value,
+                label: displayValue(value),
+              }))}
             />
           </Form.Item>
-          <Form.Item name="name" label="Tag Name" rules={[{ required: true }]}>
+          <Form.Item name="name" label="标签名称" rules={[{ required: true }]}>
             <Input maxLength={80} />
           </Form.Item>
           {editing && (
-            <Form.Item name="status" label="Status">
+            <Form.Item name="status" label="状态">
               <Select
                 disabled={actor.role !== "admin"}
                 options={[

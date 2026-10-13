@@ -1,12 +1,16 @@
+import { TableToolbar, RowActions } from "../components/admin";
+import { FilterBar } from "../components/admin";
+import { PageHeader } from "../components/admin";
+import { Table } from "../components/admin";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Input, Table, Tabs, Tag } from "antd";
+import { Input, Tabs, Tag } from "antd";
 import { SearchOutlined } from "@ant-design/icons";
 import { useConsole } from "../state";
-import { CardArt, StatusTag } from "../components/shared";
+import { CardArt, StatusTag, editable } from "../components/shared";
 
 export default function Sources() {
-  const { catalog } = useConsole();
+  const { catalog, actor } = useConsole();
   const navigate = useNavigate();
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("issues");
@@ -42,15 +46,15 @@ export default function Sources() {
     );
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <div className="eyebrow">SOURCE REVIEW</div>
-          <h1>来源与版权审核</h1>
-          <p>追踪每张图片的来源，保留每一次变更的依据。</p>
-        </div>
-        <Tag color="purple">正反面独立管理</Tag>
-      </div>
-      <section className="panel filters">
+      <PageHeader
+        title={<>来源与版权审核</>}
+        actions={
+          <>
+            <Tag color="purple">正反面独立管理</Tag>
+          </>
+        }
+      />
+      <FilterBar onReset={() => setQ("")}>
         <Input
           prefix={<SearchOutlined aria-hidden="true" />}
           allowClear
@@ -59,9 +63,9 @@ export default function Sources() {
           placeholder="搜索小卡、组合、来源链接"
           style={{ width: 360 }}
         />
-      </section>
+      </FilterBar>
       <section className="panel table-panel">
-        <div className="table-toolbar">
+        <TableToolbar>
           <Tabs
             activeKey={filter}
             onChange={setFilter}
@@ -70,13 +74,14 @@ export default function Sources() {
               { key: "all", label: "全部图片来源" },
             ]}
           />
-          <span className="subtle-note">共 {rows.length} 条记录</span>
-        </div>
+        </TableToolbar>
         <Table
           rowKey="id"
+          filtered={!!q}
+          onReset={() => setQ("")}
           dataSource={rows}
           scroll={{ x: 1000 }}
-          pagination={{ pageSize: 10 }}
+          pagination={{ defaultPageSize: 10 }}
           columns={[
             {
               title: "小卡 / 图片",
@@ -135,24 +140,30 @@ export default function Sources() {
             {
               title: "操作",
               key: "action",
-              width: 170,
+              width: 192,
               render: (_, r) => (
-                <div className="row-links">
-                  <button
-                    className="text-button"
-                    onClick={() => navigate(`/catalog/cards/${r.card.id}`)}
-                  >
-                    查看 / 完善
-                  </button>
-                  <button
-                    className="text-button"
-                    onClick={() =>
-                      navigate(`/catalog/cards/${r.card.id}?tab=history`)
-                    }
-                  >
-                    来源历史
-                  </button>
-                </div>
+                <RowActions
+                  onView={() => navigate(`/catalog/cards/${r.card.id}/detail`)}
+                  onEdit={
+                    actor.role !== "operation_admin"
+                      ? () => navigate(`/catalog/cards/${r.card.id}`)
+                      : undefined
+                  }
+                  editDisabled={!editable(r.card.status)}
+                  editHint={
+                    !editable(r.card.status)
+                      ? "已发布内容需先下架，待审核内容需先驳回"
+                      : undefined
+                  }
+                  items={[
+                    {
+                      key: "history",
+                      label: "来源历史",
+                      onClick: () =>
+                        navigate(`/catalog/cards/${r.card.id}?tab=history`),
+                    },
+                  ]}
+                />
               ),
             },
           ]}

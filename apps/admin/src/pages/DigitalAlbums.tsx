@@ -1,18 +1,27 @@
-import { useEffect, useState } from "react";
+import dayjs from "dayjs";
+import { displayValue } from "../design/format";
+import {
+  PageHeader,
+  useFormGuard,
+  useSingleSubmit,
+  FilterBar,
+  TableToolbar,
+  RowActions,
+  BusinessData,
+  DetailFields,
+  RecordId,
+} from "../components/admin";
+import { Drawer, Form, Modal, Table } from "../components/admin";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   App,
   Button,
   DatePicker,
-  Descriptions,
-  Drawer,
-  Form,
   Input,
   InputNumber,
-  Modal,
   Select,
   Space,
-  Table,
   Tabs,
   Tag,
 } from "antd";
@@ -64,6 +73,8 @@ export default function DigitalAlbums() {
   const [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  const guard = useFormGuard(true, busy);
+  const [activeTab, setActiveTab] = useState("works");
   const [q, setQ] = useState(""),
     [user, setUser] = useState(""),
     [status, setStatus] = useState("");
@@ -78,16 +89,19 @@ export default function DigitalAlbums() {
     [entitlementForm] = Form.useForm();
   const isAdmin = actor.role === "admin";
   const canModerate = isAdmin || actor.role === "operation_admin";
-  const load = async () => {
+  const requestVersion = useRef(0);
+  const filterMounted = useRef(false);
+  const load = async (reset = false) => {
+    const version = ++requestVersion.current;
     setLoading(true);
     setError("");
     try {
       const params = new URLSearchParams({
-        q,
-        user_id: user,
-        status,
-        created_from: dates[0],
-        created_to: dates[1],
+        q: reset ? "" : q,
+        user_id: reset ? "" : user,
+        status: reset ? "" : status,
+        created_from: reset ? "" : dates[0],
+        created_to: reset ? "" : dates[1],
       });
       const [albums, settings] = await Promise.all([
         consoleApi<{ items: Album[] }>(`/digital-albums?${params}`),
@@ -95,7 +109,7 @@ export default function DigitalAlbums() {
           "/album-settings",
         ),
       ]);
-      setRows(albums.items);
+      if (version === requestVersion.current) setRows(albums.items);
       setResources(settings.resources);
       limitsForm.setFieldsValue({
         ...settings.limits,
@@ -104,24 +118,69 @@ export default function DigitalAlbums() {
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (version === requestVersion.current) setLoading(false);
     }
   };
   useEffect(() => {
     void load();
   }, []);
-  const run = async (operation: () => Promise<unknown>, success: string) => {
-    setBusy(true);
-    try {
-      await operation();
-      message.success(success);
-      await load();
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setBusy(false);
+  useEffect(() => {
+    if (!filterMounted.current) {
+      filterMounted.current = true;
+      return;
     }
+    const version = ++requestVersion.current;
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams({
+        q,
+        user_id: user,
+        status,
+        created_from: dates[0],
+        created_to: dates[1],
+      });
+      consoleApi<{ items: Album[] }>(`/digital-albums?${params}`, {
+        signal: controller.signal,
+      })
+        .then((result) => {
+          if (version === requestVersion.current) setRows(result.items);
+        })
+        .catch((e) => {
+          if (!controller.signal.aborted && version === requestVersion.current)
+            setError(e.message);
+        })
+        .finally(() => {
+          if (version === requestVersion.current) setLoading(false);
+        });
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [q, user, status, dates]);
+  const resetFilters = () => {
+    setQ("");
+    setUser("");
+    setStatus("");
+    setDates(["", ""]);
   };
+  const run = useSingleSubmit(
+    async (operation: () => Promise<unknown>, success: string) => {
+      setBusy(true);
+      try {
+        await operation();
+        message.success(success);
+        guard.reset();
+        await load();
+      } catch (e) {
+        message.error((e as Error).message);
+      } finally {
+        setBusy(false);
+      }
+    },
+  );
   const editResource = (row?: Resource) => {
     setResource(row);
     resourceForm.resetFields();
@@ -139,15 +198,19 @@ export default function DigitalAlbums() {
   };
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <h1>数字相册</h1>
-          <p>官方小卡引用作品；相册不会改变用户 Owned / Wishlist。</p>
-        </div>
-        <Button onClick={() => void load()} loading={loading}>
-          刷新
-        </Button>
-      </div>
+      <PageHeader
+        title={<>数字相册</>}
+        actions={
+          <>
+            <Button
+              onClick={() => guard.close(() => void load())}
+              loading={loading}
+            >
+              刷新
+            </Button>
+          </>
+        }
+      />
       {error && (
         <Alert
           type="error"
@@ -157,23 +220,44 @@ export default function DigitalAlbums() {
         />
       )}
       <Tabs
+        activeKey={activeTab}
+        onChange={(tab) => guard.close(() => setActiveTab(tab))}
         items={[
           {
             key: "works",
             label: "作品管理",
             children: (
               <>
-                <Space wrap style={{ marginBottom: 16 }}>
+                <FilterBar
+                  onReset={resetFilters}
+                  advanced={
+                    <>
+                      {" "}
+                      <Input
+                        value={user}
+                        placeholder="用户 ID"
+                        onChange={(e) => setUser(e.target.value)}
+                      />
+                      <DatePicker.RangePicker
+                        value={
+                          dates[0] && dates[1]
+                            ? [dayjs(dates[0]), dayjs(dates[1])]
+                            : null
+                        }
+                        onChange={(_, values) =>
+                          setDates([
+                            values[0] ? `${values[0]}T00:00:00` : "",
+                            values[1] ? `${values[1]}T23:59:59` : "",
+                          ])
+                        }
+                      />
+                    </>
+                  }
+                >
                   <Input
                     value={q}
                     placeholder="相册名称"
                     onChange={(e) => setQ(e.target.value)}
-                    onPressEnter={() => void load()}
-                  />
-                  <Input
-                    value={user}
-                    placeholder="用户 ID"
-                    onChange={(e) => setUser(e.target.value)}
                   />
                   <Select
                     value={status}
@@ -186,23 +270,14 @@ export default function DigitalAlbums() {
                       { value: "DELETED", label: "已删除" },
                     ]}
                   />
-                  <DatePicker.RangePicker
-                    onChange={(_, values) =>
-                      setDates([
-                        values[0] ? `${values[0]}T00:00:00` : "",
-                        values[1] ? `${values[1]}T23:59:59` : "",
-                      ])
-                    }
-                  />
-                  <Button type="primary" onClick={() => void load()}>
-                    查询
-                  </Button>
-                </Space>
+                </FilterBar>
                 <Table
                   rowKey="id"
                   dataSource={rows}
+                  filtered={!!(q || user || status || dates[0])}
+                  onReset={resetFilters}
                   loading={loading}
-                  pagination={{ pageSize: 20, showSizeChanger: true }}
+                  pagination={{ defaultPageSize: 20, showSizeChanger: true }}
                   scroll={{ x: 1000 }}
                   columns={[
                     {
@@ -210,11 +285,15 @@ export default function DigitalAlbums() {
                       dataIndex: "name",
                       render: (_, row) => (
                         <>
-                          <Button type="link" onClick={() => setDetail(row)}>
+                          <button
+                            className="table-title"
+                            title={row.name}
+                            onClick={() => setDetail(row)}
+                          >
                             {row.name}
-                          </Button>
+                          </button>
                           <div>
-                            {row.author_name} · {row.user_id}
+                            {row.author_name} <RecordId value={row.user_id} />
                           </div>
                         </>
                       ),
@@ -235,7 +314,7 @@ export default function DigitalAlbums() {
                       title: "状态",
                       render: (_, row) => (
                         <>
-                          {row.status}
+                          {displayValue(row.status)}
                           <br />
                           {row.is_moderated && <Tag color="red">限制公开</Tag>}
                         </>
@@ -250,19 +329,21 @@ export default function DigitalAlbums() {
                     {
                       title: "操作",
                       render: (_, row) => (
-                        <Space>
-                          <Button onClick={() => setDetail(row)}>查看</Button>
-                          <Button
-                            danger={!row.is_moderated}
-                            disabled={!canModerate || row.status === "DELETED"}
-                            onClick={() => {
-                              setAction(row);
-                              setReason("");
-                            }}
-                          >
-                            {row.is_moderated ? "解除限制" : "限制公开"}
-                          </Button>
-                        </Space>
+                        <RowActions
+                          onView={() => setDetail(row)}
+                          items={[
+                            {
+                              key: "moderate",
+                              label: row.is_moderated ? "解除限制" : "限制公开",
+                              disabled:
+                                !canModerate || row.status === "DELETED",
+                              onClick: () => {
+                                setAction(row);
+                                setReason("");
+                              },
+                            },
+                          ]}
+                        />
                       ),
                     },
                   ]}
@@ -282,6 +363,7 @@ export default function DigitalAlbums() {
               <Space direction="vertical" style={{ width: "100%" }}>
                 <Form
                   form={limitsForm}
+                  onValuesChange={guard.mark}
                   layout="vertical"
                   disabled={!isAdmin || busy}
                   onFinish={(values) =>
@@ -329,9 +411,22 @@ export default function DigitalAlbums() {
                   >
                     <Input.TextArea rows={4} maxLength={4000} />
                   </Form.Item>
-                  <Button type="primary" htmlType="submit" loading={busy}>
-                    保存配置
-                  </Button>
+                  <div className="form-actions">
+                    <Button
+                      disabled={busy}
+                      onClick={() =>
+                        guard.close(() => {
+                          guard.reset();
+                          void load();
+                        })
+                      }
+                    >
+                      取消
+                    </Button>
+                    <Button type="primary" htmlType="submit" loading={busy}>
+                      保存
+                    </Button>
+                  </div>
                 </Form>
                 <Alert
                   type="info"
@@ -340,10 +435,12 @@ export default function DigitalAlbums() {
                 />
                 <Form
                   form={entitlementForm}
-                  layout="inline"
+                  onValuesChange={guard.mark}
+                  layout="vertical"
+                  className="form-grid"
                   disabled={!isAdmin || busy}
                   onFinish={(values) =>
-                    void run(async () => {
+                    run(async () => {
                       await consoleApi(
                         `/album-entitlements/${encodeURIComponent(values.user_id)}`,
                         send(
@@ -359,10 +456,14 @@ export default function DigitalAlbums() {
                     }, "会员权益已更新")
                   }
                 >
-                  <Form.Item name="user_id" rules={[{ required: true }]}>
+                  <Form.Item
+                    name="user_id"
+                    label="用户编号"
+                    rules={[{ required: true }]}
+                  >
                     <Input placeholder="用户 ID" />
                   </Form.Item>
-                  <Form.Item name="plan" initialValue="NORMAL">
+                  <Form.Item name="plan" label="会员类型" initialValue="NORMAL">
                     <Select
                       style={{ width: 130 }}
                       options={[
@@ -371,7 +472,7 @@ export default function DigitalAlbums() {
                       ]}
                     />
                   </Form.Item>
-                  <Form.Item name="expires_at">
+                  <Form.Item name="expires_at" label="到期时间">
                     <DatePicker showTime placeholder="到期时间（可空）" />
                   </Form.Item>
                   <Button htmlType="submit" loading={busy}>
@@ -386,14 +487,19 @@ export default function DigitalAlbums() {
             label: "主题与系统素材",
             children: (
               <>
-                <Button
-                  type="primary"
-                  disabled={!isAdmin}
-                  onClick={() => editResource()}
-                  style={{ marginBottom: 16 }}
+                <TableToolbar
+                  actions={
+                    <Button
+                      type="primary"
+                      disabled={!isAdmin}
+                      onClick={() => editResource()}
+                    >
+                      新增系统素材
+                    </Button>
+                  }
                 >
-                  新增系统素材
-                </Button>
+                  系统素材
+                </TableToolbar>
                 <Table
                   rowKey="id"
                   dataSource={resources}
@@ -407,7 +513,7 @@ export default function DigitalAlbums() {
                     {
                       title: "配置",
                       dataIndex: "config",
-                      render: (value) => <code>{JSON.stringify(value)}</code>,
+                      render: (value) => <BusinessData data={value} />,
                     },
                     {
                       title: "操作",
@@ -416,7 +522,7 @@ export default function DigitalAlbums() {
                           disabled={!isAdmin}
                           onClick={() => editResource(row)}
                         >
-                          编辑 / 上下架
+                          编辑
                         </Button>
                       ),
                     },
@@ -439,24 +545,22 @@ export default function DigitalAlbums() {
       >
         {detail && (
           <>
-            <Descriptions
-              column={2}
-              items={[
-                { key: "id", label: "ID", children: detail.id },
-                { key: "author", label: "作者", children: detail.author_name },
-                {
-                  key: "visibility",
-                  label: "权限",
-                  children: detail.visibility,
-                },
-                { key: "status", label: "状态", children: detail.status },
-                {
-                  key: "description",
-                  label: "描述",
-                  children: detail.description,
-                },
-              ]}
+            <DetailFields
+              title="基本信息"
+              data={detail}
+              fields={["name", "author_name", "description"]}
             />
+            <DetailFields
+              title="发布信息"
+              data={detail}
+              fields={["visibility", "status", "is_moderated"]}
+            />
+            <DetailFields
+              title="系统信息"
+              data={detail}
+              fields={["id", "created_at", "updated_at"]}
+            />
+
             {detail.pages.map((page, index) => (
               <div key={page.id}>
                 <h3>第 {index + 1} 页</h3>
@@ -504,6 +608,7 @@ export default function DigitalAlbums() {
       </Drawer>
       <Modal
         title={action?.is_moderated ? "解除相册公开限制" : "限制相册公开展示"}
+        okText={action?.is_moderated ? "解除限制" : "限制公开"}
         open={!!action}
         confirmLoading={busy}
         onCancel={() => setAction(undefined)}
@@ -512,7 +617,7 @@ export default function DigitalAlbums() {
             message.warning("请填写处理原因");
             return;
           }
-          void run(async () => {
+          return run(async () => {
             await consoleApi(
               `/digital-albums/${action.id}/moderation`,
               send(
@@ -544,7 +649,7 @@ export default function DigitalAlbums() {
           try {
             const values = await resourceForm.validateFields();
             const config = JSON.parse(values.config);
-            void run(async () => {
+            return run(async () => {
               await consoleApi(
                 `/album-resources/${encodeURIComponent(values.id)}`,
                 send({ ...values, config }, "PUT"),

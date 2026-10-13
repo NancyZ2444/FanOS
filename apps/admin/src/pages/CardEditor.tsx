@@ -1,3 +1,5 @@
+import { formatTime } from "../design/format";
+import { Form, Modal, useSingleSubmit } from "../components/admin";
 import TagSelect from "../components/TagSelect";
 import { cloneElement, useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
@@ -12,9 +14,7 @@ import {
   App,
   Button,
   Descriptions,
-  Form,
   Input,
-  Modal,
   Select,
   Space,
   Steps,
@@ -65,21 +65,21 @@ const stepTitles = [
   "审核发布",
 ];
 const copyrightOptions = [
-  { value: "UNKNOWN", label: "待确认 UNKNOWN" },
-  { value: "OFFICIAL_SOURCE", label: "官方来源 OFFICIAL_SOURCE" },
-  { value: "AUTHORIZED", label: "已授权 AUTHORIZED" },
+  { value: "UNKNOWN", label: "待确认" },
+  { value: "OFFICIAL_SOURCE", label: "官方来源" },
+  { value: "AUTHORIZED", label: "已授权" },
   { value: "FAIR_USE_REVIEW", label: "使用审核中" },
   { value: "RESTRICTED", label: "限制使用" },
   { value: "REMOVED", label: "已移除" },
 ];
 const sourceOptions = [
-  { value: "OFFICIAL", label: "官方来源 OFFICIAL" },
-  { value: "SOCIAL_MEDIA", label: "社交媒体 SOCIAL_MEDIA" },
-  { value: "ADMIN_UPLOAD", label: "运营上传 ADMIN_UPLOAD" },
-  { value: "USER_SUBMITTED", label: "用户提交 USER_SUBMITTED" },
-  { value: "PARTNER", label: "合作方 PARTNER" },
+  { value: "OFFICIAL", label: "官方来源" },
+  { value: "SOCIAL_MEDIA", label: "社交媒体" },
+  { value: "ADMIN_UPLOAD", label: "运营上传" },
+  { value: "USER_SUBMITTED", label: "用户提交" },
+  { value: "PARTNER", label: "合作方" },
   { value: "PUBLIC_DATABASE", label: "公开数据库" },
-  { value: "OTHER", label: "其他 OTHER" },
+  { value: "OTHER", label: "其他" },
 ];
 
 export default function CardEditor() {
@@ -364,7 +364,7 @@ export default function CardEditor() {
       );
     }
   }
-  async function save(submit = false) {
+  const save = useSingleSubmit(async (submit: boolean = false) => {
     const issues = validateCard(data, submit);
     if (issues.length) {
       showErrors(issues);
@@ -412,7 +412,7 @@ export default function CardEditor() {
     } finally {
       setBusy(false);
     }
-  }
+  });
   async function action(action: string) {
     setBusy(true);
     try {
@@ -441,9 +441,9 @@ export default function CardEditor() {
   const leave = () =>
     dirty
       ? modal.confirm({
-          title: "还有未保存的修改",
+          title: "放弃未保存的修改？",
           content: "离开后本次修改将丢失。",
-          okText: "离开",
+          okText: "放弃修改",
           cancelText: "继续编辑",
           onOk: () => {
             setDirty(false);
@@ -694,7 +694,7 @@ export default function CardEditor() {
         {step === 2 && (
           <Panel
             title="03 / 关联小卡来源"
-            subtitle="每张小卡至少关联一个专辑、活动或 Other 来源。"
+            subtitle="每张小卡至少关联一个专辑、活动或其他来源。"
           >
             <div className="source-type-tabs">
               {Object.entries(sourceLabels).map(([v, l]) => (
@@ -1326,7 +1326,7 @@ export default function CardEditor() {
                   <Tag>
                     {h.side === "FRONT" ? "正面" : "背面"} V{h.version}
                   </Tag>
-                  <span>{new Date(h.created_at).toLocaleString("zh-CN")}</span>
+                  <span>{formatTime(h.created_at)}</span>
                   <p>
                     {h.data.source_type || "历史素材"} ·{" "}
                     {h.data.copyright_status || "UNKNOWN"}

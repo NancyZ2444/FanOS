@@ -1,20 +1,13 @@
+import { TableToolbar } from "../components/admin";
+import { useSingleSubmit } from "../components/admin";
+import { FilterBar, RowActions, RecordId } from "../components/admin";
+import { PageHeader } from "../components/admin";
+import { Drawer, Form, Table } from "../components/admin";
 import TagSelect from "../components/TagSelect";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSearchParams } from "react-router-dom";
-import {
-  App,
-  Button,
-  Drawer,
-  Dropdown,
-  Form,
-  Input,
-  Select,
-  Space,
-  Table,
-  Tabs,
-  Tag,
-} from "antd";
+import { App, Button, Input, Select, Space, Tabs, Tag } from "antd";
 import { PlusOutlined, SearchOutlined } from "@ant-design/icons";
 import type { CatalogEntity, Kind } from "../api/types";
 import { names, statusLabels } from "../api/types";
@@ -32,7 +25,7 @@ export default function Entities({ kind }: { kind: Kind }) {
   const { catalog, actor, reload, loading } = useConsole();
   const { message, modal } = App.useApp();
   const navigate = useNavigate();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const [form] = Form.useForm();
   const isOnline = Form.useWatch("is_online", form) === true;
   const [q, setQ] = useState("");
@@ -55,6 +48,17 @@ export default function Entities({ kind }: { kind: Kind }) {
   useEffect(() => {
     setSelected([]);
   }, [kind, q, group, status, company, year, hasSocial, hasCard, hasIdol]);
+  const resetFilters = () => {
+    setQ("");
+    setGroup(undefined);
+    setCompany(undefined);
+    setYear(undefined);
+    setHasSocial(undefined);
+    setHasCard(undefined);
+    setHasIdol(undefined);
+    setStatus("ALL");
+    setParams({});
+  };
   const canEdit = actor.role !== "operation_admin";
   const readOnly = !!record && !editable(record.status);
   const items = catalog[kind].filter(
@@ -122,8 +126,12 @@ export default function Entities({ kind }: { kind: Kind }) {
   };
   useEffect(() => {
     if (params.get("create") === "true") edit();
+    else if (params.get("edit")) {
+      const row = catalog[kind].find((r) => r.id === params.get("edit"));
+      if (row) edit(row);
+    }
   }, [kind, params.toString()]);
-  const save = async () => {
+  const save = useSingleSubmit(async () => {
     try {
       const data = await form.validateFields();
       if (data.artist_keys) {
@@ -161,7 +169,7 @@ export default function Entities({ kind }: { kind: Kind }) {
     } finally {
       setBusy(false);
     }
-  };
+  });
   const action = (row: CatalogEntity, type: string) => {
     if (type === "delete") {
       void confirmCatalogDeletion(
@@ -258,7 +266,7 @@ export default function Entities({ kind }: { kind: Kind }) {
           ? "删除不可恢复。允许未发布草稿；曾发布后下架及归档记录须解除上下游关联。任何下游引用仍会阻止删除，任一不满足条件则整批不删除。"
           : "仅处理选中的记录，不级联修改关联内容。若任一记录状态已变化，整批操作将取消。",
       okButtonProps: { danger: type === "delete" },
-      okText: "确认操作",
+      okText: type === "delete" ? "删除" : "确认操作",
       cancelText: "取消",
       onOk: async () => {
         setBusy(true);
@@ -279,146 +287,142 @@ export default function Entities({ kind }: { kind: Kind }) {
     });
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <div className="eyebrow">CATALOG / {kind.toUpperCase()}</div>
-          <h1>
-            {names[kind]}{" "}
-            <span className="heading-count">{catalog[kind].length}</span>
-          </h1>
-          <p>
-            {kind === "groups"
-              ? "从每一个组合开始，连接艺人、作品与收藏。"
-              : kind === "idols"
-                ? "维护艺人资料，建立清晰的组合成员关系。"
-                : "统一管理小卡的发行来源与关联内容。"}
-          </p>
-        </div>
-      </div>
-      {["albums", "events", "others"].includes(kind) && (
-        <div className="catalog-tabs">
-          {(["albums", "events", "others"] as Kind[]).map((k) => (
-            <button
-              key={k}
-              className={kind === k ? "active" : ""}
-              onClick={() => navigate(`/catalog/${k}`)}
-            >
-              {names[k]}
-            </button>
-          ))}
-        </div>
-      )}
-      <section className="panel filters">
-        <div className="filter-row">
-          <Input
-            value={q}
-            allowClear
-            onChange={(e) => setQ(e.target.value)}
-            prefix={<SearchOutlined aria-hidden="true" />}
-            placeholder={`搜索${label}名称、ID…`}
-            style={{ width: 320 }}
-          />
-          {kind !== "groups" && (
-            <Select
-              value={group}
-              allowClear
-              onChange={setGroup}
-              placeholder="全部组合"
-              options={catalog.groups.map((g) => ({
-                value: g.id,
-                label: g.name,
-              }))}
-            />
-          )}
-          {["groups", "idols"].includes(kind) && (
-            <>
+      <PageHeader title={<>{names[kind]}</>} />
+      <FilterBar
+        onReset={resetFilters}
+        advanced={
+          <>
+            {["groups", "idols"].includes(kind) && (
+              <>
+                {" "}
+                <Select
+                  allowClear
+                  placeholder="社交账号"
+                  value={hasSocial}
+                  onChange={setHasSocial}
+                  options={[
+                    { value: true, label: "已配置" },
+                    { value: false, label: "未配置" },
+                  ]}
+                />
+              </>
+            )}{" "}
+            {kind !== "idols" && (
               <Select
                 allowClear
-                placeholder="全部公司"
-                value={company}
-                onChange={setCompany}
+                placeholder={kind === "groups" ? "出道年份" : "发行年份"}
+                value={year}
+                onChange={setYear}
                 options={[
                   ...new Set(
-                    catalog[kind].map((r) => r.company).filter(Boolean),
+                    catalog[kind]
+                      .map((r) =>
+                        (
+                          r.debut_date ||
+                          r.release_date ||
+                          r.start_date ||
+                          ""
+                        ).slice(0, 4),
+                      )
+                      .filter(Boolean),
                   ),
-                ].map((value) => ({ value, label: value }))}
+                ]
+                  .sort()
+                  .reverse()
+                  .map((value) => ({ value, label: value }))}
               />
-              <Select
-                allowClear
-                placeholder="社交账号"
-                value={hasSocial}
-                onChange={setHasSocial}
-                options={[
-                  { value: true, label: "已配置" },
-                  { value: false, label: "未配置" },
-                ]}
-              />
-            </>
-          )}
-          {kind !== "idols" && (
+            )}
             <Select
               allowClear
-              placeholder={kind === "groups" ? "出道年份" : "发行年份"}
-              value={year}
-              onChange={setYear}
+              placeholder="关联小卡"
+              value={hasCard}
+              onChange={setHasCard}
               options={[
-                ...new Set(
-                  catalog[kind]
-                    .map((r) =>
-                      (
-                        r.debut_date ||
-                        r.release_date ||
-                        r.start_date ||
-                        ""
-                      ).slice(0, 4),
-                    )
-                    .filter(Boolean),
-                ),
-              ]
-                .sort()
-                .reverse()
-                .map((value) => ({ value, label: value }))}
-            />
-          )}
-          <Select
-            allowClear
-            placeholder="关联小卡"
-            value={hasCard}
-            onChange={setHasCard}
-            options={[
-              { value: true, label: "有小卡" },
-              { value: false, label: "无小卡" },
-            ]}
-          />
-          {kind === "groups" && (
-            <Select
-              allowClear
-              placeholder="组合成员"
-              value={hasIdol}
-              onChange={setHasIdol}
-              options={[
-                { value: true, label: "有成员" },
-                { value: false, label: "无成员" },
+                { value: true, label: "有小卡" },
+                { value: false, label: "无小卡" },
               ]}
             />
-          )}
-          <Button
-            onClick={() => {
-              setQ("");
-              setGroup(undefined);
-              setCompany(undefined);
-              setYear(undefined);
-              setHasSocial(undefined);
-              setHasCard(undefined);
-              setHasIdol(undefined);
-            }}
-          >
-            清空筛选
-          </Button>
-        </div>
-      </section>
+            {kind === "groups" && (
+              <Select
+                allowClear
+                placeholder="组合成员"
+                value={hasIdol}
+                onChange={setHasIdol}
+                options={[
+                  { value: true, label: "有成员" },
+                  { value: false, label: "无成员" },
+                ]}
+              />
+            )}
+          </>
+        }
+      >
+        <Input
+          value={q}
+          allowClear
+          onChange={(e) => setQ(e.target.value)}
+          prefix={<SearchOutlined aria-hidden="true" />}
+          placeholder={`搜索${label}名称、ID…`}
+          style={{ width: 320 }}
+        />
+        {kind !== "groups" && (
+          <Select
+            value={group}
+            allowClear
+            onChange={setGroup}
+            placeholder="全部组合"
+            options={catalog.groups.map((g) => ({
+              value: g.id,
+              label: g.name,
+            }))}
+          />
+        )}
+        {["groups", "idols"].includes(kind) && (
+          <>
+            <Select
+              allowClear
+              placeholder="全部公司"
+              value={company}
+              onChange={setCompany}
+              options={[
+                ...new Set(catalog[kind].map((r) => r.company).filter(Boolean)),
+              ].map((value) => ({ value, label: value }))}
+            />
+          </>
+        )}
+      </FilterBar>
       <section className="panel table-panel">
-        <div className="table-toolbar">
+        <TableToolbar
+          actions={
+            <>
+              {" "}
+              {canEdit && (
+                <Space>
+                  <Button
+                    onClick={() =>
+                      navigate(
+                        `/catalog/import?kind=${
+                          kind === "groups" || kind === "idols"
+                            ? "groups_idols"
+                            : kind
+                        }`,
+                      )
+                    }
+                  >
+                    批量导入
+                  </Button>
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined aria-hidden="true" />}
+                    onClick={() => edit()}
+                  >
+                    新增{label}
+                  </Button>
+                </Space>
+              )}{" "}
+            </>
+          }
+        >
           <Tabs
             activeKey={status}
             onChange={setStatus}
@@ -435,36 +439,12 @@ export default function Entities({ kind }: { kind: Kind }) {
               label: s === "ALL" ? `全部${label}` : statusLabels[s],
             }))}
           />
-          {canEdit && (
-            <Space>
-              <Button
-                onClick={() =>
-                  navigate(
-                    `/catalog/import?kind=${
-                      kind === "groups" || kind === "idols"
-                        ? "groups_idols"
-                        : kind
-                    }`,
-                  )
-                }
-              >
-                批量导入
-              </Button>
-              <Button
-                type="primary"
-                icon={<PlusOutlined aria-hidden="true" />}
-                onClick={() => edit()}
-              >
-                新建{label}
-              </Button>
-            </Space>
-          )}
-        </div>
-        {canEdit && (
+        </TableToolbar>
+        {canEdit && selected.length > 0 && (
           <div className="entity-batch-bar">
             <span>
               {selected.length
-                ? `已选择 ${selected.length} 条${label}`
+                ? `已选 ${selected.length} 项`
                 : `共 ${items.length} 条记录 · 勾选后可批量操作`}
             </span>
             {selected.length > 0 && (
@@ -507,6 +487,21 @@ export default function Entities({ kind }: { kind: Kind }) {
           rowKey="id"
           loading={loading}
           dataSource={items}
+          filtered={
+            !!(
+              q ||
+              group ||
+              company ||
+              year ||
+              hasSocial !== undefined ||
+              hasCard !== undefined ||
+              hasIdol !== undefined ||
+              status !== "ALL"
+            )
+          }
+          onReset={resetFilters}
+          onCreate={canEdit ? () => edit() : undefined}
+          createLabel={`新增${label}`}
           rowSelection={
             canEdit
               ? {
@@ -541,11 +536,19 @@ export default function Entities({ kind }: { kind: Kind }) {
                     )}
                   </div>
                   <div>
-                    <button className="table-title" onClick={() => edit(r)}>
+                    <button
+                      className="table-title"
+                      title={r.name}
+                      onClick={() =>
+                        navigate(`/catalog/${kind}/${r.id}/detail`)
+                      }
+                    >
                       {r.name}
                     </button>
                     <span className="record-id">
-                      {r.name_translated || r.name_ko || r.id}
+                      {r.name_translated || r.name_ko || (
+                        <RecordId value={r.id} />
+                      )}
                     </span>
                   </div>
                 </div>
@@ -553,6 +556,14 @@ export default function Entities({ kind }: { kind: Kind }) {
             },
             ...(kind === "others"
               ? [
+                  {
+                    title: "组合/艺人",
+                    dataIndex: "artist_name",
+                    render: (v: string, r: CatalogEntity) =>
+                      v ||
+                      catalog.groups.find((g) => g.id === r.group_id)?.name ||
+                      "待补充",
+                  },
                   { title: "原始名称", dataIndex: "original_name" },
                   {
                     title: "起止日期",
@@ -561,7 +572,7 @@ export default function Entities({ kind }: { kind: Kind }) {
                       "—",
                   },
                   {
-                    title: "Tags",
+                    title: "标签",
                     render: (_: unknown, r: CatalogEntity) =>
                       (r.tags || []).map((tag: string) => (
                         <Tag key={tag}>{tag}</Tag>
@@ -607,86 +618,85 @@ export default function Entities({ kind }: { kind: Kind }) {
             {
               title: "操作",
               key: "actions",
-              width: 230,
+              width: 200,
               render: (_, r) => (
-                <Space>
-                  <button
-                    className="text-button"
-                    onClick={() => navigate(`/catalog/${kind}/${r.id}/detail`)}
-                  >
-                    详情
-                  </button>
-                  <button className="text-button" onClick={() => edit(r)}>
-                    {canEdit && editable(r.status) ? "编辑" : "查看"}
-                  </button>
-                  {canEdit && editable(r.status) && (
-                    <button
-                      className="text-button"
-                      onClick={() => action(r, "submit")}
-                    >
-                      提交审核
-                    </button>
-                  )}
-                  {actor.role === "admin" && r.status === "PENDING" && (
-                    <button
-                      className="text-button"
-                      onClick={() => action(r, "publish")}
-                    >
-                      审核发布
-                    </button>
-                  )}
-                  {actor.role === "admin" && r.status === "PUBLISHED" && (
-                    <button
-                      className="text-button muted"
-                      onClick={() => action(r, "offline")}
-                    >
-                      下架
-                    </button>
-                  )}
-                  {canEdit &&
-                    (editable(r.status) ||
-                      r.status === "ARCHIVED" ||
-                      (actor.role === "admin" && r.status === "PENDING")) && (
-                      <Dropdown
-                        menu={{
-                          items:
-                            r.status === "PENDING"
-                              ? [{ key: "reject", label: "驳回审核" }]
-                              : r.status === "ARCHIVED"
-                                ? [
-                                    { key: "restore", label: "恢复草稿" },
-                                    ...(actor.role === "admin"
-                                      ? [
-                                          {
-                                            key: "delete",
-                                            label: "永久删除",
-                                            danger: true,
-                                          },
-                                        ]
-                                      : []),
-                                  ]
-                                : actor.role === "admin"
-                                  ? [
-                                      { key: "archive", label: "归档" },
-                                      ...(r.status === "DRAFT" ||
-                                      r.status === "OFFLINE"
-                                        ? [
-                                            {
-                                              key: "delete",
-                                              label: "永久删除",
-                                              danger: true,
-                                            },
-                                          ]
-                                        : []),
-                                    ]
-                                  : [],
-                          onClick: ({ key }) => action(r, key),
-                        }}
-                      >
-                        <button className="text-button">更多</button>
-                      </Dropdown>
-                    )}
-                </Space>
+                <RowActions
+                  onView={() => navigate(`/catalog/${kind}/${r.id}/detail`)}
+                  onEdit={canEdit ? () => edit(r) : undefined}
+                  editDisabled={!editable(r.status)}
+                  editHint={
+                    !editable(r.status)
+                      ? "已发布内容需先下架，待审核内容需先驳回"
+                      : undefined
+                  }
+                  items={
+                    canEdit
+                      ? [
+                          ...(editable(r.status)
+                            ? [
+                                {
+                                  key: "submit",
+                                  label: "提交审核",
+                                  onClick: () => action(r, "submit"),
+                                },
+                              ]
+                            : []),
+                          ...(actor.role === "admin" && r.status === "PENDING"
+                            ? [
+                                {
+                                  key: "publish",
+                                  label: "审核发布",
+                                  onClick: () => action(r, "publish"),
+                                },
+                                {
+                                  key: "reject",
+                                  label: "驳回审核",
+                                  onClick: () => action(r, "reject"),
+                                },
+                              ]
+                            : []),
+                          ...(actor.role === "admin" && r.status === "PUBLISHED"
+                            ? [
+                                {
+                                  key: "offline",
+                                  label: "下架",
+                                  onClick: () => action(r, "offline"),
+                                },
+                              ]
+                            : []),
+                          ...(r.status === "ARCHIVED"
+                            ? [
+                                {
+                                  key: "restore",
+                                  label: "恢复草稿",
+                                  onClick: () => action(r, "restore"),
+                                },
+                              ]
+                            : []),
+                          ...(actor.role === "admin" && editable(r.status)
+                            ? [
+                                {
+                                  key: "archive",
+                                  label: "归档",
+                                  onClick: () => action(r, "archive"),
+                                },
+                              ]
+                            : []),
+                          ...(actor.role === "admin" &&
+                          ["DRAFT", "OFFLINE", "ARCHIVED"].includes(r.status)
+                            ? [
+                                {
+                                  key: "delete",
+                                  label: "删除",
+                                  danger: true,
+                                  onClick: () => action(r, "delete"),
+                                },
+                              ]
+                            : []),
+                        ]
+                      : []
+                  }
+                />
               ),
             },
           ]}
@@ -694,9 +704,10 @@ export default function Entities({ kind }: { kind: Kind }) {
       </section>
       <Drawer
         open={open}
+        saving={busy}
         onClose={() => setOpen(false)}
         width={640}
-        title={`${record ? (readOnly ? "查看" : "编辑") : "新建"}${label}`}
+        title={`${record ? (readOnly ? "查看" : "编辑") : "新增"}${label}`}
         extra={record && <StatusTag status={record.status} />}
         footer={
           <div className="drawer-footer">
@@ -718,26 +729,53 @@ export default function Entities({ kind }: { kind: Kind }) {
           {kind === "others" ? (
             <div className="form-grid">
               <Form.Item
+                name="artist_keys"
+                label="关联组合/艺人"
+                className="span-two"
+                rules={[
+                  { required: true, message: "请至少选择一个组合或艺人" },
+                ]}
+              >
+                <Select
+                  mode="multiple"
+                  showSearch
+                  optionFilterProp="label"
+                  options={[
+                    ...catalog.groups.map((g) => ({
+                      value: `groups:${g.id}`,
+                      label: `组合 · ${g.name}`,
+                    })),
+                    ...catalog.idols.map((i) => ({
+                      value: `idols:${i.id}`,
+                      label: `艺人 · ${i.name}`,
+                    })),
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item
                 name="name"
-                label="Name / 展示名称"
+                label="展示名称"
                 rules={[{ required: true }]}
               >
                 <Input maxLength={120} />
               </Form.Item>
-              <Form.Item name="original_name" label="Original Name / 原始名称">
+              <Form.Item name="original_name" label="原始名称">
                 <Input maxLength={180} />
               </Form.Item>
-              <Form.Item name="start_date" label="Start Date / 开始日期">
+              <Form.Item name="start_date" label="开始日期">
                 <Input type="date" />
               </Form.Item>
-              <Form.Item name="end_date" label="End Date / 结束日期">
+              <Form.Item name="end_date" label="结束日期">
                 <Input type="date" />
               </Form.Item>
               <div className="span-two">
-                <Form.Item name="description" label="Description / 说明">
+                <Form.Item name="image_url" label="封面图片地址">
+                  <Input placeholder="https://…" />
+                </Form.Item>
+                <Form.Item name="description" label="说明">
                   <Input.TextArea rows={4} maxLength={2000} />
                 </Form.Item>
-                <Form.Item name="tags" label="Tags">
+                <Form.Item name="tags" label="标签">
                   <TagSelect entityType="OTHER" />
                 </Form.Item>
               </div>

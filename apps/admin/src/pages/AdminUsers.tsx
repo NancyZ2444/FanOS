@@ -1,16 +1,15 @@
-import { useEffect, useState } from "react";
+import { useSingleSubmit } from "../components/admin";
 import {
-  Alert,
-  App,
-  Button,
-  Form,
-  Input,
-  Modal,
-  Select,
-  Switch,
-  Table,
-  Tag,
-} from "antd";
+  TableToolbar,
+  FilterBar,
+  RowActions,
+  BusinessData,
+  Drawer,
+} from "../components/admin";
+import { PageHeader } from "../components/admin";
+import { Form, Modal, Table } from "../components/admin";
+import { useEffect, useState } from "react";
+import { Alert, App, Button, Input, Select, Switch, Tag } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import { consoleApi, send } from "../api/client";
 import { roleLabels } from "../api/types";
@@ -18,6 +17,8 @@ import type { Role } from "../api/types";
 export default function AdminUsers() {
   const { message } = App.useApp();
   const [form] = Form.useForm();
+  const [q, setQ] = useState("");
+  const [viewRecord, setViewRecord] = useState<any>();
   const [rows, setRows] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<any>();
@@ -36,7 +37,7 @@ export default function AdminUsers() {
     form.setFieldsValue(row || { role: "content_operator", is_active: true });
     setOpen(true);
   };
-  const save = async () => {
+  const save = useSingleSubmit(async () => {
     try {
       const data = await form.validateFields();
       setBusy(true);
@@ -52,29 +53,45 @@ export default function AdminUsers() {
     } finally {
       setBusy(false);
     }
-  };
+  });
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <div className="eyebrow">SYSTEM / ADMINISTRATORS</div>
-          <h1>管理员账号</h1>
-          <p>管理运营人员的账号、角色和访问状态。</p>
-        </div>
-        <Button
-          type="primary"
-          icon={<PlusOutlined aria-hidden="true" />}
-          onClick={() => edit()}
-        >
-          新增管理员
-        </Button>
-      </div>
+      <PageHeader title="管理员账号" />
       {error && <Alert type="error" message={error} />}
+      <FilterBar onReset={() => setQ("")}>
+        <Input
+          allowClear
+          placeholder="搜索管理员姓名或手机号"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+      </FilterBar>
       <section className="panel table-panel">
+        <TableToolbar
+          actions={
+            <>
+              <Button
+                type="primary"
+                icon={<PlusOutlined aria-hidden="true" />}
+                onClick={() => edit()}
+              >
+                新增管理员
+              </Button>
+            </>
+          }
+        >
+          后台账号
+        </TableToolbar>
         <Table
           rowKey="id"
-          dataSource={rows}
-          pagination={{ pageSize: 10 }}
+          dataSource={rows.filter((r) =>
+            [r.name, r.phone].some((v) => v?.includes(q)),
+          )}
+          filtered={!!q}
+          onReset={() => setQ("")}
+          onCreate={() => edit()}
+          createLabel="新增管理员"
+          pagination={{ defaultPageSize: 10 }}
           columns={[
             { title: "管理员", dataIndex: "name" },
             { title: "手机号", dataIndex: "phone" },
@@ -101,14 +118,32 @@ export default function AdminUsers() {
               title: "操作",
               key: "action",
               render: (_, r) => (
-                <button className="text-button" onClick={() => edit(r)}>
-                  编辑权限
-                </button>
+                <RowActions
+                  onView={() => setViewRecord(r)}
+                  onEdit={() => edit(r)}
+                />
               ),
             },
           ]}
         />
       </section>
+      <Drawer
+        open={!!viewRecord}
+        title="管理员详情"
+        onClose={() => setViewRecord(undefined)}
+        extra={
+          <Button
+            onClick={() => {
+              edit(viewRecord);
+              setViewRecord(undefined);
+            }}
+          >
+            编辑
+          </Button>
+        }
+      >
+        <BusinessData data={viewRecord} />
+      </Drawer>
       <Modal
         open={open}
         title={record ? "编辑管理员权限" : "新增管理员"}
