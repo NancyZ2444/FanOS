@@ -24,5 +24,6 @@ def upgrade():
 
 def downgrade():
     raise RuntimeError(
-        "Taxonomy backfill preserves IDs but changes relationships. Restore the verified pre-upgrade backup instead of dropping live Other/tag records."
+        "Taxonomy backfill preserves IDs but changes relationships. "
+        "Restore the verified pre-upgrade backup instead of dropping live Other/tag records."
     )

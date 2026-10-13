@@ -1,7 +1,7 @@
 """Store unsigned 32-bit ARGB colors without PostgreSQL integer overflow."""
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "e612_color_bigint"
 down_revision = "d611_catalog_taxonomy"

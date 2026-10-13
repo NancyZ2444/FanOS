@@ -116,7 +116,13 @@ def detect_sleeve_quadrilaterals(rgb: np.ndarray) -> list[np.ndarray]:
             if abs(other[2] / box[2] - 1) <= 0.22 and abs(other[3] / box[3] - 1) <= 0.22
         ]
 
-    group = max((neighbours(box) for box in candidates), key=len)
+    # Repeated artwork details can tie the true sleeve grid's support count
+    # (e.g. six copies of a portrait). Prefer the larger observed rectangles
+    # on a tie, otherwise an interior motif wins and fails the pitch check.
+    group = max(
+        (neighbours(box) for box in candidates),
+        key=lambda items: (len(items), float(np.median([w * h for _, _, w, h in items]))),
+    )
     median_w, median_h = np.median([box[2:] for box in group], axis=0)
     columns = _clusters([x + w / 2 for x, y, w, h in group], median_w * 0.45)
     rows = _clusters([y + h / 2 for x, y, w, h in group], median_h * 0.35)

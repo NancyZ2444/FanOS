@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import threading
+import time
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -16,13 +17,30 @@ from app.core.config import get_settings
 _locks = [threading.Lock() for _ in range(64)]
 MAX_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 40_000_000
+_failed_until: dict[str, float] = {}
+
+
+def portrait_source(data: dict) -> str | None:
+    """Admin accepts both an avatar and a cover; cover-only entities still have an image."""
+    return next(
+        (
+            value.strip()
+            for key in ("image_url", "cover_image")
+            if isinstance(value := data.get(key), str) and value.strip()
+        ),
+        None,
+    )
 
 
 def _local_path(source: str) -> Path | None:
     settings = get_settings()
     url = urlsplit(source)
     base = urlsplit(settings.public_media_base_url)
-    own_host = url.netloc == base.netloc or url.hostname in {"localhost", "127.0.0.1", "::1"}
+    own_host = (
+        (not url.scheme and not url.netloc and source.startswith("/"))
+        or url.netloc == base.netloc
+        or url.hostname in {"localhost", "127.0.0.1", "::1"}
+    )
     prefix = base.path.rstrip("/") + "/"
     if not own_host or not url.path.startswith(prefix):
         return None
@@ -94,7 +112,7 @@ def _source_bytes(source: str) -> bytes:
     with httpx.stream(
         "GET",
         remote_thumbnail_source(source),
-        timeout=httpx.Timeout(20, connect=5),
+        timeout=httpx.Timeout(8, connect=3),
         follow_redirects=False,
         headers={"User-Agent": get_settings().catalog_image_user_agent},
     ) as response:
@@ -113,7 +131,17 @@ def cached_thumbnail(source: str) -> Path:
     with _locks[int(key[:2], 16) % len(_locks)]:
         if target.is_file():
             return target
-        content = _source_bytes(source)
+        remote = _local_path(source) is None
+        if remote and _failed_until.get(key, 0) > time.monotonic():
+            raise ValueError("Image origin temporarily unavailable")
+        try:
+            content = _source_bytes(source)
+        except (httpx.HTTPError, OSError, ValueError):
+            if len(_failed_until) > 256:
+                _failed_until.clear()
+            if remote:
+                _failed_until[key] = time.monotonic() + 60
+            raise
         with Image.open(io.BytesIO(content)) as image:
             if image.width * image.height > MAX_PIXELS:
                 raise ValueError("Image dimensions are too large")

@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 60
     refresh_token_days: int = 30
-    dev_phone_code: str = "123456"
+    dev_phone_code: str = "666666"
     auto_seed: bool = True
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
 
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     local_media_root: Path = API_ROOT / "data" / "uploads"
     public_media_base_url: str = "http://localhost:8000/media"
     catalog_image_hosts: list[str] = Field(default_factory=lambda: ["upload.wikimedia.org"])
-    catalog_remote_portraits_enabled: bool = False
+    catalog_remote_portraits_enabled: bool = True
     catalog_image_user_agent: str = "FanOS-CatalogThumbnail/1.0"
     s3_endpoint_url: str | None = None
     s3_access_key: str | None = None

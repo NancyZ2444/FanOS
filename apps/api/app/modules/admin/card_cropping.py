@@ -72,7 +72,7 @@ def crop_preview(raw: bytes) -> dict:
     buffer = io.BytesIO()
     detection.save(buffer, format="PNG")
     try:
-        regions = CardMatcherAdapter.detect(buffer.getvalue())
+        regions = CardMatcherAdapter.detect(buffer.getvalue(), require_person=False)
         choices = [{"points": r.corners} for r in regions if r.corners]
     except (OverflowError, cv2.error):
         choices = []  # Crowded/undetectable photo: allow manual isolation.

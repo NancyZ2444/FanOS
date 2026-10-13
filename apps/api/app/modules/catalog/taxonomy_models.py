@@ -18,7 +18,7 @@ class CatalogOther(Base, TimestampMixin):
     end_date: Mapped[str] = mapped_column(String(20), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     is_published: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    # Compatibility/history only; not required or exposed as Other business inputs.
+    # First associated group; complete group/idol relationships live in ContentMetadata.artists.
     group_id: Mapped[str | None] = mapped_column(ForeignKey("groups.id"), index=True)
     legacy_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 

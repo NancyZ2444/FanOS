@@ -124,7 +124,8 @@ def test_sleeve_detects_observed_cards_without_assuming_nine_slots(
     rows, columns, empty, angle, expected_count
 ):
     photo, centers, _ = sleeve_photo(rows, columns, empty=empty, angle=angle)
-    regions = CardMatcherAdapter.detect(jpeg_bytes(photo))
+    # This fixture validates sleeve geometry using non-human abstract prints.
+    regions = CardMatcherAdapter.detect(jpeg_bytes(photo), require_person=False)
     assert len(regions) == expected_count
     assert len({(item.x, item.y, item.width, item.height) for item in regions}) == expected_count
     for item in regions:

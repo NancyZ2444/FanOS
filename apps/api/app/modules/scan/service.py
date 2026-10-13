@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.common.response import DomainError
 from app.common.serializers import card_payload
 from app.integrations.card_matcher.adapter import CardMatcherAdapter
+from app.integrations.card_matcher.portrait_detector import PortraitDetectorUnavailable
 from app.integrations.storage import get_storage
 from app.models import (
     Card,
@@ -36,6 +37,118 @@ def readiness(db: Session) -> dict[str, Any]:
     return CardMatcherAdapter().readiness(known_cards(db))
 
 
+def detect(db: Session, user: User, content: bytes) -> dict[str, Any]:
+    """Locate cards only. Matching and collection writes require separate user actions."""
+    from PIL import Image, ImageOps
+
+    try:
+        regions = CardMatcherAdapter.detect(content)
+    except PortraitDetectorUnavailable as exc:
+        raise DomainError(
+            "SCAN_DETECTOR_UNAVAILABLE", "人物检测服务暂未就绪，请稍后重试", 503
+        ) from exc
+    except OverflowError as exc:
+        raise DomainError("TOO_MANY_CARDS", "一次最多扫描 10 张小卡，请分批拍摄") from exc
+    except Exception as exc:
+        raise DomainError("INVALID_SCAN_IMAGE", "无法读取图片，请重新选择") from exc
+    original = ImageOps.exif_transpose(Image.open(io.BytesIO(content))).convert("RGB")
+    buffer = io.BytesIO()
+    original.save(buffer, format="JPEG", quality=90)
+    storage = get_storage()
+    session = ScanSession(
+        user_id=user.id,
+        status="detected",
+        original_image_url=storage.save_bytes(buffer.getvalue(), "scan.jpg", f"scans/{user.id}"),
+    )
+    db.add(session)
+    db.flush()
+    for region in regions:
+        buffer = io.BytesIO()
+        region.crop.save(buffer, format="JPEG", quality=90)
+        db.add(
+            DetectedCard(
+                scan_session_id=session.id,
+                crop_image_url=storage.save_bytes(
+                    buffer.getvalue(), "crop.jpg", f"scans/{user.id}/{session.id}"
+                ),
+                crop_region=region.payload(),
+                recognition_status="detected",
+            )
+        )
+        db.flush()
+    db.commit()
+    return {
+        **session_payload(db, session, include_pending=True),
+        "image_width": original.width,
+        "image_height": original.height,
+    }
+
+
+def recognize_selection(db: Session, user: User, session_id: str, ids: list[str]) -> dict[str, Any]:
+    from PIL import Image
+
+    session = db.scalar(
+        select(ScanSession)
+        .where(ScanSession.id == session_id, ScanSession.user_id == user.id)
+        .with_for_update()
+    )
+    if session is None:
+        raise DomainError("SCAN_NOT_FOUND", "扫描记录不存在", 404)
+    regions = db.scalars(
+        select(DetectedCard)
+        .where(DetectedCard.scan_session_id == session.id)
+        .order_by(DetectedCard.created_at)
+    ).all()
+    if not ids or not set(ids).issubset({region.id for region in regions}):
+        raise DomainError("INVALID_SCAN_SELECTION", "请选择本次照片中的小卡")
+    matched_ids = {r.id for r in regions if r.recognition_status != "detected"}
+    if session.status == "completed":
+        if set(ids) != matched_ids:
+            raise DomainError("SCAN_ALREADY_COMPLETED", "本次扫描已完成，请重新拍摄", 409)
+        return session_payload(db, session)
+    matcher = CardMatcherAdapter()
+    cards = known_cards(db)
+    if not matcher.readiness(cards)["available"]:
+        raise DomainError("SCAN_INDEX_UNAVAILABLE", "图鉴识别服务暂未就绪，请稍后重试", 503)
+    storage = get_storage()
+    for region in regions:
+        if region.id not in ids:
+            continue
+        try:
+            image = Image.open(io.BytesIO(storage.read_bytes(region.crop_image_url))).convert("RGB")
+        except Exception as exc:
+            # Roll back the entire matching transaction, retaining the detection session for retry.
+            raise DomainError(
+                "SCAN_IMAGE_UNAVAILABLE", "扫描照片暂时无法读取，请重试或重新拍摄", 503
+            ) from exc
+        try:
+            ranked = matcher.rank(image, cards)
+        except Exception:
+            logging.getLogger(__name__).exception("One selected scan region could not be matched")
+            ranked = []
+        score = ranked[0]["similarity"] if ranked else 0.0
+        region.recognition_status = (
+            "recommended"
+            if score >= 0.9 and (len(ranked) == 1 or score - ranked[1]["similarity"] >= 0.04)
+            else "needs_confirmation"
+            if score >= 0.6
+            else "unrecognized"
+        )
+        for rank, candidate in enumerate(ranked, start=1):
+            db.add(
+                ScanCandidate(
+                    detected_card_id=region.id,
+                    card_id=candidate["card_id"],
+                    similarity=candidate["similarity"],
+                    feature_scores=candidate["feature_scores"],
+                    rank=rank,
+                )
+            )
+    session.status = "completed"
+    db.commit()
+    return session_payload(db, session)
+
+
 def recognize(db: Session, user: User, content: bytes, filename: str) -> dict[str, Any]:
     matcher = CardMatcherAdapter()
     cards = known_cards(db)
@@ -45,6 +158,10 @@ def recognize(db: Session, user: User, content: bytes, filename: str) -> dict[st
         )
     try:
         regions = matcher.detect(content)
+    except PortraitDetectorUnavailable as exc:
+        raise DomainError(
+            "SCAN_DETECTOR_UNAVAILABLE", "人物检测服务暂未就绪，请稍后重试", 503
+        ) from exc
     except OverflowError as exc:
         raise DomainError("TOO_MANY_CARDS", "一次最多识别 10 张小卡，请分批扫描") from exc
     except Exception as exc:
@@ -102,7 +219,11 @@ def recognize(db: Session, user: User, content: bytes, filename: str) -> dict[st
 
 
 def session_payload(
-    db: Session, session: ScanSession, include_server_images: bool = True
+    db: Session,
+    session: ScanSession,
+    include_server_images: bool = True,
+    *,
+    include_pending: bool = False,
 ) -> dict[str, Any]:
     detected_cards = db.scalars(
         select(DetectedCard)
@@ -111,6 +232,8 @@ def session_payload(
     ).all()
     result = []
     for detected in detected_cards:
+        if detected.recognition_status == "detected" and not include_pending:
+            continue
         candidates = db.scalars(
             select(ScanCandidate)
             .where(ScanCandidate.detected_card_id == detected.id)

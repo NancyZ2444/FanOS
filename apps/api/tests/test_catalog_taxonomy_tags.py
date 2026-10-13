@@ -23,7 +23,13 @@ def create(client, headers, name, tags=()):
         client,
         headers,
         ROOT + "/entities/others",
-        {"name": name, "original_name": "Original", "start_date": "2026-10-11", "tags": list(tags)},
+        {
+            "name": name,
+            "group_id": "group-lumina",
+            "original_name": "Original",
+            "start_date": "2026-10-11",
+            "tags": list(tags),
+        },
     )
 
 
@@ -81,14 +87,14 @@ def test_disable_rename_preserves_history_but_blocks_new_bindings(client, admin_
         client.post(
             ROOT + "/entities/others",
             headers=admin_headers,
-            json={"name": "New", "tags": ["pre order"]},
+            json={"name": "New", "group_id": "group-lumina", "tags": ["pre order"]},
         ).status_code
         == 422
     )
     r = client.put(
         ROOT + "/entities/others/" + item["id"],
         headers=admin_headers,
-        json={"name": "One", "tags": ["Pre Order"]},
+        json={"name": "One", "group_id": "group-lumina", "tags": ["Pre Order"]},
     )
     assert r.status_code == 200, r.text
     assert r.json()["data"]["tag_ids"] == [tag]
@@ -117,6 +123,7 @@ def test_contributions_subject_and_tags_share_one_review(client, admin_headers, 
                 "reason": "公开资料补充",
                 "suggested": {
                     "name": name,
+                    "group_id": "group-lumina",
                     "original_name": "Original",
                     "start_date": "2026-01-01",
                     "end_date": "2026-02-01",

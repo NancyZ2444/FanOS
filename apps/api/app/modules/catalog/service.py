@@ -17,7 +17,7 @@ from app.models import (
     GroupMembership,
     Idol,
 )
-from app.modules.catalog.images import thumbnail_url
+from app.modules.catalog.images import portrait_source, thumbnail_url
 from app.modules.catalog.tags import TAG_TYPES, entity_tags
 from app.modules.catalog.taxonomy_models import CatalogOther
 
@@ -143,8 +143,9 @@ def bootstrap(db: Session) -> dict[str, list[dict[str, object]]]:
     ).all()
     current, former, groups_by_idol = _membership_maps(db)
     group_by_id = {group.id: group for group in groups}
+    published_idol_ids = {idol.id for idol in idols}
     images = {
-        (row.entity_type, row.entity_id): (row.data or {}).get("image_url")
+        (row.entity_type, row.entity_id): portrait_source(row.data or {})
         for row in db.scalars(
             select(ContentMetadata).where(
                 ContentMetadata.entity_type.in_(["groups", "idols"]),
@@ -156,7 +157,10 @@ def bootstrap(db: Session) -> dict[str, list[dict[str, object]]]:
     result = {
         "groups": [
             group_payload(
-                group, current.get(group.id), former.get(group.id), images.get(("groups", group.id))
+                group,
+                [i for i in current.get(group.id, []) if i in published_idol_ids],
+                [i for i in former.get(group.id, []) if i in published_idol_ids],
+                images.get(("groups", group.id)),
             )
             for group in groups
         ],
@@ -215,6 +219,7 @@ def bootstrap(db: Session) -> dict[str, list[dict[str, object]]]:
             data = metadata.get((kind, item["id"]), {})
             for field in (
                 "artists",
+                "artist_name",
                 "idol_id",
                 "album_id",
                 "end_date",
@@ -229,6 +234,8 @@ def bootstrap(db: Session) -> dict[str, list[dict[str, object]]]:
             ):
                 if field in data:
                     item[field] = data[field]
+            if kind == "others" and data.get("image_url"):
+                item["image_url"] = data["image_url"]
             if kind in TAG_TYPES:
                 item.update(entity_tags(db, kind, item["id"]))
             item["source_relationships"] = [

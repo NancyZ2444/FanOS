@@ -42,7 +42,7 @@ def main() -> None:
     original = ImageOps.exif_transpose(Image.open(args.image)).convert("RGB")
     annotated = original.copy()
     draw = ImageDraw.Draw(annotated)
-    tiles = Image.new("RGB", (3 * 220, ((len(regions) + 2) // 3) * 342), "#f7f7fa")
+    tiles = Image.new("RGB", (3 * 220, max(1, (len(regions) + 2) // 3) * 342), "#f7f7fa")
     tile_draw = ImageDraw.Draw(tiles)
     for index, region in enumerate(regions, 1):
         left, top = region.x * original.width, region.y * original.height

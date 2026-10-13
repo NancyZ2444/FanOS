@@ -10,7 +10,18 @@ from app.models import Card, Group, GroupMembership, Idol
 
 from .tags import TAG_TYPES, find_tag, validate_names
 
-OTHER_FIELDS = {"name", "original_name", "start_date", "end_date", "description", "tags"}
+OTHER_FIELDS = {
+    "name",
+    "original_name",
+    "start_date",
+    "end_date",
+    "description",
+    "tags",
+    "group_id",
+    "idol_id",
+    "artists",
+    "image_url",
+}
 
 
 def validate_other_fields(values):

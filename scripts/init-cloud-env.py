@@ -10,7 +10,7 @@ values = {
     "POSTGRES_PASSWORD": secrets.token_hex(24),
     "JWT_SECRET": secrets.token_hex(32),
     "WORKER_TOKEN": secrets.token_hex(32),
-    "DEV_PHONE_CODE": str(secrets.randbelow(900000) + 100000),
+    "DEV_PHONE_CODE": "666666",
     "PUBLIC_MEDIA_BASE_URL": "http://localhost:5173/media",
 }
 with open(target, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as handle:

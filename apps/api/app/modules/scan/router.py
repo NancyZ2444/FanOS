@@ -30,7 +30,7 @@ from app.models import (
 )
 from app.modules.catalog.taxonomy_models import CatalogOther
 from app.modules.scan import service
-from app.modules.scan.schemas import ScanConfirmRequest, ScanFeedbackMetadata
+from app.modules.scan.schemas import ScanConfirmRequest, ScanFeedbackMetadata, ScanSelectionRequest
 
 router = APIRouter(prefix="/scan", tags=["AI Scan"])
 
@@ -313,6 +313,28 @@ async def recognize(
     )
 
 
+@router.post("/detect")
+async def detect_cards(
+    image: UploadFile = File(...), user: User = Depends(current_user), db: Session = Depends(get_db)
+) -> dict:
+    content = await image.read(get_settings().scan_max_bytes + 1)
+    if not content:
+        raise DomainError("EMPTY_FILE", "图片不能为空")
+    if len(content) > get_settings().scan_max_bytes:
+        raise DomainError("SCAN_IMAGE_TOO_LARGE", "图片不能超过 15 MB", 413)
+    return success(await run_in_threadpool(service.detect, db, user, content))
+
+
+@router.post("/sessions/{session_id}/recognize")
+def recognize_selected_cards(
+    session_id: str,
+    payload: ScanSelectionRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return success(service.recognize_selection(db, user, session_id, payload.detected_card_ids))
+
+
 @router.post("/sessions/{session_id}/confirm")
 def confirm_session(
     session_id: str,
@@ -330,7 +352,7 @@ def confirm_session(
 def scan_history(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
     sessions = db.scalars(
         select(ScanSession)
-        .where(ScanSession.user_id == user.id)
+        .where(ScanSession.user_id == user.id, ScanSession.status == "completed")
         .order_by(ScanSession.created_at.desc())
         .limit(50)
     ).all()

@@ -33,6 +33,16 @@ class ConfirmedCard(BaseModel):
     add_to_wishlist: bool = False
 
 
+class ScanSelectionRequest(BaseModel):
+    detected_card_ids: list[str] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def unique_regions(self):
+        if len(set(self.detected_card_ids)) != len(self.detected_card_ids):
+            raise ValueError("Each detected card can appear only once")
+        return self
+
+
 class ScanConfirmRequest(BaseModel):
     cards: list[ConfirmedCard] = Field(min_length=1, max_length=10)
 

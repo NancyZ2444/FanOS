@@ -11,6 +11,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TEST_ROOT / 'fan_os_test.db'}"
 os.environ["LOCAL_MEDIA_ROOT"] = str(TEST_ROOT / "media")
 os.environ["PUBLIC_MEDIA_BASE_URL"] = "http://testserver/media"
 os.environ["AUTO_SEED"] = "true"
+os.environ["DEV_PHONE_CODE"] = "666666"
 os.environ["CARD_MATCHER_FACE"] = "mock"
 os.environ["CARD_MATCHER_BODY"] = "mock"
 os.environ["CARD_MATCHER_EXPRESSION"] = "mock"
@@ -53,7 +54,19 @@ def scan_artwork(seed: int):
 
 
 @pytest.fixture
-def scan_index():
+def allow_synthetic_portraits(monkeypatch):
+    """Matching-only tests use abstract prints, not a test of the portrait gate.
+
+    Real-model acceptance/rejection is covered separately in
+    test_scan_portrait_detection.py, without this fixture.
+    """
+    from app.integrations.card_matcher.portrait_detector import PortraitDetector
+
+    monkeypatch.setattr(PortraitDetector, "contains_person", lambda self, image: True)
+
+
+@pytest.fixture
+def scan_index(allow_synthetic_portraits):
     import json
 
     from app.core.config import get_settings
@@ -82,7 +95,7 @@ def client() -> TestClient:
 def auth_headers(client: TestClient) -> dict[str, str]:
     response = client.post(
         "/api/v1/auth/login",
-        json={"method": "phone", "phone": "13800000000", "code": "123456"},
+        json={"method": "phone", "phone": "13800000000", "code": "666666"},
     )
     token = response.json()["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -92,7 +105,7 @@ def auth_headers(client: TestClient) -> dict[str, str]:
 def admin_headers(client: TestClient) -> dict[str, str]:
     response = client.post(
         "/api/v1/auth/login",
-        json={"method": "phone", "phone": "13900000000", "code": "123456"},
+        json={"method": "phone", "phone": "13900000000", "code": "666666"},
     )
     token = response.json()["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}

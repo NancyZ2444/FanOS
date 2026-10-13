@@ -21,7 +21,7 @@ router = APIRouter(prefix="/catalog", tags=["Catalog"])
 @router.get("/images/{kind}/{entity_id}")
 def catalog_thumbnail(kind: str, entity_id: str, request: Request, db: Session = Depends(get_db)):
     from app.admin_models import ContentMetadata
-    from app.modules.catalog.images import cached_thumbnail, image_version
+    from app.modules.catalog.images import cached_thumbnail, image_version, portrait_source
 
     if kind not in {"groups", "idols"}:
         raise DomainError("IMAGE_NOT_FOUND", "图片不存在", 404)
@@ -32,7 +32,7 @@ def catalog_thumbnail(kind: str, entity_id: str, request: Request, db: Session =
             ContentMetadata.status == "PUBLISHED",
         )
     )
-    source = (row.data or {}).get("image_url") if row else None
+    source = portrait_source(row.data or {}) if row else None
     if not source:
         raise DomainError("IMAGE_NOT_FOUND", "图片不存在或未公开", 404)
     try:
@@ -150,7 +150,6 @@ def list_idols(
     db: Session = Depends(get_db),
 ) -> dict:
     data = bootstrap(db)
-    group_name = next((item["name"] for item in data["groups"] if item["id"] == group_id), None)
     items = [
         item
         for item in data["idols"]
@@ -159,7 +158,7 @@ def list_idols(
             q,
             ("name", "name_en", "name_ko", "name_translated", "group_name", "company", "role"),
         )
-        and (not group_name or item["group_name"] == group_name)
+        and (not group_id or group_id in item["group_ids"])
         and (not region or item["region"] == region)
     ]
     return success(_page(items, cursor, limit, lambda item: item["name"]))
@@ -333,8 +332,23 @@ def list_others(
         item
         for item in data["others"]
         if _contains(item, q, ("name", "original_name", "description", "tags"))
-        and (not group_id or item.get("group_id") == group_id or item["id"] in related)
-        and (not idol_id or item["id"] in related)
+        and (
+            not group_id
+            or item.get("group_id") == group_id
+            or item["id"] in related
+            or any(
+                a.get("type") == "groups" and a.get("id") == group_id
+                for a in item.get("artists", [])
+            )
+        )
+        and (
+            not idol_id
+            or item["id"] in related
+            or item.get("idol_id") == idol_id
+            or any(
+                a.get("type") == "idols" and a.get("id") == idol_id for a in item.get("artists", [])
+            )
+        )
         and (not year or item["start_date"].startswith(year))
     ]
     return success(_tagged_page(items, tag_ids, cursor, limit, _name_key))

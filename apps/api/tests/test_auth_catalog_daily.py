@@ -5,7 +5,7 @@ def test_health_login_and_catalog_contract(client):
 
     login = client.post(
         "/api/v1/auth/login",
-        json={"method": "phone", "phone": "13800000000", "code": "123456"},
+        json={"method": "phone", "phone": "13800000000", "code": "666666"},
     )
     assert login.status_code == 200
     assert login.json()["data"]["user"]["id"] == "current-user"

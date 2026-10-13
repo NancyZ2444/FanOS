@@ -122,7 +122,21 @@ COMBINED_GROUP_PROFILE_FIELDS = ["group_id", *COMBINED_GROUP_FIELDS]
 
 def columns(kind: str) -> list[str]:
     if kind == "others":
-        return ["name", "original_name", "start_date", "end_date", "description", "tags"]
+        return [
+            "name",
+            "group_id",
+            "group_name",
+            "idol_id",
+            "idol_name",
+            "artist_names",
+            "artists",
+            "original_name",
+            "start_date",
+            "end_date",
+            "description",
+            "image_url",
+            "tags",
+        ]
     if kind == "companies":
         from .company_import import COLUMNS
 
@@ -186,7 +200,7 @@ def read_sheet(filename: str, raw: bytes, kind: str) -> list[dict]:
             raise DomainError("INVALID_ROW_COUNT", "每次请导入 1–2000 行", 422)
         return records
     required = {"group_id", "source_entity_id", "image_url"} if kind == "cards" else {"name"}
-    if kind not in {"cards", "groups", "idols", "companies", "others"} and not {
+    if kind not in {"cards", "groups", "idols", "companies"} and not {
         "group_id",
         "group_name",
         "idol_id",
@@ -251,9 +265,7 @@ def relation_errors(db: Session, kind: str, payload: EntityDraft) -> list[dict]:
             errors.append({"field": "group_id", "message": "组合不存在，请先导入组合或修正 ID"})
         if payload.idol_id and not db.get(Idol, payload.idol_id):
             errors.append({"field": "idol_id", "message": "艺人不存在，请修正 ID"})
-        if kind not in {"idols", "others"} and not (
-            payload.group_id or payload.idol_id or payload.artists
-        ):
+        if kind != "idols" and not (payload.group_id or payload.idol_id or payload.artists):
             errors.append({"field": "artists", "message": "请选择组合或个人归属"})
         for artist in payload.artists:
             artist_kind = artist.get("type")
@@ -277,7 +289,7 @@ def relation_errors(db: Session, kind: str, payload: EntityDraft) -> list[dict]:
                 )
             )
     existing = db.scalars(query).all()
-    if kind not in {"groups", "idols", "others"}:
+    if kind not in {"groups", "idols"}:
         from .catalog_extensions import actor_names
 
         existing = [
@@ -377,7 +389,6 @@ def entity_draft(db: Session, kind: str, value: dict) -> EntityDraft:
         from app.modules.catalog.contributions import validate_other_fields
 
         validate_other_fields(value)
-        return EntityDraft.model_validate(value)
     group_name = value.pop("group_name", "")
     if kind != "groups":
         group_id = value.get("group_id", "")
@@ -397,7 +408,9 @@ def entity_draft(db: Session, kind: str, value: dict) -> EntityDraft:
     artist_names = value.pop("artist_names", "")
     idol_names = value.pop("idol_names", "")
     idol_ids = value.pop("idol_ids", "")
-    if kind == "albums" and (artist_names or idol_names or idol_ids or "|" in idol_name):
+    if kind in {"albums", "others"} and (
+        artist_names or idol_names or idol_ids or "|" in idol_name
+    ):
         if value.get("artists"):
             EntityDraft.model_validate(
                 {"name": value.get("name") or "validation", "artists": value["artists"]}

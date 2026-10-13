@@ -34,7 +34,7 @@ def detect_single(raw):
         image = ImageOps.exif_transpose(image).convert("RGB")
         normalized = io.BytesIO()
         image.save(normalized, format="PNG")
-        regions = CardMatcherAdapter.detect(normalized.getvalue())
+        regions = CardMatcherAdapter.detect(normalized.getvalue(), require_person=False)
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
         raise DomainError("INVALID_IMAGE", "请上传有效的 JPG、PNG 或 WebP 小卡图片", 422) from exc
     except OverflowError as exc:

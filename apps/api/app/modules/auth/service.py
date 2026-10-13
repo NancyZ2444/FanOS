@@ -28,6 +28,7 @@ def login(db: Session, method: str, phone: str | None, code: str | None) -> dict
         raise DomainError("INVALID_VERIFICATION_CODE", "验证码不正确")
     lookup_phone = phone or "13800000000"
     user = db.scalar(select(User).where(User.phone == lookup_phone))
+    is_new_user = user is None
     if user is None:
         user = User(
             id=f"user-{lookup_phone}",
@@ -39,7 +40,7 @@ def login(db: Session, method: str, phone: str | None, code: str | None) -> dict
         db.refresh(user)
     if not user.is_active:
         raise DomainError("USER_UNAVAILABLE", "账号已被停用", 401)
-    return issue_tokens(user)
+    return {**issue_tokens(user), "is_new_user": is_new_user}
 
 
 def issue_tokens(user: User) -> dict[str, object]:

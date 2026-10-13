@@ -81,7 +81,7 @@ def test_import_each_entity_type_is_preview_only_then_persistent_and_idempotent(
         "release_date": datetime(2026, 10, 9) if fmt == "xlsx" else "2026-10-09",
         "tags": "测试|新发行",
     }
-    if kind not in {"groups", "others"}:
+    if kind != "groups":
         row["group_name"] = "LUMINA"
     if kind == "events":
         row["city"] = "Seoul"
@@ -240,7 +240,7 @@ def test_templates_csv_and_excel_are_specific_to_kind(client, admin_headers, kin
     workbook = load_workbook(io.BytesIO(xlsx_res.content))
     assert list(next(workbook.active.values)) == fields
     assert fields[0] == ("group_id" if kind == "cards" else "name")
-    if kind not in {"cards", "groups", "others"}:
+    if kind not in {"cards", "groups"}:
         assert "group_name" in fields
     workbook.close()
 

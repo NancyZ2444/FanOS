@@ -10,6 +10,8 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from app.core.config import get_settings
+from app.integrations.card_matcher.portrait_detector import ENGINE as PORTRAIT_ENGINE
+from app.integrations.card_matcher.portrait_detector import PortraitDetector
 from app.integrations.card_matcher.sleeve_detector import detect_sleeve_quadrilaterals
 from app.integrations.card_matcher.visual import ENGINE, features, similarity
 
@@ -65,10 +67,16 @@ class CardMatcherAdapter:
     def readiness(self, known_cards: dict[str, str | None] | None = None) -> dict[str, Any]:
         count = len(self.indexed(known_cards))
         missing = [] if count else ["official_card_index"]
+        detector_available = PortraitDetector.available()
+        if not detector_available:
+            missing.append("portrait_detector")
         if self.index_error:
             missing.append("invalid_card_index")
         return {
-            "available": bool(count),
+            "available": bool(count) and detector_available,
+            "detector_available": detector_available,
+            "detector_engine": PORTRAIT_ENGINE,
+            "person_required": True,
             "production_ready": False,
             "engine": ENGINE,
             "indexed_card_count": count,
@@ -77,7 +85,9 @@ class CardMatcherAdapter:
             ),
             "extractor_modes": {"artwork": "real"},
             "missing_requirements": missing,
-            "message": "可扫描已收录卡图"
+            "message": "人物检测服务暂未就绪，请检查模型文件"
+            if not detector_available
+            else "可扫描已收录的人物小卡"
             if count
             else "图鉴尚未建立可用卡图索引，请先上传卡片正面并生成索引",
         }
@@ -86,7 +96,9 @@ class CardMatcherAdapter:
     def index_entry(card_id: str, image: Image.Image, image_url: str) -> dict:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
-        regions = CardMatcherAdapter.detect(buffer.getvalue())
+        # Admin indexing accepts non-portrait artwork/back sides too. The public
+        # scanning flow, unlike indexing/crop tooling, always requires a person.
+        regions = CardMatcherAdapter.detect(buffer.getvalue(), require_person=False)
         if len(regions) != 1:
             raise ValueError("建库照片需仅包含一张小卡，请先裁剪正面图片")
         visual = features(regions[0].crop)
@@ -100,13 +112,14 @@ class CardMatcherAdapter:
         }
 
     @staticmethod
-    def detect(content: bytes) -> list[DetectedRegion]:
+    def detect(content: bytes, *, require_person: bool = True) -> list[DetectedRegion]:
         settings = get_settings()
         with Image.open(io.BytesIO(content)) as source:
             if source.width * source.height > settings.scan_max_pixels:
                 raise ValueError("Image dimensions too large")
             image = ImageOps.exif_transpose(source).convert("RGB")
         image.thumbnail((2400, 2400))
+        portrait = PortraitDetector() if require_person else None
         array = np.asarray(image)
         # Transparent sleeve seams connect neighbouring Canny outlines. A
         # repeated layout supported by long boundaries takes precedence over
@@ -147,6 +160,42 @@ class CardMatcherAdapter:
             if min(w, h) < 40:
                 continue
             candidates.append((area, points, int(w), int(h)))
+        if sleeve_points:
+            candidates = [
+                (
+                    abs(cv2.contourArea(points)),
+                    points,
+                    int(
+                        max(
+                            np.linalg.norm(points[1] - points[0]),
+                            np.linalg.norm(points[2] - points[3]),
+                        )
+                    ),
+                    int(
+                        max(
+                            np.linalg.norm(points[3] - points[0]),
+                            np.linalg.norm(points[2] - points[1]),
+                        )
+                    ),
+                )
+                for points in sleeve_points
+            ]
+
+        def rectify(points, w, h):
+            target = np.float32([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]])
+            return Image.fromarray(
+                cv2.warpPerspective(array, cv2.getPerspectiveTransform(points, target), (w, h))
+            )
+
+        # Filter before enclosure suppression as well as NMS: keyboard keys or
+        # artwork rectangles must not cause a valid outer card to be discarded.
+        had_candidates = bool(candidates)
+        if portrait is not None:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if portrait.contains_person(rectify(candidate[1], candidate[2], candidate[3]))
+            ]
         # An album/page/table outline can have a photocard aspect ratio too.
         # Discard enclosing frames before NMS if they contain multiple distinct
         # card-sized quadrilaterals; otherwise largest-first NMS eats every card.
@@ -171,26 +220,6 @@ class CardMatcherAdapter:
             if len(children) >= 2 and sum(child[0] for child in children) / area >= 0.2:
                 continue
             card_candidates.append(candidate)
-        if sleeve_points:
-            card_candidates = [
-                (
-                    abs(cv2.contourArea(points)),
-                    points,
-                    int(
-                        max(
-                            np.linalg.norm(points[1] - points[0]),
-                            np.linalg.norm(points[2] - points[3]),
-                        )
-                    ),
-                    int(
-                        max(
-                            np.linalg.norm(points[3] - points[0]),
-                            np.linalg.norm(points[2] - points[1]),
-                        )
-                    ),
-                )
-                for points in sleeve_points
-            ]
         kept = []
         for _, points, w, h in sorted(card_candidates, key=lambda item: -item[0]):
             x, y, bw, bh = cv2.boundingRect(points)
@@ -202,10 +231,7 @@ class CardMatcherAdapter:
                 for ox, oy, ow, oh, _, _ in kept
             ):
                 continue
-            target = np.float32([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]])
-            crop = Image.fromarray(
-                cv2.warpPerspective(array, cv2.getPerspectiveTransform(points, target), (w, h))
-            )
+            crop = rectify(points, w, h)
             corners = [
                 {
                     "x": float(px) / max(1, image.width - 1),
@@ -216,9 +242,12 @@ class CardMatcherAdapter:
             kept.append((x, y, min(bw, image.width - x), min(bh, image.height - y), crop, corners))
         if len(kept) > settings.card_detector_max_cards:
             raise OverflowError("Too many cards")
-        if not kept:
-            # Tight crop/no outline: try the whole image; no geometric match stays unknown.
-            kept = [(0, 0, image.width, image.height, image, None)]
+        if not kept and (portrait is None or not had_candidates):
+            # Only a tight, card-shaped portrait may use the whole image. Never
+            # turn rejected keyboard/screen regions back into one huge card.
+            ratio = min(image.size) / max(image.size)
+            if portrait is None or (0.45 <= ratio <= 0.88 and portrait.contains_person(image)):
+                kept = [(0, 0, image.width, image.height, image, None)]
         return [
             DetectedRegion(
                 x / image.width, y / image.height, w / image.width, h / image.height, crop, corners

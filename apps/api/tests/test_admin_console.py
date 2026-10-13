@@ -381,7 +381,7 @@ def test_production_refuses_development_login(client, monkeypatch):
 
     monkeypatch.setattr(get_settings(), "environment", "production")
     response = client.post(
-        "/api/v1/auth/login", json={"method": "phone", "phone": "13900000000", "code": "123456"}
+        "/api/v1/auth/login", json={"method": "phone", "phone": "13900000000", "code": "666666"}
     )
     assert response.status_code == 503
     assert response.json()["error_code"] == "AUTH_PROVIDER_NOT_CONFIGURED"

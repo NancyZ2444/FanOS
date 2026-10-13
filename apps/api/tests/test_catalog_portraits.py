@@ -101,3 +101,61 @@ def test_failed_download_does_not_leave_a_cached_error(client, monkeypatch):
     assert client.get(url).status_code == 503
     monkeypatch.setattr(images, "_source_bytes", original)
     assert client.get(url).status_code == 200
+
+
+def test_cover_only_relative_upload_is_public_and_can_be_thumbnailed(client):
+    path = publish_image("cover-only.png")
+    with SessionLocal() as db:
+        row = db.scalar(
+            select(ContentMetadata).where(
+                ContentMetadata.entity_type == "idols", ContentMetadata.entity_id == "idol-aria"
+            )
+        )
+        row.data = {"image_url": " ", "cover_image": "/media/cover-only.png"}
+        db.commit()
+    idol = next(
+        i
+        for i in client.get("/api/v1/catalog/bootstrap").json()["data"]["idols"]
+        if i["id"] == "idol-aria"
+    )
+    assert idol["image_url"] == "/media/cover-only.png"
+    assert images._local_path(idol["image_url"]) == path.resolve()
+    assert client.get(idol["thumbnail_url"]).status_code == 200
+
+
+def test_group_filter_uses_membership_id_not_primary_group_label(client):
+    from datetime import date
+
+    from app.models import GroupMembership
+
+    with SessionLocal() as db:
+        db.add(
+            GroupMembership(
+                group_id="group-aster",
+                idol_id="idol-aria",
+                status="active",
+                start_date=date(2020, 1, 1),
+            )
+        )
+        db.commit()
+    items = client.get("/api/v1/catalog/idols?group_id=group-aster").json()["data"]["items"]
+    assert "idol-aria" in {item["id"] for item in items}
+    assert client.get("/api/v1/catalog/idols?group_id=unknown").json()["data"]["items"] == []
+
+
+def test_group_members_never_expose_unpublished_idols(client):
+    publish_image()
+    with SessionLocal() as db:
+        row = db.scalar(
+            select(ContentMetadata).where(
+                ContentMetadata.entity_type == "idols", ContentMetadata.entity_id == "idol-aria"
+            )
+        )
+        row.status = "DRAFT"
+        db.commit()
+    group = next(
+        g
+        for g in client.get("/api/v1/catalog/bootstrap").json()["data"]["groups"]
+        if g["id"] == "group-lumina"
+    )
+    assert "idol-aria" not in group["member_ids"]

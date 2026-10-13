@@ -624,7 +624,7 @@ def save_entity(
             MODELS[artist["type"]], artist.get("id")
         ):
             fail_fields([{"field": "artists", "message": "艺人归属无效"}])
-    if kind not in {"groups", "idols", "others"} and not artists:
+    if kind not in {"groups", "idols"} and not artists:
         fail_fields([{"field": "artists", "message": "请选择至少一个组合或个人艺人"}])
     if kind == "groups":
         existing = db.scalar(select(Group).where(Group.name == payload.name))
@@ -682,9 +682,16 @@ def save_entity(
             key: values[key]
             for key in ("name", "original_name", "start_date", "end_date", "description")
         }
+        attrs["group_id"] = payload.group_id or next(
+            (a["id"] for a in artists if a["type"] == "groups"), None
+        )
         attrs["is_published"] = False
         values = {key: value for key, value in attrs.items() if key != "is_published"} | {
-            "tags": values["tags"]
+            "tags": values["tags"],
+            "artists": artists,
+            "idol_id": payload.idol_id,
+            "artist_name": " / ".join(db.get(MODELS[a["type"]], a["id"]).name for a in artists),
+            "image_url": payload.image_url,
         }
     if row is None:
         row = MODELS[kind](id=new_id(kind[:-1]), **attrs)
@@ -733,6 +740,15 @@ def transition_entity(
         raise DomainError("INVALID_TRANSITION", "当前状态不允许执行此操作", 409)
     if kind == "events" and action in {"submit", "publish"}:
         validate_event_location(EntityDraft.model_validate(before))
+    if kind == "others" and action in {"submit", "publish"}:
+        from .catalog_extensions import actor_names
+
+        artists = actor_names(db, kind, row)
+        if not artists or any(
+            a.get("type") not in {"groups", "idols"} or not db.get(MODELS[a["type"]], a.get("id"))
+            for a in artists
+        ):
+            fail_fields([{"field": "artists", "message": "请选择至少一个有效的组合或艺人"}])
     if action == "reject" and not reason.strip():
         raise DomainError("REASON_REQUIRED", "请填写驳回原因", 422)
     meta = meta_for(db, kind, item_id)
