@@ -6,6 +6,8 @@ from test_admin_console import payload
 from app.admin_models import ContentMetadata
 from app.core.database import SessionLocal
 from app.models import Card, Group, GroupMembership, Idol
+from app.modules.admin.catalog_companies import company_name_key
+from app.modules.admin.catalog_extensions import CatalogRecord
 
 ROOT = "/api/v1/admin/console"
 
@@ -638,6 +640,227 @@ def test_combined_import_persists_group_and_idol_profiles_and_aggregates_group_f
             )
         )
         assert membership
+
+
+def test_combined_import_reuses_company_inherits_to_idol_and_exposes_company_detail(
+    client, admin_headers
+):
+    from test_catalog_bulk import confirm, preview
+
+    company = record(client, admin_headers, "companies", name="Nova Works")
+    task = preview(
+        client,
+        admin_headers,
+        "groups_idols",
+        [
+            {
+                "group_code": "COMPANY-REUSE",
+                "group_name": "Company Reuse Group",
+                "group_company": "ｎｏｖａ　ｗｏｒｋｓ",
+                "idol_name": "Company Reuse Member",
+                "idol_company": "",
+            }
+        ],
+    )
+    assert task["errors"] == []
+    preview_row = task["rows"][0]["data"]
+    assert preview_row["group_company_id"] == company["id"]
+    assert preview_row["group_company_mode"] == "reuse"
+    assert preview_row["idol_company_id"] == company["id"]
+    assert preview_row["idol_company_mode"] == "reuse"
+    assert preview_row["idol_company_inherited"] is True
+
+    response = confirm(client, admin_headers, task)
+    assert response.status_code == 200, response.text
+    imported = response.json()["data"]["rows"][0]
+    assert imported["group_company_id"] == company["id"]
+    assert imported["idol_company_id"] == company["id"]
+    assert imported["group_company_relation_operation"] == "created"
+    assert imported["idol_company_relation_operation"] == "created"
+
+    update = preview(
+        client,
+        admin_headers,
+        "groups_idols",
+        [
+            {
+                "group_id": imported["group_id"],
+                "group_code": "COMPANY-REUSE",
+                "group_name": "Company Reuse Group",
+                "group_company": "NOVA WORKS",
+                "idol_id": imported["idol_id"],
+                "idol_name": "Company Reuse Member",
+                "idol_company": "",
+            }
+        ],
+    )
+    updated = confirm(client, admin_headers, update)
+    assert updated.status_code == 200, updated.text
+    updated_row = updated.json()["data"]["rows"][0]
+    assert updated_row["group_company_relation_operation"] == "existing"
+    assert updated_row["idol_company_relation_operation"] == "existing"
+
+    detail = client.get(ROOT + f"/records/companies/{company['id']}/detail", headers=admin_headers)
+    assert detail.status_code == 200, detail.text
+    detail_data = detail.json()["data"]
+    assert detail_data["company"]["group_count"] == 1
+    assert detail_data["company"]["idol_count"] == 1
+    assert detail_data["groups"][0]["entity_id"] == imported["group_id"]
+    assert detail_data["groups"][0]["relation_status"] == "current"
+    assert detail_data["idols"][0]["entity_id"] == imported["idol_id"]
+    assert detail_data["idols"][0]["groups"][0]["id"] == imported["group_id"]
+    with SessionLocal() as db:
+        companies = [
+            item
+            for item in db.scalars(
+                select(CatalogRecord).where(CatalogRecord.kind == "companies")
+            ).all()
+            if company_name_key(item.data["name"]) == company_name_key("Nova Works")
+        ]
+        relations = db.scalars(
+            select(CatalogRecord).where(
+                CatalogRecord.kind == "company_relations",
+                CatalogRecord.entity_id.in_([imported["group_id"], imported["idol_id"]]),
+            )
+        ).all()
+        assert len(companies) == 1
+        assert len(relations) == 2
+        assert {relation.data["company_id"] for relation in relations} == {company["id"]}
+        assert db.get(Group, imported["group_id"]).company == "Nova Works"
+        assert db.get(Idol, imported["idol_id"]).company == "Nova Works"
+
+
+def test_combined_import_creates_missing_companies_once_and_links_each_entity(
+    client, admin_headers
+):
+    from test_catalog_bulk import confirm, preview
+
+    rows = [
+        {
+            "group_code": "COMPANY-CREATE",
+            "group_name": "Company Create Group",
+            "group_company": "Generated Group Agency",
+            "idol_name": "Inherited Company Member",
+            "idol_company": "",
+        },
+        {
+            "group_code": "COMPANY-CREATE",
+            "group_name": "Company Create Group",
+            "group_company": "Generated Group Agency",
+            "idol_name": "Special Label Member",
+            "idol_company": "Generated Special Label",
+        },
+    ]
+    task = preview(client, admin_headers, "groups_idols", rows)
+    assert task["errors"] == []
+    assert task["rows"][0]["data"]["group_company_mode"] == "create"
+    assert task["rows"][0]["data"]["idol_company_inherited"] is True
+    assert task["rows"][1]["data"]["idol_company_mode"] == "create"
+
+    response = confirm(client, admin_headers, task)
+    assert response.status_code == 200, response.text
+    imported = response.json()["data"]["rows"]
+    with SessionLocal() as db:
+        companies = {
+            company.data["name"]: company
+            for company in db.scalars(
+                select(CatalogRecord).where(CatalogRecord.kind == "companies")
+            ).all()
+            if company.data["name"] in {"Generated Group Agency", "Generated Special Label"}
+        }
+        assert set(companies) == {"Generated Group Agency", "Generated Special Label"}
+        relations = db.scalars(
+            select(CatalogRecord).where(
+                CatalogRecord.kind == "company_relations",
+                CatalogRecord.entity_id.in_(
+                    [imported[0]["group_id"], imported[0]["idol_id"], imported[1]["idol_id"]]
+                ),
+            )
+        ).all()
+        linked = {
+            (relation.entity_type, relation.entity_id): relation.data["company_id"]
+            for relation in relations
+        }
+        assert linked[("groups", imported[0]["group_id"])] == companies["Generated Group Agency"].id
+        assert linked[("idols", imported[0]["idol_id"])] == companies["Generated Group Agency"].id
+        assert linked[("idols", imported[1]["idol_id"])] == companies["Generated Special Label"].id
+
+
+def test_combined_import_rejects_archived_or_ambiguous_company(client, admin_headers):
+    from test_catalog_bulk import preview
+
+    archived = record(client, admin_headers, "companies", name="Archived Import Agency")
+    with SessionLocal() as db:
+        db.get(CatalogRecord, archived["id"]).status = "ARCHIVED"
+        db.add_all(
+            [
+                CatalogRecord(kind="companies", data={"name": "Ambiguous Import Agency"}),
+                CatalogRecord(kind="companies", data={"name": "ambiguous import agency"}),
+            ]
+        )
+        db.commit()
+    for suffix, company_name, expected in [
+        ("ARCHIVED", "Archived Import Agency", "已归档"),
+        ("AMBIGUOUS", "Ambiguous Import Agency", "多个同名公司"),
+    ]:
+        task = preview(
+            client,
+            admin_headers,
+            "groups_idols",
+            [
+                {
+                    "group_code": f"COMPANY-{suffix}",
+                    "group_name": f"Company {suffix} Group",
+                    "group_company": company_name,
+                    "idol_name": f"Company {suffix} Member",
+                }
+            ],
+        )
+        assert task["rows"] == []
+        assert any(
+            error["field"] == "group_company" and expected in error["message"]
+            for error in task["errors"]
+        )
+
+
+def test_combined_import_rolls_back_auto_company_when_relation_fails(client, admin_headers):
+    from test_catalog_bulk import confirm, preview
+
+    long_company = record(client, admin_headers, "companies", name="L" * 115)
+    group = entity(
+        client,
+        admin_headers,
+        "groups",
+        name="Company Rollback Group",
+        company_ids=[long_company["id"]],
+    )
+    task = preview(
+        client,
+        admin_headers,
+        "groups_idols",
+        [
+            {
+                "group_id": group["id"],
+                "group_code": "COMPANY-ROLLBACK",
+                "group_name": group["name"],
+                "group_company": "Rollback Agency",
+                "group_description": "must roll back",
+                "idol_name": "Rollback Member",
+            }
+        ],
+    )
+    assert task["errors"] == []
+    response = confirm(client, admin_headers, task)
+    assert response.status_code == 422, response.text
+    with SessionLocal() as db:
+        assert db.get(Group, group["id"]).description != "must roll back"
+        assert db.scalar(select(Idol).where(Idol.name == "Rollback Member")) is None
+        assert not any(
+            company_name_key(company.data["name"]) == company_name_key("Rollback Agency")
+            for company in db.scalars(
+                select(CatalogRecord).where(CatalogRecord.kind == "companies")
+            ).all()
+        )
 
 
 def test_combined_import_rejects_conflicting_group_profile_values(client, admin_headers):

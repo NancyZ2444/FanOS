@@ -119,6 +119,13 @@ export interface ImportTask {
     group_operation?: "created" | "updated";
     idol_operation?: "created" | "updated";
     membership_operation?: "created" | "existing";
+    group_company_id?: string;
+    group_company_operation?: "created" | "reused" | "none";
+    group_company_relation_operation?: "created" | "existing" | "none";
+    idol_company_id?: string;
+    idol_company_operation?: "created" | "reused" | "none";
+    idol_company_relation_operation?: "created" | "existing" | "none";
+    idol_company_inherited?: boolean;
   }[];
   errors: {
     row: number;

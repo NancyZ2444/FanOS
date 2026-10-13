@@ -1067,6 +1067,74 @@ def validate_record(db, kind, payload):
         raise DomainError("INVALID_DATE_RANGE", "结束日期不能早于开始日期", 422)
 
 
+def company_relation_counts(company_id: str, relations: list[CatalogRecord]) -> dict:
+    from .catalog_companies import relation_is_active
+
+    current = {"groups": set(), "idols": set()}
+    history = {"groups": set(), "idols": set()}
+    for relation in relations:
+        if relation.data.get("company_id") != company_id or relation.entity_type not in current:
+            continue
+        bucket = current if relation_is_active(relation) else history
+        bucket[relation.entity_type].add(relation.entity_id)
+    return {
+        "group_count": len(current["groups"]),
+        "idol_count": len(current["idols"]),
+        "group_history_count": len(history["groups"]),
+        "idol_history_count": len(history["idols"]),
+    }
+
+
+def company_relation_items(db: Session, company_id: str) -> dict[str, list[dict]]:
+    from .catalog_companies import relation_is_active
+    from .catalog_service import entity_payload
+
+    result = {"groups": [], "idols": []}
+    company_relations = [
+        relation
+        for relation in records(db, "company_relations")
+        if relation.data.get("company_id") == company_id and relation.entity_type in result
+    ]
+    for relation in company_relations:
+        model = Group if relation.entity_type == "groups" else Idol
+        entity = db.get(model, relation.entity_id)
+        if not entity:
+            continue
+        payload = entity_payload(db, relation.entity_type, entity)
+        item = {
+            "relation_id": relation.id,
+            "entity_id": entity.id,
+            "name": payload.get("name", entity.name),
+            "status": payload.get("status", "PUBLISHED"),
+            "relation_status": "current" if relation_is_active(relation) else "history",
+            "relation_type": relation.data.get("relation_type", "Agency"),
+            "start_date": relation.data.get("start_date", ""),
+            "end_date": relation.data.get("end_date", ""),
+            "date_unknown": bool(relation.data.get("date_unknown")),
+            "source": relation.data.get("source", ""),
+        }
+        if relation.entity_type == "idols":
+            memberships = db.scalars(
+                select(GroupMembership).where(GroupMembership.idol_id == entity.id)
+            ).all()
+            item["groups"] = [
+                {"id": group.id, "name": group.name}
+                for membership in memberships
+                if membership.status in {"active", "inactive"}
+                and (group := db.get(Group, membership.group_id))
+            ]
+        result[relation.entity_type].append(item)
+    for items in result.values():
+        items.sort(
+            key=lambda item: (
+                item["relation_status"] != "current",
+                item["name"].casefold(),
+                item["relation_id"],
+            )
+        )
+    return result
+
+
 @router.get("/records/{kind}")
 def list_records(
     kind: str,
@@ -1076,7 +1144,11 @@ def list_records(
 ):
     from .catalog_service import row_data
 
-    items = [row_data(r) for r in records(db, kind, entity_id)]
+    rows = records(db, kind, entity_id)
+    items = [row_data(r) for r in rows]
+    if kind == "companies":
+        relations = records(db, "company_relations")
+        items = [{**item, **company_relation_counts(item["id"], relations)} for item in items]
     if kind == "memberships" and entity_id:
         known = {r["data"].get("membership_id") for r in items}
         items += [
@@ -1094,6 +1166,31 @@ def list_records(
             if m.id not in known
         ]
     return success({"items": items})
+
+
+@router.get("/records/companies/{company_id}/detail")
+def company_detail(
+    company_id: str,
+    actor: User = Depends(current_admin),
+    db: Session = Depends(get_db),
+):
+    from .catalog_service import row_data
+
+    company = db.get(CatalogRecord, company_id)
+    if not company or company.kind != "companies":
+        raise DomainError("NOT_FOUND", "公司不存在", 404)
+    relations = records(db, "company_relations")
+    linked = company_relation_items(db, company_id)
+    return success(
+        {
+            "company": {
+                **row_data(company),
+                **company_relation_counts(company_id, relations),
+            },
+            "groups": linked["groups"],
+            "idols": linked["idols"],
+        }
+    )
 
 
 @router.post("/records/{kind}")

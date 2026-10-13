@@ -405,6 +405,7 @@ def confirm_import(
         raise DomainError("NO_VALID_ROWS", "没有可导入的数据行", 422)
     combined_values = iter(())
     combined_groups = {}
+    combined_companies = {}
     if task.kind == "groups_idols":
         sources = [
             {
@@ -436,7 +437,11 @@ def confirm_import(
             continue
         if task.kind == "groups_idols":
             result = import_service.import_combined(
-                db, actor, next(combined_values), combined_groups
+                db,
+                actor,
+                next(combined_values),
+                combined_groups,
+                combined_companies,
             )
             imported_rows.append({**row, **result})
             continue

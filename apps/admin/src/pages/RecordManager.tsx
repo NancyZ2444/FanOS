@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import {
   App,
   Button,
+  Descriptions,
+  Drawer,
   Form,
   Input,
   InputNumber,
@@ -10,6 +12,7 @@ import {
   Modal,
   Select,
   Space,
+  Spin,
   Tag,
   Table,
 } from "antd";
@@ -46,6 +49,9 @@ export default function RecordManager({
   const [current, setCurrent] = useState<any>();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [companyDetailOpen, setCompanyDetailOpen] = useState(false);
+  const [companyDetailBusy, setCompanyDetailBusy] = useState(false);
+  const [companyDetail, setCompanyDetail] = useState<any>();
   const [members, setMembers] = useState<string[]>([]);
   const [per, setPer] = useState(1);
   const [validation, setValidation] = useState<any[]>([]);
@@ -133,6 +139,63 @@ export default function RecordManager({
       message.error((e as Error).message);
     }
   };
+  const viewCompany = async (row: any) => {
+    setCompanyDetailOpen(true);
+    setCompanyDetail({ company: row, groups: [], idols: [] });
+    setCompanyDetailBusy(true);
+    try {
+      setCompanyDetail(await consoleApi(`/records/companies/${row.id}/detail`));
+    } catch (e) {
+      message.error((e as Error).message);
+      setCompanyDetailOpen(false);
+    } finally {
+      setCompanyDetailBusy(false);
+    }
+  };
+  const companyRelationColumns = (entityKind: "groups" | "idols") => [
+    {
+      title: entityKind === "groups" ? "组合" : "艺人",
+      dataIndex: "name",
+      render: (name: string, row: any) => (
+        <Button
+          type="link"
+          onClick={() =>
+            navigate(
+              `/catalog/${entityKind}/${encodeURIComponent(row.entity_id)}/detail`,
+            )
+          }
+        >
+          {name}
+        </Button>
+      ),
+    },
+    ...(entityKind === "idols"
+      ? [
+          {
+            title: "所属组合",
+            render: (_: unknown, row: any) =>
+              row.groups?.map((group: any) => group.name).join(" / ") || "—",
+          },
+        ]
+      : []),
+    {
+      title: "关联状态",
+      dataIndex: "relation_status",
+      render: (status: string) => (
+        <Tag color={status === "current" ? "green" : "default"}>
+          {status === "current" ? "当前关联" : "历史关联"}
+        </Tag>
+      ),
+    },
+    {
+      title: "有效期",
+      render: (_: unknown, row: any) =>
+        row.date_unknown
+          ? "开始日期待核实"
+          : `${row.start_date || "—"} 至 ${row.end_date || "至今"}`,
+    },
+    { title: "档案状态", dataIndex: "status" },
+  ];
   return (
     <>
       <Space style={{ marginBottom: 12 }}>
@@ -166,10 +229,43 @@ export default function RecordManager({
             render: (_, r) =>
               `${r.data.status || r.status} ${r.data.start_date || (r.data.date_unknown ? "开始日期待核实" : r.data.release_date || "")} ${r.data.end_date || ""}`,
           },
+          ...(kind === "companies"
+            ? [
+                {
+                  title: "关联组合",
+                  render: (_: unknown, r: any) => (
+                    <Space size={4}>
+                      <b>{r.group_count || 0}</b>
+                      <span>当前</span>
+                      {!!r.group_history_count && (
+                        <Tag>历史 {r.group_history_count}</Tag>
+                      )}
+                    </Space>
+                  ),
+                },
+                {
+                  title: "关联艺人",
+                  render: (_: unknown, r: any) => (
+                    <Space size={4}>
+                      <b>{r.idol_count || 0}</b>
+                      <span>当前</span>
+                      {!!r.idol_history_count && (
+                        <Tag>历史 {r.idol_history_count}</Tag>
+                      )}
+                    </Space>
+                  ),
+                },
+              ]
+            : []),
           {
             title: "操作",
             render: (_, r) => (
               <Space wrap>
+                {kind === "companies" && (
+                  <Button type="link" onClick={() => viewCompany(r)}>
+                    查看详情
+                  </Button>
+                )}
                 {actor.role !== "operation_admin" && (
                   <Button type="link" onClick={() => edit(r)}>
                     编辑
@@ -380,6 +476,59 @@ export default function RecordManager({
           />
         </section>
       )}
+      <Drawer
+        title={companyDetail?.company?.data?.name || "公司详情"}
+        open={companyDetailOpen}
+        onClose={() => setCompanyDetailOpen(false)}
+        width={820}
+        destroyOnHidden
+      >
+        <Spin spinning={companyDetailBusy}>
+          {companyDetail && (
+            <Space direction="vertical" size={24} style={{ width: "100%" }}>
+              <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }}>
+                <Descriptions.Item label="公司 ID">
+                  {companyDetail.company.id}
+                </Descriptions.Item>
+                <Descriptions.Item label="状态">
+                  {companyDetail.company.status}
+                </Descriptions.Item>
+                <Descriptions.Item label="当前关联组合">
+                  {companyDetail.company.group_count || 0}
+                </Descriptions.Item>
+                <Descriptions.Item label="当前关联艺人">
+                  {companyDetail.company.idol_count || 0}
+                </Descriptions.Item>
+                <Descriptions.Item label="描述" span={2}>
+                  {companyDetail.company.data?.description || "—"}
+                </Descriptions.Item>
+              </Descriptions>
+              <section style={{ width: "100%" }}>
+                <h3>关联组合（{companyDetail.groups?.length || 0}）</h3>
+                <Table
+                  rowKey="relation_id"
+                  size="small"
+                  pagination={false}
+                  dataSource={companyDetail.groups || []}
+                  columns={companyRelationColumns("groups")}
+                  scroll={{ x: 620 }}
+                />
+              </section>
+              <section style={{ width: "100%" }}>
+                <h3>关联艺人（{companyDetail.idols?.length || 0}）</h3>
+                <Table
+                  rowKey="relation_id"
+                  size="small"
+                  pagination={false}
+                  dataSource={companyDetail.idols || []}
+                  columns={companyRelationColumns("idols")}
+                  scroll={{ x: 720 }}
+                />
+              </section>
+            </Space>
+          )}
+        </Spin>
+      </Drawer>
       <Modal
         title={`${current ? "编辑" : "新增"}${labels[kind]}`}
         open={open}

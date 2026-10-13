@@ -64,6 +64,51 @@ test("company spreadsheet import is selectable from group form", async ({
   await expect(page.locator(".ant-drawer-body")).toContainText(name);
 });
 
+test("company detail lists linked groups and idols", async ({
+  page,
+  request,
+}) => {
+  const auth = await headers(request);
+  const suffix = Date.now();
+  const companyName = `Detail Agency ${suffix}`;
+  const companyResponse = await request.post(root + "/records/companies", {
+    headers: auth,
+    data: { data: { name: companyName, description: "Company detail test" } },
+  });
+  const company = (await companyResponse.json()).data;
+  const groupName = `Detail Group ${suffix}`;
+  const groupResponse = await request.post(root + "/entities/groups", {
+    headers: auth,
+    data: { name: groupName, company_ids: [company.id] },
+  });
+  const group = (await groupResponse.json()).data;
+  const idolName = `Detail Idol ${suffix}`;
+  const idolResponse = await request.post(root + "/entities/idols", {
+    headers: auth,
+    data: {
+      name: idolName,
+      group_id: group.id,
+      company_ids: [company.id],
+    },
+  });
+  expect(idolResponse.status()).toBe(200);
+
+  await page.goto("/catalog/companies");
+  const companyRow = page.getByRole("row").filter({ hasText: companyName });
+  await expect(companyRow).toContainText("1当前");
+  await companyRow.getByRole("button", { name: "查看详情" }).click();
+  const drawer = page.locator(".ant-drawer").filter({ hasText: companyName });
+  await expect(drawer).toContainText("当前关联组合");
+  await expect(drawer).toContainText("当前关联艺人");
+  await expect(drawer.getByRole("button", { name: groupName })).toBeVisible();
+  await expect(drawer.getByRole("button", { name: idolName })).toBeVisible();
+  await expect(drawer).toContainText("当前关联");
+  await drawer.getByRole("button", { name: groupName }).click();
+  await expect(page).toHaveURL(
+    new RegExp(`/catalog/groups/${encodeURIComponent(group.id)}/detail$`),
+  );
+});
+
 test("group and idol images appear in card selection and dropdowns", async ({
   page,
   request,

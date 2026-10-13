@@ -71,6 +71,15 @@ def test_company_change_requires_date_and_preserves_original_history(client, adm
     saved = client.put(url, headers=admin_headers, json=data)
     assert saved.status_code == 200, saved.text
     assert saved.json()["data"]["company_ids"] == [b["id"]]
+    old_detail = client.get(
+        ROOT + f"/records/companies/{a['id']}/detail", headers=admin_headers
+    ).json()["data"]
+    new_detail = client.get(
+        ROOT + f"/records/companies/{b['id']}/detail", headers=admin_headers
+    ).json()["data"]
+    assert old_detail["groups"][0]["relation_status"] == "history"
+    assert new_detail["groups"][0]["relation_status"] == "current"
+    assert new_detail["company"]["group_count"] == 1
     with SessionLocal() as db:
         rows = db.scalars(
             select(CatalogRecord).where(CatalogRecord.entity_id == created["id"])

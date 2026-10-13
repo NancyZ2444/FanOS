@@ -18,6 +18,14 @@ from app.models import Group, GroupMembership, Idol
 from app.modules.admin import catalog_service as service
 from app.modules.admin.console_schemas import CardDraft, EntityDraft
 
+from .catalog_companies import (
+    company_name_key,
+    ensure_company_relation,
+    get_or_create_company,
+    normalize_company_name,
+    resolve_company_name,
+)
+
 CARD_COLUMNS = [
     "group_id",
     "idol_id",
@@ -660,6 +668,42 @@ def _combined_targets(db: Session, data: dict) -> tuple[Group | None, Idol | Non
     return group, idol
 
 
+def _combined_company_plan(db: Session, data: dict, cache: dict) -> list[dict]:
+    problems = []
+    group_name = normalize_company_name(data.get("group_company", ""))
+    idol_source_name = normalize_company_name(data.get("idol_company", ""))
+    idol_inherited = not idol_source_name and bool(group_name)
+    for prefix, name, field in [
+        ("group", group_name, "group_company"),
+        (
+            "idol",
+            idol_source_name or group_name,
+            "group_company" if idol_inherited else "idol_company",
+        ),
+    ]:
+        data[f"{prefix}_company_effective_name"] = name
+        data[f"{prefix}_company_id"] = ""
+        data[f"{prefix}_company_mode"] = "none"
+        if prefix == "idol":
+            data["idol_company_inherited"] = idol_inherited
+        if not name:
+            continue
+        key = company_name_key(name)
+        try:
+            if key not in cache:
+                cache[key] = resolve_company_name(db, name)
+            company, mode = cache[key]
+        except DomainError as exc:
+            problems.append({"field": field, "message": exc.message})
+            continue
+        data[f"{prefix}_company_effective_name"] = (
+            company.data.get("name", name) if company else name
+        )
+        data[f"{prefix}_company_id"] = company.id if company else ""
+        data[f"{prefix}_company_mode"] = "reuse" if mode == "existing" else "create"
+    return problems
+
+
 def validate_combined(db: Session, records: list[dict]):
     prepared = []
     for index, row in enumerate(records, start=2):
@@ -716,11 +760,16 @@ def validate_combined(db: Session, records: list[dict]):
                 {"field": "group_id", "message": "同一 group_id 对应多个 group_code"}
             )
         profile = profiles.setdefault(code, {})
-        conflicts = [
-            field
-            for field in COMBINED_GROUP_PROFILE_FIELDS
-            if data.get(field) and profile.get(field) and data[field] != profile[field]
-        ]
+        conflicts = []
+        for field in COMBINED_GROUP_PROFILE_FIELDS:
+            if not data.get(field) or not profile.get(field):
+                continue
+            if field == "group_company":
+                matches = company_name_key(data[field]) == company_name_key(profile[field])
+            else:
+                matches = data[field] == profile[field]
+            if not matches:
+                conflicts.append(field)
         item["problems"].extend(
             {"field": field, "message": "同一组合的资料在文件内不一致"} for field in conflicts
         )
@@ -735,7 +784,7 @@ def validate_combined(db: Session, records: list[dict]):
         if group_id:
             group_ids[group_id] = code
 
-    valid, errors = [], []
+    valid, errors, company_cache = [], [], {}
     for item in prepared:
         index, data, problems = item["row"], item["data"], item["problems"]
         if not problems:
@@ -752,6 +801,8 @@ def validate_combined(db: Session, records: list[dict]):
                 problems.extend(
                     getattr(exc, "details", None) or [{"field": "row", "message": exc.message}]
                 )
+        if not problems:
+            problems.extend(_combined_company_plan(db, data, company_cache))
         if problems:
             errors += [
                 {"row": index, **problem, "suggestion": problem["message"], "can_skip": True}
@@ -798,9 +849,27 @@ def import_combined(
     actor,
     values: dict,
     new_groups: dict[str, Group] | None = None,
+    new_companies: dict | None = None,
 ) -> dict:
     """Create or update both entities by ID, then guarantee their membership relation."""
     new_groups = new_groups if new_groups is not None else {}
+    new_companies = new_companies if new_companies is not None else {}
+    group_company = group_company_operation = None
+    idol_company = idol_company_operation = None
+    if values.get("group_company_effective_name"):
+        group_company, group_company_operation = get_or_create_company(
+            db,
+            actor,
+            values["group_company_effective_name"],
+            new_companies,
+        )
+    if values.get("idol_company_effective_name"):
+        idol_company, idol_company_operation = get_or_create_company(
+            db,
+            actor,
+            values["idol_company_effective_name"],
+            new_companies,
+        )
     group_id = values.get("group_id", "")
     group_key = values["group_code"].casefold()
     if group_id:
@@ -818,6 +887,12 @@ def import_combined(
             new_groups[group_key] = group
         group_operation = "created"
 
+    group_company_relation_operation = None
+    if group_company:
+        _, group_company_relation_operation = ensure_company_relation(
+            db, actor, "groups", group.id, group_company.id
+        )
+
     idol_id = values.get("idol_id", "")
     if idol_id:
         idol = _combined_target(db, "idols", idol_id)
@@ -831,6 +906,12 @@ def import_combined(
         result = service.save_entity(db, actor, "idols", idol_draft)
         idol = db.get(Idol, result["id"])
         idol_operation = "created"
+
+    idol_company_relation_operation = None
+    if idol_company:
+        _, idol_company_relation_operation = ensure_company_relation(
+            db, actor, "idols", idol.id, idol_company.id
+        )
 
     membership = db.scalar(
         select(GroupMembership).where(
@@ -870,4 +951,11 @@ def import_combined(
         "group_operation": group_operation,
         "idol_operation": idol_operation,
         "membership_operation": membership_operation,
+        "group_company_id": group_company.id if group_company else "",
+        "group_company_operation": group_company_operation or "none",
+        "group_company_relation_operation": group_company_relation_operation or "none",
+        "idol_company_id": idol_company.id if idol_company else "",
+        "idol_company_operation": idol_company_operation or "none",
+        "idol_company_relation_operation": idol_company_relation_operation or "none",
+        "idol_company_inherited": bool(values.get("idol_company_inherited")),
     }

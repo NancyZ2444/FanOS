@@ -91,6 +91,23 @@ const combinedModeLabel = (row: ImportTask["rows"][number]) => {
   return "将新增组合、艺人及关系";
 };
 
+const combinedCompanyLabel = (row: ImportTask["rows"][number]) => {
+  const modeLabel = (mode: unknown) =>
+    mode === "reuse" ? "复用系统公司" : mode === "create" ? "自动创建公司" : "";
+  const groupName = String(row.data.group_company_effective_name || "");
+  const idolName = String(row.data.idol_company_effective_name || "");
+  const labels = [];
+  if (groupName)
+    labels.push(
+      `组合：${groupName}（${modeLabel(row.data.group_company_mode)}）`,
+    );
+  if (idolName)
+    labels.push(
+      `艺人：${idolName}（${row.data.idol_company_inherited ? "继承组合公司，" : ""}${modeLabel(row.data.idol_company_mode)}）`,
+    );
+  return labels.join("；") || "未填写公司";
+};
+
 export default function Imports() {
   const { catalog, reload, actor } = useConsole();
   const [params, setParams] = useSearchParams();
@@ -221,7 +238,7 @@ export default function Imports() {
       content: isCompany
         ? "导入后建立公司档案，可立即在组合和艺人资料中选择；已有公司不会被覆盖。"
         : isCombined
-          ? `${skip ? "将跳过错误行。" : ""}group_id / idol_id 为空时新增对应档案，填写系统唯一 ID 时更新对应档案；空白资料字段保留系统原值，并确保成员关系。`
+          ? `${skip ? "将跳过错误行。" : ""}group_id / idol_id 为空时新增对应档案，填写系统唯一 ID 时更新对应档案；公司存在时自动复用，不存在时自动创建，并同时关联组合与艺人。`
           : isAlbum
             ? `${skip ? "将跳过错误行。" : ""}同名且参与艺人相同的不同版本归入同一专辑；可向已有专辑追加新版本，不覆盖专辑的其他字段。新增专辑保存为草稿。`
             : skip
@@ -317,7 +334,7 @@ export default function Imports() {
             isCompany
               ? "name 为必填公司名称，description 为可选描述。导入后可在组合与艺人资料中关联公司。"
               : isCombined
-                ? "每行填写一位组合成员；group_* 字段维护组合资料，idol_* 字段维护艺人资料，系统同时建立成员关系。"
+                ? "每行填写一位组合成员；group_* 与 idol_* 分别维护完整资料，系统同时建立成员及公司关系。"
                 : isCard
                   ? "小卡需要已发布的组合、艺人与来源，并完整填写图片和版权字段。"
                   : isAlbum
@@ -330,7 +347,7 @@ export default function Imports() {
             isCompany
               ? "公司名称按大小写、全半角和多余空格归一后查重，含已归档公司。错误行可修正或明确跳过。"
               : isCombined
-                ? "group_code、group_name、idol_name 必填。group_id / idol_id 分别控制组合和艺人的新增或更新；同组资料可只填一行，系统自动聚合。"
+                ? "group_code、group_name、idol_name 必填。group_company / idol_company 会匹配公司管理；idol_company 为空时继承组合公司。"
                 : isCard
                   ? "标签用 | 分隔，布尔值用 true / false；确认后仍需审核发布。"
                   : isAlbum
@@ -411,7 +428,7 @@ export default function Imports() {
               {isCompany
                 ? "相同公司不会重复建立或覆盖原资料"
                 : isCombined
-                  ? "填写系统 group_id / idol_id 更新档案；空白字段保留原值，已有关系不重复建立"
+                  ? "公司按大小写、全半角和空格归一匹配；不存在时创建，已有关系不重复建立"
                   : "图片先通过小卡编辑页上传，填写可访问的图片地址"}
             </p>
           </div>
@@ -438,7 +455,7 @@ export default function Imports() {
                 isCompany
                   ? "建立公司档案后，由组合或艺人资料选择关联"
                   : isCombined
-                    ? "聚合同组资料后创建组合、艺人并建立成员关系"
+                    ? "聚合同组资料后建立成员关系，并关联或自动创建公司"
                     : isCard
                       ? "检查艺人与来源是否属于所选组合"
                       : "组合与艺人必须存在，名称和 ID 不能互相冲突",
@@ -540,6 +557,11 @@ export default function Imports() {
                         render: (_: unknown, r: ImportTask["rows"][number]) =>
                           combinedModeLabel(r),
                       },
+                      {
+                        title: "公司处理",
+                        render: (_: unknown, r: ImportTask["rows"][number]) =>
+                          combinedCompanyLabel(r),
+                      },
                     ]
                   : isAlbum
                     ? [
@@ -621,7 +643,7 @@ export default function Imports() {
                 showIcon
                 message={
                   isCombined
-                    ? `已导入 ${task.imported_count} 位艺人，组合、艺人及成员关系已同步建立`
+                    ? `已导入 ${task.imported_count} 位艺人，组合、艺人、成员及公司关系已同步建立`
                     : isAlbum
                       ? `已处理 ${task.imported_count} 行专辑与版本数据`
                       : `已导入 ${task.imported_count} 条${label}，状态为草稿`
