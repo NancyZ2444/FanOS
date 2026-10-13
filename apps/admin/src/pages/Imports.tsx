@@ -26,18 +26,89 @@ import { consoleApi, send } from "../api/client";
 import { useConsole } from "../state";
 import { Panel, StatusTag } from "../components/shared";
 
+const importFieldNames: Record<string, string> = {
+  group_id: "组合唯一 ID",
+  group_code: "组合编码",
+  group_name: "组合名称",
+  group_name_en: "组合英文名称",
+  group_name_ko: "组合韩文名称",
+  group_name_translated: "组合翻译名称",
+  group_company: "组合所属公司",
+  group_description: "组合简介",
+  group_debut_date: "组合出道日期",
+  group_end_date: "组合解散日期",
+  group_region: "组合地区",
+  group_status: "组合状态",
+  group_fandom_name: "组合粉丝名称",
+  group_official_website: "组合官方网站",
+  group_aliases: "组合别名",
+  group_image_url: "组合图片",
+  group_tags: "组合标签",
+  group_source_type: "组合来源类型",
+  group_source_url: "组合来源链接",
+  group_copyright_status: "组合版权状态",
+  group_copyright_note: "组合版权备注",
+  idol_id: "艺人唯一 ID",
+  idol_name: "艺人本名",
+  stage_name: "艺名",
+  idol_name_en: "艺人英文名称",
+  idol_name_ko: "艺人韩文名称",
+  idol_name_translated: "艺人翻译名称",
+  idol_company: "艺人所属公司",
+  idol_description: "艺人简介",
+  birthday: "出生日期",
+  idol_region: "国籍 / 地区",
+  idol_gender: "性别 / 身份",
+  idol_aliases: "艺人别名",
+  idol_image_url: "艺人图片",
+  idol_tags: "艺人标签",
+  idol_source_type: "艺人来源类型",
+  idol_source_url: "艺人来源链接",
+  idol_copyright_status: "艺人版权状态",
+  idol_copyright_note: "艺人版权备注",
+  name: "名称",
+  description: "简介",
+  release_date: "发行 / 开始日期",
+  image_url: "图片地址",
+  tags: "标签",
+};
+
+const importFieldLabel = (field: string) =>
+  importFieldNames[field] ? `${importFieldNames[field]}（${field}）` : field;
+
+const combinedModeLabel = (row: ImportTask["rows"][number]) => {
+  const labels: Record<string, string> = {
+    updated_group_and_idol: "更新组合与艺人，并校验成员关系",
+    updated_group_created_idol: "更新组合，新增艺人并建立关系",
+    created_group_updated_idol: "新增组合，更新艺人并建立关系",
+    created_group_and_idol: "新增组合、艺人及成员关系",
+  };
+  if (row.import_mode) return labels[row.import_mode] || row.import_mode;
+  if (row.data.group_id && row.data.idol_id)
+    return "将更新组合与艺人，并校验关系";
+  if (row.data.group_id) return "将更新组合并新增艺人";
+  if (row.data.idol_id) return "将新增组合并更新艺人";
+  return "将新增组合、艺人及关系";
+};
+
 export default function Imports() {
   const { catalog, reload, actor } = useConsole();
   const [params, setParams] = useSearchParams();
-  const kind = (
+  const requestedKind = (
     Object.hasOwn(importLabels, params.get("kind") || "")
       ? params.get("kind")
       : "cards"
+  ) as ImportKind;
+  const kind = (
+    requestedKind === "groups" || requestedKind === "idols"
+      ? "groups_idols"
+      : requestedKind
   ) as ImportKind;
   const label = importLabels[kind];
   const isCard = kind === "cards";
   const isAlbum = kind === "albums";
   const isCompany = kind === "companies";
+  const isCombined = kind === "groups_idols";
   const artistNames = (data: Record<string, unknown>) => {
     if (!Array.isArray(data.artists)) return "—";
     return (
@@ -142,16 +213,20 @@ export default function Imports() {
   };
   const confirm = () =>
     modal.confirm({
-      title: isAlbum
-        ? `确认导入 ${task?.rows.length} 行专辑与版本数据？`
-        : `确认导入 ${task?.rows.length} 条${label}？`,
+      title: isCombined
+        ? `确认导入 ${task?.rows.length} 行组合与艺人并建立关联？`
+        : isAlbum
+          ? `确认导入 ${task?.rows.length} 行专辑与版本数据？`
+          : `确认导入 ${task?.rows.length} 条${label}？`,
       content: isCompany
         ? "导入后建立公司档案，可立即在组合和艺人资料中选择；已有公司不会被覆盖。"
-        : isAlbum
-          ? `${skip ? "将跳过错误行。" : ""}同名且参与艺人相同的不同版本归入同一专辑；可向已有专辑追加新版本，不覆盖专辑的其他字段。新增专辑保存为草稿。`
-          : skip
-            ? "将跳过错误行，其余内容保存为草稿，之后仍需审核发布。"
-            : "导入后保存为草稿，之后仍需审核发布。",
+        : isCombined
+          ? `${skip ? "将跳过错误行。" : ""}group_id / idol_id 为空时新增对应档案，填写系统唯一 ID 时更新对应档案；空白资料字段保留系统原值，并确保成员关系。`
+          : isAlbum
+            ? `${skip ? "将跳过错误行。" : ""}同名且参与艺人相同的不同版本归入同一专辑；可向已有专辑追加新版本，不覆盖专辑的其他字段。新增专辑保存为草稿。`
+            : skip
+              ? "将跳过错误行，其余内容保存为草稿，之后仍需审核发布。"
+              : "导入后保存为草稿，之后仍需审核发布。",
       okText: "确认导入",
       cancelText: "返回检查",
       onOk: async () => {
@@ -163,9 +238,11 @@ export default function Imports() {
           );
           setTask(data);
           message.success(
-            isAlbum
-              ? `成功处理 ${data.imported_count} 行专辑与版本数据`
-              : `成功导入 ${data.imported_count} 条${label}`,
+            isCombined
+              ? `成功导入 ${data.imported_count} 位艺人并建立组合关联`
+              : isAlbum
+                ? `成功处理 ${data.imported_count} 行专辑与版本数据`
+                : `成功导入 ${data.imported_count} 条${label}`,
           );
           await Promise.all([load(), reload()]);
         } catch (e) {
@@ -179,6 +256,7 @@ export default function Imports() {
     try {
       const blob = await consoleApi<Blob>(
         `/imports/template?kind=${kind}&format=${format}`,
+        { cache: "no-store" },
       );
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
@@ -216,16 +294,20 @@ export default function Imports() {
             disabled={busy}
             style={{ width: 240 }}
             onChange={(value) => setParams({ kind: value })}
-            options={Object.entries(importLabels).map(([value, text]) => ({
-              value,
-              label: text,
-            }))}
+            options={Object.entries(importLabels)
+              .filter(([value]) => !["groups", "idols"].includes(value))
+              .map(([value, text]) => ({
+                value,
+                label: text,
+              }))}
           />
           <span>
             当前模板：{label} ·{" "}
-            {isAlbum
-              ? "新增专辑或追加版本，保留原资料"
-              : "仅新增，不覆盖已有记录"}
+            {isCombined
+              ? "一次导入组合资料、艺人资料及成员关系"
+              : isAlbum
+                ? "新增专辑或追加版本，保留原资料"
+                : "仅新增，不覆盖已有记录"}
           </span>
         </div>
         <Alert
@@ -234,26 +316,28 @@ export default function Imports() {
           message={
             isCompany
               ? "name 为必填公司名称，description 为可选描述。导入后可在组合与艺人资料中关联公司。"
-              : isCard
-                ? "小卡需要已发布的组合、艺人与来源，并完整填写图片和版权字段。"
-                : isAlbum
-                  ? "name 填专辑作品名；versions 填版本名，多个版本用 | 分隔。artist_names 可填写多个组合或个人艺人名称，用 | 分隔并精确匹配已有档案。"
-                  : kind === "others"
-                    ? "Other 只需 name；可选 original_name、start_date、end_date、description、tags。"
-                    : kind === "groups"
-                      ? "name 为必填列。先导入组合，再导入艺人和专辑等关联内容。"
+              : isCombined
+                ? "每行填写一位组合成员；group_* 字段维护组合资料，idol_* 字段维护艺人资料，系统同时建立成员关系。"
+                : isCard
+                  ? "小卡需要已发布的组合、艺人与来源，并完整填写图片和版权字段。"
+                  : isAlbum
+                    ? "name 填专辑作品名；versions 填版本名，多个版本用 | 分隔。artist_names 可填写多个组合或个人艺人名称，用 | 分隔并精确匹配已有档案。"
+                    : kind === "others"
+                      ? "Other 只需 name；可选 original_name、start_date、end_date、description、tags。"
                       : "name 必填；group_id / group_name 二选一。名称需精确匹配已有组合，未发布组合也可用于建立草稿。"
           }
           description={
             isCompany
               ? "公司名称按大小写、全半角和多余空格归一后查重，含已归档公司。错误行可修正或明确跳过。"
-              : isCard
-                ? "标签用 | 分隔，布尔值用 true / false；确认后仍需审核发布。"
-                : isAlbum
-                  ? "专辑名不拼接版本名。同名且参与艺人集合相同的不同版本行归入同一专辑；新版本可追加到已有专辑，其他专辑字段保留原值。重复版本会报错。兼容 group_name / idol_name 和 artists JSON；release_date 使用 YYYY-MM-DD，tags 用 | 分隔。"
-                  : kind === "others"
-                    ? "起止日期使用 YYYY-MM-DD，tags 用 | 分隔；不需要组合归属或商品字段。"
-                    : "name_en / name_ko / name_translated 为多语言名称；release_date 使用 YYYY-MM-DD（艺人为生日、组合为出道日期），tags 用 | 分隔。可选封面 image_url 使用 HTTP(S) 地址；同组合同名记录视为重复。"
+              : isCombined
+                ? "group_code、group_name、idol_name 必填。group_id / idol_id 分别控制组合和艺人的新增或更新；同组资料可只填一行，系统自动聚合。"
+                : isCard
+                  ? "标签用 | 分隔，布尔值用 true / false；确认后仍需审核发布。"
+                  : isAlbum
+                    ? "专辑名不拼接版本名。同名且参与艺人集合相同的不同版本行归入同一专辑；新版本可追加到已有专辑，其他专辑字段保留原值。重复版本会报错。兼容 group_name / idol_name 和 artists JSON；release_date 使用 YYYY-MM-DD，tags 用 | 分隔。"
+                    : kind === "others"
+                      ? "起止日期使用 YYYY-MM-DD，tags 用 | 分隔；不需要组合归属或商品字段。"
+                      : "name_en / name_ko / name_translated 为多语言名称；release_date 使用 YYYY-MM-DD（艺人为生日、组合为出道日期），tags 用 | 分隔。可选封面 image_url 使用 HTTP(S) 地址；同组合同名记录视为重复。"
           }
         />
       </Panel>
@@ -304,25 +388,31 @@ export default function Imports() {
               <CheckCircleOutlined aria-hidden="true" />{" "}
               {isCompany
                 ? "公司无需填写组合或艺人，关联关系在资料页维护"
-                : isCard
-                  ? "group_id / idol_id / source_entity_id 请使用后台真实 ID"
-                  : isAlbum
-                    ? "artist_names 支持组合与个人合作，例如 Aria|Lin"
-                    : "组合可使用 group_name 关联，或填写准确的 group_id"}
+                : isCombined
+                  ? "同一组合的每位艺人填写一行并复用 group_code；组合资料可只填一次"
+                  : isCard
+                    ? "group_id / idol_id / source_entity_id 请使用后台真实 ID"
+                    : isAlbum
+                      ? "artist_names 支持组合与个人合作，例如 Aria|Lin"
+                      : "组合可使用 group_name 关联，或填写准确的 group_id"}
             </p>
             <p>
               <CheckCircleOutlined aria-hidden="true" />{" "}
               {isCompany
                 ? "description 可填写公司描述"
-                : isAlbum
-                  ? "versions 单独填写，例如 Photo Book Ver.|Digipack Ver."
-                  : "标签以 | 分隔；布尔值使用 true / false"}
+                : isCombined
+                  ? "stage_name 填艺名，idol_name 填本名；idol_* 资料按成员逐行填写"
+                  : isAlbum
+                    ? "versions 单独填写，例如 Photo Book Ver.|Digipack Ver."
+                    : "标签以 | 分隔；布尔值使用 true / false"}
             </p>
             <p>
               <CheckCircleOutlined aria-hidden="true" />{" "}
               {isCompany
                 ? "相同公司不会重复建立或覆盖原资料"
-                : "图片先通过小卡编辑页上传，填写可访问的图片地址"}
+                : isCombined
+                  ? "填写系统 group_id / idol_id 更新档案；空白字段保留原值，已有关系不重复建立"
+                  : "图片先通过小卡编辑页上传，填写可访问的图片地址"}
             </p>
           </div>
         </Panel>
@@ -334,31 +424,37 @@ export default function Imports() {
                 "字段完整性",
                 isCompany
                   ? "检查公司名称与描述长度"
-                  : isCard
-                    ? "检查名称、组合、图片与来源"
-                    : isAlbum
-                      ? "检查专辑作品名、版本名、参与艺人与日期格式"
-                      : "检查名称、日期格式与所属组合",
+                  : isCombined
+                    ? "检查组合与艺人的名称、日期、图片、标签和来源资料"
+                    : isCard
+                      ? "检查名称、组合、图片与来源"
+                      : isAlbum
+                        ? "检查专辑作品名、版本名、参与艺人与日期格式"
+                        : "检查名称、日期格式与所属组合",
               ],
               [
                 "02",
                 "关联关系",
                 isCompany
                   ? "建立公司档案后，由组合或艺人资料选择关联"
-                  : isCard
-                    ? "检查艺人与来源是否属于所选组合"
-                    : "组合与艺人必须存在，名称和 ID 不能互相冲突",
+                  : isCombined
+                    ? "聚合同组资料后创建组合、艺人并建立成员关系"
+                    : isCard
+                      ? "检查艺人与来源是否属于所选组合"
+                      : "组合与艺人必须存在，名称和 ID 不能互相冲突",
               ],
               [
                 "03",
                 isCard ? "图片与版权" : "重复检查",
                 isCompany
                   ? "检查文件内及公司管理中同名记录，包含归档公司"
-                  : isCard
-                    ? "检查双面卡素材、来源链接与授权状态"
-                    : isAlbum
-                      ? "同名且参与艺人相同的不同版本归入同一专辑，重复版本报错"
-                      : "检查文件内及数据库中同组合同名的记录",
+                  : isCombined
+                    ? "拦截同组资料冲突、重复成员关系与同名歧义"
+                    : isCard
+                      ? "检查双面卡素材、来源链接与授权状态"
+                      : isAlbum
+                        ? "同名且参与艺人相同的不同版本归入同一专辑，重复版本报错"
+                        : "检查文件内及数据库中同组合同名的记录",
               ],
               ["04", "逐行反馈", "错误不会静默跳过，确认后再写入"],
             ].map(([n, t, d]) => (
@@ -406,7 +502,7 @@ export default function Imports() {
               rowKey="row"
               dataSource={task.rows}
               pagination={{ pageSize: 5 }}
-              scroll={{ x: isAlbum ? 950 : 650 }}
+              scroll={{ x: isAlbum || isCombined ? 950 : 650 }}
               columns={[
                 { title: "表格行号", dataIndex: "row" },
                 {
@@ -421,45 +517,64 @@ export default function Imports() {
                     ),
                 },
                 {
-                  title: `${label}名称`,
+                  title: isCombined ? "组合名称" : `${label}名称`,
                   render: (_, r) =>
                     String(
-                      r.data.title ||
-                        r.data.name ||
-                        r.data.stage_name ||
-                        r.data.idol_name ||
-                        "—",
+                      (isCombined
+                        ? r.data.group_name
+                        : r.data.title ||
+                          r.data.name ||
+                          r.data.stage_name ||
+                          r.data.idol_name) || "—",
                     ),
                 },
-                ...(isAlbum
+                ...(isCombined
                   ? [
                       {
-                        title: "参与艺人",
+                        title: "艺人名称",
                         render: (_: unknown, r: ImportTask["rows"][number]) =>
-                          artistNames(r.data),
+                          String(r.data.stage_name || r.data.idol_name || "—"),
                       },
                       {
-                        title: "专辑版本",
+                        title: "关联方式",
                         render: (_: unknown, r: ImportTask["rows"][number]) =>
-                          Array.isArray(r.data.versions)
-                            ? r.data.versions.join(" / ") || "—"
-                            : "—",
+                          combinedModeLabel(r),
                       },
                     ]
-                  : [
-                      {
-                        title: isCompany ? "公司描述" : "所属组合 ID",
-                        render: (_: unknown, r: ImportTask["rows"][number]) =>
-                          String(
-                            (isCompany
-                              ? r.data.description
-                              : r.data.group_id) || "—",
-                          ),
-                      },
-                    ]),
+                  : isAlbum
+                    ? [
+                        {
+                          title: "参与艺人",
+                          render: (_: unknown, r: ImportTask["rows"][number]) =>
+                            artistNames(r.data),
+                        },
+                        {
+                          title: "专辑版本",
+                          render: (
+                            _: unknown,
+                            r: ImportTask["rows"][number],
+                          ) =>
+                            Array.isArray(r.data.versions)
+                              ? r.data.versions.join(" / ") || "—"
+                              : "—",
+                        },
+                      ]
+                    : [
+                        {
+                          title: isCompany ? "公司描述" : "所属组合 ID",
+                          render: (_: unknown, r: ImportTask["rows"][number]) =>
+                            String(
+                              (isCompany
+                                ? r.data.description
+                                : r.data.group_id) || "—",
+                            ),
+                        },
+                      ]),
                 {
-                  title: "创建结果",
-                  render: (_, r) => r.created_id || "待确认导入",
+                  title: isCombined ? "成员关系 ID" : "创建结果",
+                  render: (_, r) =>
+                    (isCombined ? r.membership_id : r.created_id) ||
+                    "待确认导入",
                 },
               ]}
             />
@@ -484,7 +599,11 @@ export default function Imports() {
                   dataIndex: "row",
                   render: (v) => `Row ${v}`,
                 },
-                { title: "字段名称", dataIndex: "field" },
+                {
+                  title: "字段名称",
+                  dataIndex: "field",
+                  render: (field: string) => importFieldLabel(field),
+                },
                 { title: "错误原因", dataIndex: "message" },
                 { title: "修复建议", dataIndex: "suggestion" },
                 {
@@ -501,9 +620,11 @@ export default function Imports() {
                 type="success"
                 showIcon
                 message={
-                  isAlbum
-                    ? `已处理 ${task.imported_count} 行专辑与版本数据`
-                    : `已导入 ${task.imported_count} 条${label}，状态为草稿`
+                  isCombined
+                    ? `已导入 ${task.imported_count} 位艺人，组合、艺人及成员关系已同步建立`
+                    : isAlbum
+                      ? `已处理 ${task.imported_count} 行专辑与版本数据`
+                      : `已导入 ${task.imported_count} 条${label}，状态为草稿`
                 }
               />
             ) : (
@@ -590,7 +711,7 @@ export default function Imports() {
       >
         <Form form={rowForm} layout="vertical">
           {Object.keys(rawRow).map((field) => (
-            <Form.Item key={field} name={field} label={field}>
+            <Form.Item key={field} name={field} label={importFieldLabel(field)}>
               <Input />
             </Form.Item>
           ))}

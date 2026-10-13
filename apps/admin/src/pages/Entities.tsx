@@ -437,7 +437,17 @@ export default function Entities({ kind }: { kind: Kind }) {
           />
           {canEdit && (
             <Space>
-              <Button onClick={() => navigate(`/catalog/import?kind=${kind}`)}>
+              <Button
+                onClick={() =>
+                  navigate(
+                    `/catalog/import?kind=${
+                      kind === "groups" || kind === "idols"
+                        ? "groups_idols"
+                        : kind
+                    }`,
+                  )
+                }
+              >
                 批量导入
               </Button>
               <Button

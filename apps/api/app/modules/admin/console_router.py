@@ -343,6 +343,7 @@ def import_template(
         media_type=media_type,
         headers={
             "Content-Disposition": f'attachment; filename="FanOS-{kind}-template.{format}"',
+            "Cache-Control": "no-store, max-age=0",
         },
     )
 
@@ -402,6 +403,29 @@ def confirm_import(
         raise DomainError("IMPORT_HAS_ERRORS", "请修复错误行，或明确选择跳过错误行", 422)
     if not task.rows:
         raise DomainError("NO_VALID_ROWS", "没有可导入的数据行", 422)
+    combined_values = iter(())
+    combined_groups = {}
+    if task.kind == "groups_idols":
+        sources = [
+            {
+                key: value
+                for key, value in row["data"].items()
+                if key in import_service.COMBINED_COLUMNS
+            }
+            for row in task.rows
+        ]
+        valid, errors = import_service.validate_combined(db, sources)
+        service.fail_fields(
+            [
+                {
+                    **error,
+                    "row": task.rows[error["row"] - 2]["row"],
+                    "message": (f"第 {task.rows[error['row'] - 2]['row']} 行：{error['message']}"),
+                }
+                for error in errors
+            ]
+        )
+        combined_values = iter(row["data"] for row in valid)
     imported_rows = []
     for row in task.rows:
         if task.kind == "companies":
@@ -411,37 +435,10 @@ def confirm_import(
             imported_rows.append({**row, "created_id": created_id})
             continue
         if task.kind == "groups_idols":
-            values = row["data"]
-            from app.models import Group, GroupMembership, Idol
-
-            group = db.scalar(select(Group).where(Group.name == values["group_name"]))
-            if not group:
-                result = service.save_entity(
-                    db,
-                    actor,
-                    "groups",
-                    EntityDraft(name=values["group_name"], group_code=values["group_code"]),
-                )
-                group = db.get(Group, result["id"])
-            name = values.get("stage_name") or values["idol_name"]
-            if db.scalar(
-                select(Idol.id)
-                .join(GroupMembership)
-                .where(GroupMembership.group_id == group.id, Idol.name == name)
-            ):
-                raise DomainError("IMPORT_CONFLICT", "艺人已存在，请重新预检；整批未执行", 409)
-            result = service.save_entity(
-                db,
-                actor,
-                "idols",
-                EntityDraft(
-                    name=name,
-                    real_name=values["idol_name"],
-                    group_id=group.id,
-                    release_date=values.get("birthday", ""),
-                ),
+            result = import_service.import_combined(
+                db, actor, next(combined_values), combined_groups
             )
-            imported_rows.append({**row, "created_id": result["id"], "group_id": group.id})
+            imported_rows.append({**row, **result})
             continue
         if task.kind == "cards":
             draft = CardDraft.model_validate(row["data"])

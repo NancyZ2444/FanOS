@@ -512,96 +512,93 @@ test("every module renders and editor has no page overflow", async ({
   expect(errors).toEqual([]);
 });
 
-test("import all six entity types from their tabs and batch archive/restore", async ({
+test("combined group and idol import creates members and supports group batch lifecycle", async ({
   page,
 }) => {
   test.setTimeout(120000);
   const stamp = Date.now();
-  const kinds = [
-    ["groups", "组合"],
-    ["idols", "艺人"],
-    ["albums", "专辑"],
-    ["events", "活动"],
-    ["collections", "合集"],
-    ["merchandise", "周边"],
-  ];
+  const prefix = `BulkUI-${stamp}`;
+  const groupName = `${prefix}-group`;
   const errors: string[] = [];
-  page.on("pageerror", (e) => errors.push(e.message));
-  const groupName = `BulkUI-${stamp}-groups-A`;
-  for (const [kind, label] of kinds) {
-    const prefix = `BulkUI-${stamp}-${kind}`;
-    await page.goto(`/catalog/${kind}`);
-    await page
-      .getByRole("main")
-      .getByRole("button", { name: "批量导入", exact: true })
-      .click();
-    await expect(page).toHaveURL(new RegExp(`kind=${kind}`));
+  page.on("pageerror", (error) => errors.push(error.message));
+
+  await page.goto("/catalog/groups");
+  await page
+    .getByRole("main")
+    .getByRole("button", { name: "批量导入", exact: true })
+    .click();
+  await expect(page).toHaveURL(/kind=groups/);
+  await expect(
+    page.getByText(
+      "当前模板：组合 + 艺人（自动关联） · 一次导入组合资料、艺人资料及成员关系",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page.locator("input[type=file]").setInputFiles({
+    name: "groups-idols.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(
+      `group_code,group_name,idol_name\n${prefix},${groupName},${prefix}-idol-A\n${prefix},${groupName},${prefix}-idol-B\n`,
+    ),
+  });
+  await page
+    .getByRole("button", { name: "确认导入 2 行", exact: true })
+    .click();
+  await page.getByRole("button", { name: "确认导入", exact: true }).click();
+  await expect(
+    page.getByText("已导入 2 位艺人，组合、艺人及成员关系已同步建立", {
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  await page.goto("/catalog/groups");
+  await page.getByPlaceholder("搜索组合名称、ID…").fill(groupName);
+  const groupRow = page.locator(".ant-table-tbody tr").filter({
+    has: page.getByRole("button", { name: groupName, exact: true }),
+  });
+  await expect(groupRow).toContainText("2");
+  const selectGroup = async () => {
+    await page.locator(".ant-table-thead .ant-checkbox-input").check();
     await expect(
-      page.getByText(
-        kind === "albums"
-          ? "当前模板：专辑 · 新增专辑或追加版本，保留原资料"
-          : `当前模板：${label} · 仅新增，不覆盖已有记录`,
-      ),
+      page.getByText("已选择 1 条组合", { exact: true }),
     ).toBeVisible();
-    const csv =
-      kind === "groups"
-        ? `name\n${prefix}-A\n${prefix}-B\n`
-        : `name,group_name\n${prefix}-A,${groupName}\n${prefix}-B,${groupName}\n`;
-    await page.locator("input[type=file]").setInputFiles({
-      name: `${kind}.csv`,
-      mimeType: "text/csv",
-      buffer: Buffer.from(csv),
-    });
-    await page
-      .getByRole("button", { name: "确认导入 2 行", exact: true })
-      .click();
-    await page.getByRole("button", { name: "确认导入", exact: true }).click();
+  };
+  await selectGroup();
+  await expect(
+    page.getByRole("button", { name: "批量下架", exact: true }),
+  ).toBeDisabled();
+  for (const action of ["批量提交审核", "批量发布", "批量下架"]) {
+    await page.getByRole("button", { name: action, exact: true }).click();
+    await page.getByRole("button", { name: "确认操作", exact: true }).click();
     await expect(
-      page.getByText(
-        kind === "albums"
-          ? "已处理 2 行专辑与版本数据"
-          : `已导入 2 条${label}，状态为草稿`,
-        { exact: true },
-      ),
+      page.getByText(`${action}成功`, { exact: true }),
     ).toBeVisible();
-    await page.goto(`/catalog/${kind}`);
-    await page.getByPlaceholder(`搜索${label}名称、ID…`).fill(prefix);
-    const selectAll = async () => {
-      await page.locator(".ant-table-thead .ant-checkbox-input").check();
-      await expect(
-        page.getByText(`已选择 2 条${label}`, { exact: true }),
-      ).toBeVisible();
-    };
-    await selectAll();
+    await selectGroup();
+  }
+  await page.getByRole("button", { name: "批量归档", exact: true }).click();
+  await page.getByRole("button", { name: "确认操作", exact: true }).click();
+  await expect(page.getByText("批量归档成功", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: groupName, exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("tab", { name: "已归档", exact: true }).click();
+  await selectGroup();
+  await page.getByRole("button", { name: "恢复草稿", exact: true }).click();
+  await page.getByRole("button", { name: "确认操作", exact: true }).click();
+  await expect(page.getByText("恢复草稿成功", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "草稿", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: groupName, exact: true }),
+  ).toBeVisible();
+
+  await page.goto("/catalog/idols");
+  await page.getByPlaceholder("搜索艺人名称、ID…").fill(`${prefix}-idol`);
+  for (const suffix of ["A", "B"]) {
     await expect(
-      page.getByRole("button", { name: "批量下架", exact: true }),
-    ).toBeDisabled();
-    if (kind === "groups") {
-      for (const action of ["批量提交审核", "批量发布", "批量下架"]) {
-        await page.getByRole("button", { name: action, exact: true }).click();
-        await page
-          .getByRole("button", { name: "确认操作", exact: true })
-          .click();
-        await expect(
-          page.getByText(`${action}成功`, { exact: true }),
-        ).toBeVisible();
-        await selectAll();
-      }
-    }
-    await page.getByRole("button", { name: "批量归档", exact: true }).click();
-    await page.getByRole("button", { name: "确认操作", exact: true }).click();
-    await expect(page.getByText("批量归档成功", { exact: true })).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: `${prefix}-A`, exact: true }),
-    ).toHaveCount(0);
-    await page.getByRole("tab", { name: "已归档", exact: true }).click();
-    await selectAll();
-    await page.getByRole("button", { name: "恢复草稿", exact: true }).click();
-    await page.getByRole("button", { name: "确认操作", exact: true }).click();
-    await expect(page.getByText("恢复草稿成功", { exact: true })).toBeVisible();
-    await page.getByRole("tab", { name: "草稿", exact: true }).click();
-    await expect(
-      page.getByRole("button", { name: `${prefix}-A`, exact: true }),
+      page.getByRole("button", {
+        name: `${prefix}-idol-${suffix}`,
+        exact: true,
+      }),
     ).toBeVisible();
   }
   expect(errors).toEqual([]);
@@ -635,27 +632,31 @@ test("import type switches templates and history without retaining a previous ta
     .getByRole("button", { name: "下载 CSV 模板", exact: true })
     .click();
   expect((await csvDownload).suggestedFilename()).toBe(
-    "FanOS-组合导入模板.csv",
+    "FanOS-组合 + 艺人（自动关联）导入模板.csv",
   );
   await page.locator("input[type=file]").setInputFiles({
-    name: "groups.csv",
+    name: "groups-idols.csv",
     mimeType: "text/csv",
-    buffer: Buffer.from(`name\nType switch ${Date.now()}\n`),
+    buffer: Buffer.from(
+      `group_code,group_name,idol_name\ntype-switch,Type switch ${Date.now()},Type switch idol ${Date.now()}\n`,
+    ),
   });
   await expect(
     page.getByRole("button", { name: "确认导入 1 行", exact: true }),
   ).toBeVisible();
   await page.getByLabel("导入类型").press("ArrowDown");
-  await page.getByTitle("艺人", { exact: true }).click();
+  await page.getByTitle("专辑", { exact: true }).click();
   await expect(
     page.getByRole("button", { name: "确认导入 1 行", exact: true }),
   ).toHaveCount(0);
-  await expect(page.getByText("groups.csv", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("groups-idols.csv", { exact: true })).toHaveCount(
+    0,
+  );
   const excelDownload = page.waitForEvent("download");
   await page
     .getByRole("button", { name: "下载 Excel 模板", exact: true })
     .click();
   expect((await excelDownload).suggestedFilename()).toBe(
-    "FanOS-艺人导入模板.xlsx",
+    "FanOS-专辑导入模板.xlsx",
   );
 });

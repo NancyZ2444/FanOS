@@ -234,6 +234,8 @@ def test_templates_csv_and_excel_are_specific_to_kind(client, admin_headers, kin
         ROOT + f"/imports/template?kind={kind}&format=xlsx", headers=admin_headers
     )
     assert csv_res.status_code == xlsx_res.status_code == 200
+    assert csv_res.headers["cache-control"] == "no-store, max-age=0"
+    assert xlsx_res.headers["cache-control"] == "no-store, max-age=0"
     fields = next(csv.reader(io.StringIO(csv_res.content.decode("utf-8-sig"))))
     workbook = load_workbook(io.BytesIO(xlsx_res.content))
     assert list(next(workbook.active.values)) == fields
@@ -241,3 +243,24 @@ def test_templates_csv_and_excel_are_specific_to_kind(client, admin_headers, kin
     if kind not in {"cards", "groups", "others"}:
         assert "group_name" in fields
     workbook.close()
+
+
+def test_combined_template_contains_entity_ids_and_profile_fields(client, admin_headers):
+    response = client.get(
+        ROOT + "/imports/template?kind=groups_idols&format=csv", headers=admin_headers
+    )
+    assert response.status_code == 200
+    fields = next(csv.reader(io.StringIO(response.content.decode("utf-8-sig"))))
+    assert fields[:3] == ["group_id", "group_code", "group_name"]
+    assert {
+        "group_id",
+        "group_description",
+        "group_debut_date",
+        "group_image_url",
+        "idol_id",
+        "idol_name",
+        "stage_name",
+        "idol_description",
+        "birthday",
+        "idol_image_url",
+    }.issubset(fields)

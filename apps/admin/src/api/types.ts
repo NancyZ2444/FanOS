@@ -10,7 +10,7 @@ export type Role = "admin" | "content_operator" | "operation_admin";
 export type ImportKind = Kind | "cards" | "groups_idols" | "companies";
 export const importLabels: Record<ImportKind, string> = {
   companies: "公司",
-  groups_idols: "组合 + 艺人",
+  groups_idols: "组合 + 艺人（自动关联）",
   cards: "小卡",
   groups: "组合",
   idols: "艺人",
@@ -108,7 +108,18 @@ export interface ImportTask {
   status: string;
   created_at: string;
   imported_count: number;
-  rows: { row: number; data: Record<string, unknown>; created_id?: string }[];
+  rows: {
+    row: number;
+    data: Record<string, unknown>;
+    created_id?: string;
+    group_id?: string;
+    idol_id?: string;
+    membership_id?: string;
+    import_mode?: string;
+    group_operation?: "created" | "updated";
+    idol_operation?: "created" | "updated";
+    membership_operation?: "created" | "existing";
+  }[];
   errors: {
     row: number;
     field: string;

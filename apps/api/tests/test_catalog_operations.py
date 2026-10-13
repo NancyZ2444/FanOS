@@ -3,8 +3,9 @@ from datetime import date
 from sqlalchemy import select
 from test_admin_console import payload
 
+from app.admin_models import ContentMetadata
 from app.core.database import SessionLocal
-from app.models import Card, GroupMembership
+from app.models import Card, Group, GroupMembership, Idol
 
 ROOT = "/api/v1/admin/console"
 
@@ -334,6 +335,14 @@ def test_combined_import_preview_edits_skip_and_confirm(client, admin_headers):
     result = post(client, admin_headers, f"/imports/{task['id']}/confirm", {})
     assert result["imported_count"] == 2
     assert len({r["group_id"] for r in result["rows"]}) == 1
+    with SessionLocal() as db:
+        memberships = db.scalars(
+            select(GroupMembership).where(GroupMembership.group_id == result["rows"][0]["group_id"])
+        ).all()
+        assert {membership.idol_id for membership in memberships} == {
+            row["idol_id"] for row in result["rows"]
+        }
+        assert all(row["membership_id"] for row in result["rows"])
     again = post(client, admin_headers, f"/imports/{task['id']}/confirm", {})
     assert again["imported_count"] == 2
     assert (
@@ -342,6 +351,319 @@ def test_combined_import_preview_edits_skip_and_confirm(client, admin_headers):
         ).status_code
         == 409
     )
+
+
+def test_combined_import_updates_entities_by_ids_and_links_missing_membership(
+    client, admin_headers
+):
+    from test_catalog_bulk import confirm, preview
+
+    group = entity(
+        client,
+        admin_headers,
+        "groups",
+        name="Linked on import",
+        company="Original Group Agency",
+    )
+    idol = entity(
+        client,
+        admin_headers,
+        "idols",
+        name="Existing Unassigned",
+        company="Original Idol Agency",
+    )
+    task = preview(
+        client,
+        admin_headers,
+        "groups_idols",
+        [
+            {
+                "group_id": group["id"],
+                "group_code": "LINKED",
+                "group_name": group["name"],
+                "group_description": "Updated group profile",
+                "idol_id": idol["id"],
+                "idol_name": idol["name"],
+                "idol_description": "Updated idol profile",
+                "idol_region": "KR",
+            }
+        ],
+    )
+    assert task["errors"] == []
+    assert task["rows"][0]["data"]["group_operation"] == "update"
+    assert task["rows"][0]["data"]["idol_operation"] == "update"
+
+    response = confirm(client, admin_headers, task)
+    assert response.status_code == 200, response.text
+    row = response.json()["data"]["rows"][0]
+    assert row["created_id"] == idol["id"]
+    assert row["import_mode"] == "updated_group_and_idol"
+    assert row["membership_operation"] == "created"
+    with SessionLocal() as db:
+        assert len(db.scalars(select(Idol).where(Idol.name == idol["name"])).all()) == 1
+        saved_group = db.get(Group, group["id"])
+        saved_idol = db.get(Idol, idol["id"])
+        assert saved_group.description == "Updated group profile"
+        assert saved_group.company == "Original Group Agency"
+        assert saved_idol.bio == "Updated idol profile"
+        assert saved_idol.region == "KR"
+        assert saved_idol.company == "Original Idol Agency"
+        membership = db.scalar(
+            select(GroupMembership).where(
+                GroupMembership.group_id == group["id"],
+                GroupMembership.idol_id == idol["id"],
+            )
+        )
+        assert membership and membership.id == row["membership_id"]
+
+
+def test_combined_import_supports_existing_group_with_new_idol(client, admin_headers):
+    from test_catalog_bulk import confirm, preview
+
+    group = entity(client, admin_headers, "groups", name="Existing Group New Member")
+    task = preview(
+        client,
+        admin_headers,
+        "groups_idols",
+        [
+            {
+                "group_id": group["id"],
+                "group_code": "EXISTING-GROUP",
+                "group_name": group["name"],
+                "idol_name": "Brand New Member",
+                "idol_region": "CN",
+            },
+            {
+                "group_id": "",
+                "group_code": "EXISTING-GROUP",
+                "group_name": group["name"],
+                "idol_name": "Second Brand New Member",
+                "idol_region": "JP",
+            },
+        ],
+    )
+    assert task["errors"] == []
+    assert all(row["data"]["group_id"] == group["id"] for row in task["rows"])
+    response = confirm(client, admin_headers, task)
+    assert response.status_code == 200, response.text
+    rows = response.json()["data"]["rows"]
+    assert all(row["import_mode"] == "updated_group_created_idol" for row in rows)
+    with SessionLocal() as db:
+        idols = [db.get(Idol, row["idol_id"]) for row in rows]
+        assert [(idol.name, idol.region) for idol in idols] == [
+            ("Brand New Member", "CN"),
+            ("Second Brand New Member", "JP"),
+        ]
+        assert all(
+            db.scalar(
+                select(GroupMembership.id).where(
+                    GroupMembership.group_id == group["id"],
+                    GroupMembership.idol_id == idol.id,
+                )
+            )
+            for idol in idols
+        )
+
+
+def test_combined_import_requires_ids_when_names_already_exist(client, admin_headers):
+    from test_catalog_bulk import confirm, preview
+
+    group = entity(client, admin_headers, "groups", name="Needs Explicit Import IDs")
+    idol = entity(
+        client,
+        admin_headers,
+        "idols",
+        name="Existing Explicit Member",
+        group_id=group["id"],
+    )
+    task = preview(
+        client,
+        admin_headers,
+        "groups_idols",
+        [
+            {
+                "group_code": "NEEDS-ID",
+                "group_name": group["name"],
+                "idol_name": idol["name"],
+            }
+        ],
+    )
+    assert task["rows"] == []
+    assert any(error["field"] == "group_id" for error in task["errors"])
+
+    update_task = preview(
+        client,
+        admin_headers,
+        "groups_idols",
+        [
+            {
+                "group_id": group["id"],
+                "group_code": "NEEDS-ID",
+                "group_name": group["name"],
+                "idol_id": idol["id"],
+                "idol_name": idol["name"],
+                "idol_description": "Updated through explicit IDs",
+            }
+        ],
+    )
+    response = confirm(client, admin_headers, update_task)
+    assert response.status_code == 200, response.text
+    row = response.json()["data"]["rows"][0]
+    assert row["membership_operation"] == "existing"
+    with SessionLocal() as db:
+        assert db.get(Idol, idol["id"]).bio == "Updated through explicit IDs"
+        memberships = db.scalars(
+            select(GroupMembership).where(
+                GroupMembership.group_id == group["id"],
+                GroupMembership.idol_id == idol["id"],
+            )
+        ).all()
+        assert len(memberships) == 1
+
+
+def test_combined_import_persists_group_and_idol_profiles_and_aggregates_group_fields(
+    client, admin_headers
+):
+    from test_catalog_bulk import confirm, preview
+
+    fields = [
+        "group_code",
+        "group_name",
+        "group_name_en",
+        "group_company",
+        "group_description",
+        "group_debut_date",
+        "group_region",
+        "group_image_url",
+        "group_tags",
+        "group_source_type",
+        "group_source_url",
+        "group_copyright_status",
+        "idol_name",
+        "stage_name",
+        "idol_name_en",
+        "idol_company",
+        "idol_description",
+        "birthday",
+        "idol_region",
+        "idol_gender",
+        "idol_image_url",
+        "idol_tags",
+        "idol_source_type",
+        "idol_source_url",
+        "idol_copyright_status",
+    ]
+    first = dict.fromkeys(fields, "")
+    first.update(
+        {
+            "group_code": "PROFILE",
+            "group_name": "Profile Group",
+            "idol_name": "Profile Real Name",
+            "stage_name": "Profile Stage",
+            "idol_name_en": "Profile Stage EN",
+            "idol_company": "Idol Agency",
+            "idol_description": "Artist biography",
+            "birthday": "2000-03-04",
+            "idol_region": "KR",
+            "idol_gender": "F",
+            "idol_image_url": "https://example.com/idol.webp",
+            "idol_tags": "主唱|队长",
+            "idol_source_type": "OFFICIAL",
+            "idol_source_url": "https://example.com/idol",
+            "idol_copyright_status": "OFFICIAL_SOURCE",
+        }
+    )
+    second = dict.fromkeys(fields, "")
+    second.update(
+        {
+            "group_code": "PROFILE",
+            "group_name": "Profile Group",
+            "group_name_en": "Profile Group EN",
+            "group_company": "Group Agency",
+            "group_description": "Group biography",
+            "group_debut_date": "2024-01-02",
+            "group_region": "KR",
+            "group_image_url": "https://example.com/group.webp",
+            "group_tags": "新人|女子组合",
+            "group_source_type": "OFFICIAL",
+            "group_source_url": "https://example.com/group",
+            "group_copyright_status": "OFFICIAL_SOURCE",
+            "idol_name": "Second Member",
+        }
+    )
+    task = preview(client, admin_headers, "groups_idols", [first, second])
+    assert task["errors"] == []
+    assert task["rows"][0]["data"]["group_data"]["description"] == "Group biography"
+
+    response = confirm(client, admin_headers, task)
+    assert response.status_code == 200, response.text
+    with SessionLocal() as db:
+        group = db.scalar(select(Group).where(Group.name == "Profile Group"))
+        assert group.name_en == "Profile Group EN"
+        assert group.company == "Group Agency"
+        assert group.description == "Group biography"
+        assert group.debut_date == "2024-01-02"
+        assert group.region == "KR"
+        group_meta = db.scalar(
+            select(ContentMetadata).where(
+                ContentMetadata.entity_type == "groups",
+                ContentMetadata.entity_id == group.id,
+            )
+        )
+        assert group_meta.data["image_url"] == "https://example.com/group.webp"
+        assert group_meta.data["tags"] == ["新人", "女子组合"]
+        assert group_meta.data["source_info"]["source_type"] == "OFFICIAL"
+
+        idol = db.scalar(select(Idol).where(Idol.name == "Profile Stage"))
+        assert idol.name_en == "Profile Stage EN"
+        assert idol.company == "Idol Agency"
+        assert idol.bio == "Artist biography"
+        assert idol.birth_date == "2000-03-04"
+        assert idol.region == "KR"
+        idol_meta = db.scalar(
+            select(ContentMetadata).where(
+                ContentMetadata.entity_type == "idols",
+                ContentMetadata.entity_id == idol.id,
+            )
+        )
+        assert idol_meta.data["real_name"] == "Profile Real Name"
+        assert idol_meta.data["gender"] == "F"
+        assert idol_meta.data["image_url"] == "https://example.com/idol.webp"
+        assert idol_meta.data["tags"] == ["主唱", "队长"]
+        assert idol_meta.data["source_info"]["source_url"] == "https://example.com/idol"
+        membership = db.scalar(
+            select(GroupMembership).where(
+                GroupMembership.group_id == group.id,
+                GroupMembership.idol_id == idol.id,
+            )
+        )
+        assert membership
+
+
+def test_combined_import_rejects_conflicting_group_profile_values(client, admin_headers):
+    from test_catalog_bulk import preview
+
+    task = preview(
+        client,
+        admin_headers,
+        "groups_idols",
+        [
+            {
+                "group_code": "CONFLICT",
+                "group_name": "Conflict Group",
+                "group_company": "Agency A",
+                "idol_name": "Member A",
+            },
+            {
+                "group_code": "CONFLICT",
+                "group_name": "Conflict Group",
+                "group_company": "Agency B",
+                "idol_name": "Member B",
+            },
+        ],
+    )
+    assert len(task["rows"]) == 1
+    assert any(error["field"] == "group_company" for error in task["errors"])
 
 
 def test_detach_does_not_destroy_owned_and_allows_unreferenced_offline_delete(

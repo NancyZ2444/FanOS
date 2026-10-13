@@ -259,8 +259,6 @@ export default function App() {
         { label: "小卡管理", path: "/catalog/cards" },
         { label: "组合管理", path: "/catalog/groups" },
         { label: "艺人管理", path: "/catalog/idols" },
-        { label: "批次与批量编辑", path: "/catalog/workbench" },
-        { label: "图鉴审核与质量", path: "/catalog/review" },
         { label: "AI Scan 索引", path: "/catalog/scan" },
         { label: "公司管理", path: "/catalog/companies" },
         { label: "Tag 管理", path: "/catalog/tags" },
@@ -272,6 +270,8 @@ export default function App() {
         ...(contentRole
           ? [{ label: "批量导入", path: "/catalog/import" }]
           : []),
+        { label: "批次与批量编辑", path: "/catalog/workbench" },
+        { label: "图鉴审核与质量", path: "/catalog/review" },
       ],
     },
     ...(contentRole

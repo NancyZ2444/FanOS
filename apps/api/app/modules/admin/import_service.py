@@ -60,6 +60,56 @@ ENTITY_COLUMNS = [
     "copyright_status",
     "copyright_note",
 ]
+COMBINED_GROUP_FIELDS = {
+    "group_code": "group_code",
+    "group_name": "name",
+    "group_name_en": "name_en",
+    "group_name_ko": "name_ko",
+    "group_name_translated": "name_translated",
+    "group_company": "company",
+    "group_description": "description",
+    "group_debut_date": "release_date",
+    "group_end_date": "end_date",
+    "group_region": "region",
+    "group_status": "business_status",
+    "group_fandom_name": "fandom_name",
+    "group_official_website": "official_website",
+    "group_aliases": "aliases",
+    "group_image_url": "image_url",
+    "group_tags": "tags",
+    "group_source_type": "source_type",
+    "group_source_url": "source_url",
+    "group_copyright_status": "copyright_status",
+    "group_copyright_note": "copyright_note",
+}
+COMBINED_IDOL_FIELDS = {
+    "stage_name": "name",
+    "idol_name": "real_name",
+    "idol_name_en": "name_en",
+    "idol_name_ko": "name_ko",
+    "idol_name_translated": "name_translated",
+    "idol_company": "company",
+    "idol_description": "description",
+    "birthday": "release_date",
+    "idol_region": "region",
+    "idol_gender": "gender",
+    "idol_aliases": "aliases",
+    "idol_image_url": "image_url",
+    "idol_tags": "tags",
+    "idol_source_type": "source_type",
+    "idol_source_url": "source_url",
+    "idol_copyright_status": "copyright_status",
+    "idol_copyright_note": "copyright_note",
+}
+COMBINED_COLUMNS = [
+    "group_id",
+    *COMBINED_GROUP_FIELDS,
+    "idol_id",
+    "idol_name",
+    "stage_name",
+    *[field for field in COMBINED_IDOL_FIELDS if field not in {"idol_name", "stage_name"}],
+]
+COMBINED_GROUP_PROFILE_FIELDS = ["group_id", *COMBINED_GROUP_FIELDS]
 
 
 def columns(kind: str) -> list[str]:
@@ -70,7 +120,7 @@ def columns(kind: str) -> list[str]:
 
         return COLUMNS
     if kind == "groups_idols":
-        return ["group_code", "group_name", "idol_name", "stage_name", "birthday"]
+        return COMBINED_COLUMNS
     if kind == "cards":
         return CARD_COLUMNS
     if kind == "groups":
@@ -530,8 +580,88 @@ def validate_rows(db: Session, kind: str, records: list[dict]) -> tuple[list, li
     return valid, errors
 
 
+def _combined_source_field(kind: str, field: str, data: dict) -> str:
+    mapping = COMBINED_GROUP_FIELDS if kind == "groups" else COMBINED_IDOL_FIELDS
+    if field.startswith("source_info."):
+        field = field.removeprefix("source_info.")
+    if kind == "idols" and field == "name":
+        return "stage_name" if data.get("stage_name") else "idol_name"
+    return next((source for source, target in mapping.items() if target == field), field)
+
+
+def _combined_entity_values(kind: str, data: dict) -> dict:
+    mapping = COMBINED_GROUP_FIELDS if kind == "groups" else COMBINED_IDOL_FIELDS
+    values = {target: data.get(source, "") for source, target in mapping.items()}
+    if kind == "idols":
+        values["name"] = data.get("stage_name") or data.get("idol_name", "")
+    for field in ("aliases", "tags"):
+        values[field] = [
+            item.strip() for item in str(values.get(field, "")).split("|") if item.strip()
+        ]
+    return values
+
+
+def _combined_entity_draft(db: Session, kind: str, data: dict) -> tuple[EntityDraft | None, list]:
+    try:
+        return entity_draft(db, kind, _combined_entity_values(kind, data)), []
+    except ValidationError as exc:
+        return None, [
+            {
+                "field": _combined_source_field(kind, ".".join(map(str, error["loc"])), data),
+                "message": error["msg"],
+            }
+            for error in exc.errors()
+        ]
+    except DomainError as exc:
+        details = getattr(exc, "details", None) or [{"field": "row", "message": exc.message}]
+        return None, [
+            {
+                **detail,
+                "field": _combined_source_field(kind, detail.get("field", "row"), data),
+            }
+            for detail in details
+        ]
+
+
+def _combined_target(db: Session, kind: str, item_id: str):
+    if not item_id:
+        return None
+    model = Group if kind == "groups" else Idol
+    field = "group_id" if kind == "groups" else "idol_id"
+    item = db.get(model, item_id)
+    if not item:
+        fail(field, "组合 ID 不存在" if kind == "groups" else "艺人 ID 不存在")
+    status = service.entity_payload(db, kind, item)["status"]
+    if status in {"PUBLISHED", "PENDING", "ARCHIVED"}:
+        fail(field, f"当前状态为 {status}，请先下架、驳回或恢复草稿后再批量更新")
+    return item
+
+
+def _combined_targets(db: Session, data: dict) -> tuple[Group | None, Idol | None]:
+    group = _combined_target(db, "groups", data.get("group_id", ""))
+    idol = _combined_target(db, "idols", data.get("idol_id", ""))
+    group_name = data.get("group_name", "")
+    same_name_group = db.scalar(select(Group).where(Group.name == group_name))
+    if group:
+        if same_name_group and same_name_group.id != group.id:
+            fail("group_name", "组合名称已被其他组合使用")
+    elif same_name_group:
+        fail("group_id", "组合已存在，请填写系统 group_id 使用更新逻辑")
+
+    if not idol and group:
+        idol_name = data.get("stage_name") or data.get("idol_name")
+        existing_member = db.scalar(
+            select(Idol)
+            .join(GroupMembership, GroupMembership.idol_id == Idol.id)
+            .where(GroupMembership.group_id == group.id, Idol.name == idol_name)
+        )
+        if existing_member:
+            fail("idol_id", "该组合下艺人已存在，请填写系统 idol_id 使用更新逻辑")
+    return group, idol
+
+
 def validate_combined(db: Session, records: list[dict]):
-    valid, errors, codes, seen = [], [], {}, set()
+    prepared = []
     for index, row in enumerate(records, start=2):
         data = {
             key: (value.date().isoformat() if isinstance(value, datetime) else value.isoformat())
@@ -540,37 +670,204 @@ def validate_combined(db: Session, records: list[dict]):
             for key, value in row.items()
         }
         problems = []
+        if None in data:
+            problems.append(
+                {"field": "row", "message": "数据列数超出表头；含逗号的内容请使用双引号包裹"}
+            )
         for field in ["group_code", "group_name", "idol_name"]:
             if not data.get(field):
                 problems.append({"field": field, "message": "必填字段为空"})
-        name = data.get("stage_name") or data.get("idol_name")
-        identity = (data.get("group_code"), name)
+        for field in ["group_id", "idol_id"]:
+            if len(data.get(field, "")) > 64:
+                problems.append({"field": field, "message": "长度不能超过 64 个字符"})
+        if data.get("group_code") and data.get("group_name"):
+            _, draft_errors = _combined_entity_draft(db, "groups", data)
+            problems.extend(draft_errors)
+        if data.get("idol_name"):
+            _, draft_errors = _combined_entity_draft(db, "idols", data)
+            problems.extend(draft_errors)
+        prepared.append({"row": index, "data": data, "problems": problems})
+
+    codes, group_names, group_ids, profiles, seen = {}, {}, {}, {}, set()
+    for item in prepared:
+        if item["problems"]:
+            continue
+        data = item["data"]
+        name = data.get("stage_name") or data.get("idol_name", "")
+        identity = (
+            data.get("group_code", "").casefold(),
+            data.get("idol_id", "").casefold() or name.casefold(),
+        )
         if identity in seen:
-            problems.append({"field": "idol_name", "message": "文件内存在同组合重复艺人"})
+            item["problems"].append({"field": "idol_name", "message": "文件内存在同组合重复艺人"})
+        code = data.get("group_code", "").casefold()
+        group_name = data.get("group_name", "").casefold()
+        if code in codes and codes[code] != group_name:
+            item["problems"].append(
+                {"field": "group_name", "message": "同一 group_code 对应多个组合名称"}
+            )
+        if group_name in group_names and group_names[group_name] != code:
+            item["problems"].append(
+                {"field": "group_code", "message": "同一组合名称对应多个 group_code"}
+            )
+        group_id = data.get("group_id", "")
+        if group_id and group_id in group_ids and group_ids[group_id] != code:
+            item["problems"].append(
+                {"field": "group_id", "message": "同一 group_id 对应多个 group_code"}
+            )
+        profile = profiles.setdefault(code, {})
+        conflicts = [
+            field
+            for field in COMBINED_GROUP_PROFILE_FIELDS
+            if data.get(field) and profile.get(field) and data[field] != profile[field]
+        ]
+        item["problems"].extend(
+            {"field": field, "message": "同一组合的资料在文件内不一致"} for field in conflicts
+        )
+        if item["problems"]:
+            continue
+        for field in COMBINED_GROUP_PROFILE_FIELDS:
+            if data.get(field):
+                profile[field] = data[field]
         seen.add(identity)
-        code = data.get("group_code")
-        if code in codes and codes[code] != data.get("group_name"):
-            problems.append({"field": "group_name", "message": "同一 group_code 对应多个组合名称"})
-        codes[code] = data.get("group_name")
-        group = db.scalar(select(Group).where(Group.name == data.get("group_name")))
-        if group:
-            data["existing_group_id"] = group.id
-            if db.scalar(
-                select(Idol.id)
-                .join(GroupMembership)
-                .where(GroupMembership.group_id == group.id, Idol.name == name)
-            ):
-                problems.append({"field": "idol_name", "message": "艺人已存在，请编辑原记录"})
-        if data.get("birthday"):
+        codes[code] = group_name
+        group_names[group_name] = code
+        if group_id:
+            group_ids[group_id] = code
+
+    valid, errors = [], []
+    for item in prepared:
+        index, data, problems = item["row"], item["data"], item["problems"]
+        if not problems:
+            code = data["group_code"].casefold()
+            data.update(profiles[code])
+            group_draft, draft_errors = _combined_entity_draft(db, "groups", data)
+            problems.extend(draft_errors)
+            idol_draft, draft_errors = _combined_entity_draft(db, "idols", data)
+            problems.extend(draft_errors)
+        if not problems:
             try:
-                date.fromisoformat(data["birthday"])
-            except ValueError:
-                problems.append({"field": "birthday", "message": "日期必须为 YYYY-MM-DD"})
+                _combined_targets(db, data)
+            except DomainError as exc:
+                problems.extend(
+                    getattr(exc, "details", None) or [{"field": "row", "message": exc.message}]
+                )
         if problems:
             errors += [
                 {"row": index, **problem, "suggestion": problem["message"], "can_skip": True}
                 for problem in problems
             ]
         else:
+            data["group_operation"] = "update" if data.get("group_id") else "create"
+            data["idol_operation"] = "update" if data.get("idol_id") else "create"
+            data["group_data"] = group_draft.model_dump()
+            data["idol_data"] = idol_draft.model_dump()
             valid.append({"row": index, "data": data})
     return valid, errors
+
+
+def _combined_update_draft(
+    db: Session, kind: str, item: Group | Idol, data: dict
+) -> tuple[EntityDraft, bool]:
+    current = {**service.entity_payload(db, kind, item), "company_ids": None}
+    current.pop("official_accounts", None)
+    before = EntityDraft.model_validate(current)
+    mapping = COMBINED_GROUP_FIELDS if kind == "groups" else COMBINED_IDOL_FIELDS
+    source_patch = {}
+    for source, target in mapping.items():
+        value = data.get(source, "")
+        if value == "":
+            continue
+        if target in {"source_type", "source_url", "copyright_status", "copyright_note"}:
+            source_patch[target] = value
+        elif target in {"aliases", "tags"}:
+            current[target] = [part.strip() for part in str(value).split("|") if part.strip()]
+        else:
+            current[target] = value
+    if kind == "idols":
+        current["name"] = data.get("stage_name") or data["idol_name"]
+        current["real_name"] = data["idol_name"]
+    if source_patch:
+        current["source_info"] = {**(current.get("source_info") or {}), **source_patch}
+    draft = EntityDraft.model_validate(current)
+    return draft, draft.model_dump() != before.model_dump()
+
+
+def import_combined(
+    db: Session,
+    actor,
+    values: dict,
+    new_groups: dict[str, Group] | None = None,
+) -> dict:
+    """Create or update both entities by ID, then guarantee their membership relation."""
+    new_groups = new_groups if new_groups is not None else {}
+    group_id = values.get("group_id", "")
+    group_key = values["group_code"].casefold()
+    if group_id:
+        group = _combined_target(db, "groups", group_id)
+        group_draft, changed = _combined_update_draft(db, "groups", group, values)
+        if changed:
+            service.save_entity(db, actor, "groups", group_draft, group.id)
+        group_operation = "updated"
+    else:
+        group = new_groups.get(group_key)
+        if not group:
+            group_draft = EntityDraft.model_validate(values["group_data"])
+            result = service.save_entity(db, actor, "groups", group_draft)
+            group = db.get(Group, result["id"])
+            new_groups[group_key] = group
+        group_operation = "created"
+
+    idol_id = values.get("idol_id", "")
+    if idol_id:
+        idol = _combined_target(db, "idols", idol_id)
+        idol_draft, changed = _combined_update_draft(db, "idols", idol, values)
+        if changed:
+            service.save_entity(db, actor, "idols", idol_draft, idol.id)
+        idol_operation = "updated"
+    else:
+        idol_draft = EntityDraft.model_validate(values["idol_data"])
+        idol_draft.group_id = group.id
+        result = service.save_entity(db, actor, "idols", idol_draft)
+        idol = db.get(Idol, result["id"])
+        idol_operation = "created"
+
+    membership = db.scalar(
+        select(GroupMembership).where(
+            GroupMembership.group_id == group.id,
+            GroupMembership.idol_id == idol.id,
+        )
+    )
+    membership_operation = "existing"
+    if not membership:
+        membership = GroupMembership(group_id=group.id, idol_id=idol.id)
+        db.add(membership)
+        db.flush()
+        membership_operation = "created"
+        service.audit(
+            db,
+            actor,
+            "catalog.membership.import",
+            "memberships",
+            membership.id,
+            None,
+            service.row_data(membership),
+        )
+    if group_operation == "updated" and idol_operation == "updated":
+        mode = "updated_group_and_idol"
+    elif group_operation == "updated":
+        mode = "updated_group_created_idol"
+    elif idol_operation == "updated":
+        mode = "created_group_updated_idol"
+    else:
+        mode = "created_group_and_idol"
+    return {
+        "created_id": idol.id,
+        "group_id": group.id,
+        "idol_id": idol.id,
+        "membership_id": membership.id,
+        "import_mode": mode,
+        "group_operation": group_operation,
+        "idol_operation": idol_operation,
+        "membership_operation": membership_operation,
+    }

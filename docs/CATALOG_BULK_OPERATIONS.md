@@ -1,8 +1,10 @@
 # 图鉴批量管理与表格导入
 
-更新日期：2026-10-10。
+更新日期：2026-10-13。
 
 本次新增组合 + 艺人联合导入、预览逐行修正 / 跳过、小卡字段批量编辑与图片手动批量上传；说明见 [图鉴更新](CATALOG_UPGRADE_20261010.md)。下方首次验证记录保留为历史。
+
+2026-10-13 起，后台不再提供容易产生空壳组合的“组合”和“艺人”分开导入入口。组合管理和艺人管理的「批量导入」统一进入「组合 + 艺人（自动关联）」：每行代表一位组合成员，同一 `group_code` 可填写多行；确认后在同一事务中新增或按系统 ID 更新组合与艺人，并建立成员关系。组合至少有一行有效艺人才会创建。
 
 本次扩展覆盖组合、艺人、专辑、活动、合集、周边和小卡，连接现有后台 API 与数据库。不会批量修改或删除未选中的记录。
 
@@ -10,13 +12,13 @@
 
 组合、艺人、专辑、活动、合集、周边页面新增复选框、选中数量、批量操作栏和「批量导入」入口。支持跨分页选择，切换搜索条件、组合、状态或页面会清空选择，避免误操作。单次最多 100 条。
 
-| 操作 | 允许的选中状态 | 操作后状态 |
-| --- | --- | --- |
-| 批量提交审核 | 草稿、驳回、下架 | 待审核 |
-| 批量发布 | 待审核 | 已发布 |
-| 批量下架 | 已发布 | 已下架 |
-| 批量归档 | 草稿、驳回、下架 | 已归档 |
-| 恢复草稿 | 已归档 | 草稿 |
+| 操作         | 允许的选中状态   | 操作后状态 |
+| ------------ | ---------------- | ---------- |
+| 批量提交审核 | 草稿、驳回、下架 | 待审核     |
+| 批量发布     | 待审核           | 已发布     |
+| 批量下架     | 已发布           | 已下架     |
+| 批量归档     | 草稿、驳回、下架 | 已归档     |
+| 恢复草稿     | 已归档           | 草稿       |
 
 仅当所有选中项均满足状态要求时，按钮才可用。已发布记录需先下架再归档。批量操作前显示数量并要求确认；服务端逐项检查权限与最新状态，任意一项失败则整批回滚，并返回出错记录 ID。成功操作逐条写入审计日志。
 
@@ -26,7 +28,7 @@
 
 ## 导入流程
 
-1. 从对应列表点击「批量导入」，系统自动选中该类型；也可从统一导入页切换类型。
+1. 从对应列表点击「批量导入」，系统自动选中该类型；组合和艺人列表统一选中「组合 + 艺人（自动关联）」，也可从统一导入页切换其他类型。
 2. 下载当前类型的 Excel（`.xlsx`）或 CSV 模板。使用模板第一行字段名，不要合并单元格、改成中文列名或使用重复列名。
 3. 填写数据后上传，支持 UTF-8 CSV / XLSX，每次最多 2,000 行、5 MB。
 4. 核对有效行预览、错误行号、字段和修复建议。此时只保存导入任务，没有创建图鉴记录。
@@ -37,13 +39,11 @@
 
 ## 字段和关联方式
 
-| 类型 | 必填内容 | 关联与可选字段 |
-| --- | --- | --- |
-| 组合 | `name` | 公司、多语言名称、简介、出道日期、封面、标签、来源版权 |
-| 艺人 | `name`；组合可选，支持独立 Solo | 多语言名称、简介、生日、封面、标签、来源版权 |
-| 专辑／活动／合集／周边 | `name`，至少一个组合或艺人归属 | `group_id` / `group_name`、`idol_id` / `idol_name`，或 `artists` JSON 数组；类型、地区、日期、简介、封面等 |
-| 组合 + 艺人 | `group_code`、`group_name`、`idol_name` | 可选 `stage_name`、`birthday`；同编码对应同组合，已有组合可复用 |
-| 小卡 | 原有小卡模板与发布校验要求 | 组合、艺人、发行来源、正反面图片及各自版权；团卡／双面／AR 规则保持不变 |
+| 类型                   | 必填内容                                | 关联与可选字段                                                                                             |
+| ---------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 专辑／活动／合集／周边 | `name`，至少一个组合或艺人归属          | `group_id` / `group_name`、`idol_id` / `idol_name`，或 `artists` JSON 数组；类型、地区、日期、简介、封面等 |
+| 组合 + 艺人            | `group_code`、`group_name`、`idol_name` | `group_id` / `idol_id` 为空时新增、填写时更新；支持双方完整资料并自动维护成员关系                          |
+| 小卡                   | 原有小卡模板与发布校验要求              | 组合、艺人、发行来源、正反面图片及各自版权；团卡／双面／AR 规则保持不变                                    |
 
 通用字段：
 
@@ -53,11 +53,28 @@
 - `image_url`：可选 HTTP(S) 图片地址；不会自动下载外部图片。
 - `source_type` / `source_url` / `copyright_status` / `copyright_note`：来源类型、链接、版权状态和备注。为空时使用后台默认值，不代表已获得授权。
 
+联合导入字段按前缀区分：
+
+- 组合资料：`group_name_*`、`group_company`、`group_description`、`group_debut_date`、`group_end_date`、`group_region`、`group_status`、`group_fandom_name`、`group_official_website`、`group_aliases`、`group_image_url`、`group_tags` 及 `group_source_*` / `group_copyright_*`。
+- 艺人资料：`idol_name` 为本名，`stage_name` 为展示艺名；另有 `idol_name_*`、`idol_company`、`idol_description`、`birthday`、`idol_region`、`idol_gender`、`idol_aliases`、`idol_image_url`、`idol_tags` 及 `idol_source_*` / `idol_copyright_*`。
+- 同一 `group_code` 的组合资料和 `group_id` 可以只在任意一位成员行填写一次，预检会聚合到该组合；多行填写同一字段时内容必须一致，否则对应行报错。
+- `group_id` 为空时新增组合，填写系统唯一 ID 时更新该组合；`idol_id` 为空时新增艺人，填写系统唯一 ID 时更新该艺人。两者独立判断，因此也支持“已有组合新增艺人”或“新组合关联并更新已有艺人”。
+- 两个 ID 都为空时新增双方，两个 ID 都填写时更新双方。更新只覆盖模板中有值的资料字段，空白字段保留系统原值；待审核、已发布或已归档档案需先切换为可编辑状态。
+- 成员关系不存在时自动建立，已经存在时直接保留，不重复写入。
+
 名称关联使用准确名称，同时提供名称和 ID 时必须一致。同名歧义使用 ID，不猜测匹配；合作发行可同时包含不同组合 / 个人。小卡按发行时历史成员有效期校验；旧归属不会被当前身份覆盖。非小卡可关联未发布上游建立草稿，小卡完整预检仍要求上游已发布。
 
-组合按名称查重，艺人／专辑／活动／合集／周边按所属组合和名称查重，同时检查表格内部和数据库（含草稿、归档记录）。同名不同版本需要在名称中明确区分，或通过原记录编辑入口维护。导入仅新增，不覆盖原记录。小卡沿用原有导入逻辑，未新增同名去重限制，以兼容不同版本小卡。
+组合按名称查重，艺人／专辑／活动／合集／周边按所属组合和名称查重，同时检查表格内部和数据库（含草稿、归档记录）。联合导入中，系统已有组合必须填写准确的 `group_id`；系统已有艺人需要更新或复用时填写准确的 `idol_id`。ID 与名称分离：ID 用于锁定更新对象，名称及其他有值字段作为更新内容。已有成员关系不会重复写入。同名不同版本需要在名称中明确区分，或通过原记录编辑入口维护。小卡沿用原有导入逻辑，未新增同名去重限制，以兼容不同版本小卡。
 
-CSV 示例（先有组合 `LUMINA`）：
+组合与艺人联合导入示例：
+
+```csv
+group_id,group_code,group_name,group_name_en,group_company,group_debut_date,group_image_url,idol_id,idol_name,stage_name,idol_name_en,birthday,idol_region,idol_image_url
+,LUMINA,LUMINA,LUMINA,Star Agency,2024-01-01,https://example.com/group.webp,,Kim A,Aria,Aria,2000-01-01,KR,https://example.com/aria.webp
+,LUMINA,LUMINA,,,,,,Lin B,Lin,Lin,2001-02-02,CN,https://example.com/lin.webp
+```
+
+专辑 CSV 示例（先有组合 `LUMINA`）：
 
 ```csv
 name,group_name,release_date,tags
@@ -70,7 +87,7 @@ name,group_name,release_date,tags
 - 模板：`GET /api/v1/admin/console/imports/template?kind=albums&format=xlsx`，需要后台登录。
 - 上传：原 `POST /imports` 的 multipart 新增 `kind`，默认 `cards`，兼容旧客户端。
 - 历史：`GET /imports?kind=albums`；确认仍为 `POST /imports/{task_id}/confirm`，按任务固化的类型导入。
-- `kind` 支持 `cards / groups / idols / albums / events / collections / merchandise / groups_idols`。
+- `kind` 支持 `cards / groups / idols / albums / events / others / groups_idols / companies`；后台界面的组合与艺人入口统一使用 `groups_idols`，原 `groups` / `idols` 类型仅为历史任务与兼容调用保留。
 - 新迁移 `e2a10b8f4c63` 接在现有 `e22a811c4b03` 后，给 `admin_import_tasks` 增加 `kind`，历史任务默认 `cards`。已有非小卡任务时会拒绝降级，避免旧版本把任务误当小卡。
 - 本地升级前备份：`apps/api/data/fan_os.before_bulk_20261009_111544.db`。不改写既有扫描迁移和业务数据。
 

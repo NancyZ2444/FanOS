@@ -66,32 +66,37 @@ export default function CatalogDetail() {
   }));
   return (
     <>
-      <Space style={{ marginBottom: 16 }}>
-        <Button onClick={() => navigate(`/catalog/${kind}`)}>返回列表</Button>
-        <h2>{entity?.name || entity?.title || "详情"}</h2>
-        {kind === "cards" && (
-          <Button onClick={() => navigate(`/catalog/cards/${id}`)}>
-            打开小卡编辑器
-          </Button>
-        )}
-        {kind !== "cards" && actor.role !== "operation_admin" && (
-          <Space wrap>
-            {[
-              ...(kind === "groups"
-                ? ["idols", "albums", "events"]
-                : kind === "idols"
-                  ? ["albums", "events"]
-                  : []),
-              "cards",
-            ].map((type) => (
-              <Button key={type} onClick={() => create(type)}>
-                新增
-                {type === "cards" ? "小卡" : names[type as keyof typeof names]}
+      <div className="catalog-detail-heading">
+        <div className="catalog-detail-title">
+          <Button onClick={() => navigate(`/catalog/${kind}`)}>返回列表</Button>
+          <h1>{entity?.name || entity?.title || "详情"}</h1>
+        </div>
+        {(kind === "cards" || actor.role !== "operation_admin") && (
+          <Space wrap className="catalog-detail-actions">
+            {kind === "cards" ? (
+              <Button onClick={() => navigate(`/catalog/cards/${id}`)}>
+                打开小卡编辑器
               </Button>
-            ))}
+            ) : (
+              [
+                ...(kind === "groups"
+                  ? ["idols", "albums", "events"]
+                  : kind === "idols"
+                    ? ["albums", "events"]
+                    : []),
+                "cards",
+              ].map((type) => (
+                <Button key={type} onClick={() => create(type)}>
+                  新增
+                  {type === "cards"
+                    ? "小卡"
+                    : names[type as keyof typeof names]}
+                </Button>
+              ))
+            )}
           </Space>
         )}
-      </Space>
+      </div>
       {error && (
         <Alert
           type="error"
