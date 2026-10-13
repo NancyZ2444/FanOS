@@ -1,0 +1,36 @@
+name: Admin CI
+on:
+  pull_request:
+    paths: ['apps/admin/**', 'apps/api/**', '.github/workflows/admin.yml']
+  push:
+    branches: [main]
+    paths: ['apps/admin/**', 'apps/api/**', '.github/workflows/admin.yml']
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/admin/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m venv ../api/.venv
+      - run: ../api/.venv/bin/pip install -e '../api[dev]'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: admin-browser-test-results
+          path: apps/admin/test-results

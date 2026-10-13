@@ -1,0 +1,626 @@
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import {
+  App,
+  Button,
+  Form,
+  Input,
+  InputNumber,
+  Image,
+  Modal,
+  Select,
+  Space,
+  Tag,
+  Table,
+} from "antd";
+import { consoleApi, send } from "../api/client";
+import { useConsole } from "../state";
+import { groupMembers, memberLabel } from "./memberOptions";
+import { ImageUpload } from "../components/shared";
+
+const labels: Record<string, string> = {
+  versions: "版本",
+  sources: "来源关联",
+  memberships: "成员关系",
+  companies: "公司",
+  company_relations: "公司经历",
+  batches: "小卡批次",
+};
+export default function RecordManager({
+  kind,
+  entityType = "",
+  entityId = "",
+  onSaved,
+}: {
+  kind: string;
+  entityType?: string;
+  entityId?: string;
+  onSaved?: () => void;
+}) {
+  const { catalog, actor, reload } = useConsole();
+  const navigate = useNavigate();
+  const { message, modal } = App.useApp();
+  const [rows, setRows] = useState<any[]>([]);
+  const [companies, setCompanies] = useState<any[]>([]);
+  const [versions, setVersions] = useState<any[]>([]);
+  const [current, setCurrent] = useState<any>();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [members, setMembers] = useState<string[]>([]);
+  const [per, setPer] = useState(1);
+  const [validation, setValidation] = useState<any[]>([]);
+  const [form] = Form.useForm();
+  const sourceId = Form.useWatch("source_entity_id", form);
+  useEffect(() => {
+    if (kind === "batches" && sourceId)
+      consoleApi(`/records/versions?entity_id=${sourceId}`)
+        .then((d) => setVersions(d.items))
+        .catch((e) => message.error(e.message));
+    else setVersions([]);
+  }, [kind, sourceId]);
+  const batchCards = catalog.cards.filter(
+    (c) =>
+      current &&
+      (c.batch_id === current.id || current.data.card_ids?.includes(c.id)),
+  );
+  const load = () =>
+    consoleApi(`/records/${kind}${entityId ? `?entity_id=${entityId}` : ""}`)
+      .then((d) => {
+        setRows(d.items);
+        setCurrent((r: any) =>
+          r ? d.items.find((item: any) => item.id === r.id) || r : r,
+        );
+      })
+      .catch((e) => message.error(e.message));
+  useEffect(() => {
+    load();
+    if (kind === "company_relations")
+      consoleApi("/records/companies")
+        .then((d) => setCompanies(d.items))
+        .catch((e) => message.error(e.message));
+  }, [kind, entityId]);
+  const edit = (r?: any) => {
+    if (kind === "company_relations")
+      consoleApi("/records/companies")
+        .then((d) => setCompanies(d.items))
+        .catch((e) => message.error(e.message));
+    setCurrent(r);
+    form.resetFields();
+    form.setFieldsValue(r?.data || {});
+    setOpen(true);
+  };
+  const save = async () => {
+    try {
+      const data = await form.validateFields();
+      setBusy(true);
+      await consoleApi(
+        `/records/${kind}${current && !current.id.startsWith("legacy-") ? `/${current.id}` : ""}`,
+        send(
+          {
+            entity_type: entityType,
+            entity_id: entityId,
+            data: ["companies", "company_relations"].includes(kind)
+              ? { ...current?.data, ...data }
+              : data,
+          },
+          current && !current.id.startsWith("legacy-") ? "PUT" : "POST",
+        ),
+      );
+      setOpen(false);
+      message.success("已保存");
+      await load();
+      await reload();
+      onSaved?.();
+    } catch (e) {
+      if (e instanceof Error) message.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sources = Object.entries(catalog)
+    .filter(([k]) => !["groups", "idols", "cards"].includes(k))
+    .flatMap(([k, items]) =>
+      items.map((e: any) => ({ value: `${k}:${e.id}`, label: e.name })),
+    );
+  const batchAction = async (id: string, action: string, body: object = {}) => {
+    try {
+      const result = await consoleApi(`/batches/${id}/${action}`, send(body));
+      setValidation(result.items || []);
+      await load();
+      await reload();
+      message.success("操作完成");
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
+  return (
+    <>
+      <Space style={{ marginBottom: 12 }}>
+        {actor.role !== "operation_admin" && (
+          <Button onClick={() => edit()}>新增{labels[kind]}</Button>
+        )}
+        <Button onClick={load}>刷新</Button>
+        {kind === "companies" && actor.role !== "operation_admin" && (
+          <Button onClick={() => navigate("/catalog/import?kind=companies")}>
+            批量导入公司
+          </Button>
+        )}
+      </Space>
+      <Table
+        rowKey="id"
+        dataSource={rows}
+        pagination={{ pageSize: 10 }}
+        columns={[
+          {
+            title: "名称 / 关系",
+            render: (_, r) =>
+              r.data.name ||
+              catalog.groups.find((g) => g.id === r.data.group_id)?.name ||
+              companies.find((c) => c.id === r.data.company_id)?.data.name ||
+              sources.find((s) => s.value === `${r.data.type}:${r.data.id}`)
+                ?.label ||
+              r.id,
+          },
+          {
+            title: "状态 / 有效期",
+            render: (_, r) =>
+              `${r.data.status || r.status} ${r.data.start_date || (r.data.date_unknown ? "开始日期待核实" : r.data.release_date || "")} ${r.data.end_date || ""}`,
+          },
+          {
+            title: "操作",
+            render: (_, r) => (
+              <Space wrap>
+                {actor.role !== "operation_admin" && (
+                  <Button type="link" onClick={() => edit(r)}>
+                    编辑
+                  </Button>
+                )}
+                {actor.role === "admin" &&
+                  !["memberships", "company_relations"].includes(kind) && (
+                    <Button
+                      type="link"
+                      danger
+                      onClick={() =>
+                        modal.confirm({
+                          title: "确认删除该记录？",
+                          content: "被引用的记录不能删除。",
+                          onOk: async () => {
+                            try {
+                              await consoleApi(`/records/${kind}/${r.id}`, {
+                                method: "DELETE",
+                              });
+                              await load();
+                            } catch (e) {
+                              message.error((e as Error).message);
+                            }
+                          },
+                        })
+                      }
+                    >
+                      删除
+                    </Button>
+                  )}
+                {kind === "batches" && (
+                  <>
+                    <Button
+                      onClick={() => {
+                        setCurrent(r);
+                        setMembers([]);
+                        setValidation([]);
+                      }}
+                    >
+                      选择批次
+                    </Button>
+                    <Button onClick={() => batchAction(r.id, "validate")}>
+                      全部校验
+                    </Button>
+                    {actor.role === "admin" && (
+                      <Button
+                        onClick={() =>
+                          modal.confirm({
+                            title: "发布所有校验通过的小卡？",
+                            onOk: () => batchAction(r.id, "publish-ready"),
+                          })
+                        }
+                      >
+                        发布合格卡
+                      </Button>
+                    )}
+                  </>
+                )}
+              </Space>
+            ),
+          },
+        ]}
+      />
+      {kind === "batches" && current && !open && (
+        <section className="panel" style={{ padding: 16 }}>
+          <h3>
+            {current.data.name} · {batchCards.length} 张
+          </h3>
+          <Space wrap style={{ marginBottom: 12 }}>
+            <Tag>
+              正面已上传 {batchCards.filter((c) => c.image_url).length} /{" "}
+              {batchCards.length}
+            </Tag>
+            <Tag>
+              校验通过 {validation.filter((r) => !r.errors?.length).length} /{" "}
+              {validation.length || "未校验"}
+            </Tag>
+            <Tag>
+              已发布 {batchCards.filter((c) => c.status === "PUBLISHED").length}
+            </Tag>
+            <Button
+              onClick={() =>
+                navigate(`/catalog/workbench?tab=images&batch_id=${current.id}`)
+              }
+            >
+              上传图片
+            </Button>
+            <Button
+              onClick={() =>
+                navigate(`/catalog/workbench?tab=bulk&batch_id=${current.id}`)
+              }
+            >
+              批量编辑
+            </Button>
+          </Space>
+          <Space wrap>
+            <Select
+              mode="multiple"
+              aria-label="选择成员"
+              placeholder="选择成员"
+              style={{ minWidth: 260 }}
+              value={members}
+              onChange={setMembers}
+              options={groupMembers(catalog.idols, current.data.group_id).map(
+                (i) => ({
+                  value: i.id,
+                  label: memberLabel(i, current.data.group_id),
+                }),
+              )}
+            />
+            <InputNumber
+              min={1}
+              max={10}
+              value={per}
+              onChange={(v) => setPer(v || 1)}
+            />
+            <Button
+              disabled={
+                !members.length ||
+                !!current.data.card_ids?.length ||
+                !!current.data.generated_at
+              }
+              onClick={() =>
+                batchAction(current.id, "generate", {
+                  member_ids: members,
+                  cards_per_member: per,
+                })
+              }
+            >
+              生成成员草稿
+            </Button>
+          </Space>
+          <Table
+            rowKey="id"
+            dataSource={batchCards.map((c) => ({
+              ...c,
+              errors: validation.find((r) => r.id === c.id)?.errors,
+            }))}
+            columns={[
+              {
+                title: "小卡",
+                dataIndex: "title",
+                render: (title, r) => (
+                  <Button
+                    type="link"
+                    onClick={() => navigate(`/catalog/cards/${r.id}`)}
+                  >
+                    {title}
+                  </Button>
+                ),
+              },
+              { title: "艺人", dataIndex: "idol_name" },
+              {
+                title: "正面",
+                render: (_, r) =>
+                  r.image_url ? (
+                    <Image width={45} src={r.image_url} />
+                  ) : (
+                    "缺少图片"
+                  ),
+              },
+              {
+                title: "背面",
+                render: (_, r) =>
+                  r.back_image_url ? (
+                    <Image width={45} src={r.back_image_url} />
+                  ) : (
+                    "—"
+                  ),
+              },
+              { title: "状态", dataIndex: "status" },
+              {
+                title: "校验",
+                render: (_, r) =>
+                  r.errors === undefined
+                    ? "未校验"
+                    : r.errors.length
+                      ? r.errors.map((e: any) => e.message).join("；")
+                      : "通过",
+              },
+              {
+                title: "操作",
+                render: (_, r) =>
+                  actor.role !== "operation_admin" &&
+                  ["DRAFT", "REJECTED", "OFFLINE", "ARCHIVED"].includes(
+                    r.status,
+                  ) && (
+                    <Button
+                      danger
+                      type="link"
+                      onClick={() =>
+                        modal.confirm({
+                          title: "解除小卡与当前批次的关联？",
+                          content:
+                            "小卡和其他归属保留。此操作会记录到变更历史。",
+                          onOk: () =>
+                            batchAction(current.id, "remove-card", {
+                              card_id: r.id,
+                            }),
+                        })
+                      }
+                    >
+                      解除批次关联
+                    </Button>
+                  ),
+              },
+            ]}
+          />
+        </section>
+      )}
+      <Modal
+        title={`${current ? "编辑" : "新增"}${labels[kind]}`}
+        open={open}
+        onCancel={() => setOpen(false)}
+        onOk={save}
+        confirmLoading={busy}
+        destroyOnHidden
+      >
+        <Form form={form} layout="vertical">
+          {["versions", "companies", "batches"].includes(kind) && (
+            <Form.Item name="name" label="名称" rules={[{ required: true }]}>
+              <Input />
+            </Form.Item>
+          )}
+          {kind === "versions" && (
+            <>
+              <Form.Item name="code" label="版本编码">
+                <Input />
+              </Form.Item>
+              <Form.Item name="release_date" label="发行日期">
+                <Input type="date" />
+              </Form.Item>
+              <Form.Item name="cover" label="版本封面">
+                <ImageUpload label="版本封面" />
+              </Form.Item>
+              <Form.Item name="description" label="描述">
+                <Input.TextArea />
+              </Form.Item>
+            </>
+          )}
+          {kind === "companies" && (
+            <Form.Item name="description" label="描述">
+              <Input.TextArea maxLength={2000} />
+            </Form.Item>
+          )}
+          {kind === "sources" && (
+            <Form.Item
+              name="source_key"
+              label="上游来源"
+              rules={[{ required: true }]}
+            >
+              <Select
+                showSearch
+                optionFilterProp="label"
+                options={sources.filter(
+                  (s) => !s.value.endsWith(`:${entityId}`),
+                )}
+                onChange={(value) => {
+                  const [type, id] = value.split(":");
+                  form.setFieldsValue({ type, id });
+                }}
+              />
+            </Form.Item>
+          )}
+          {kind === "sources" && (
+            <>
+              <Form.Item name="type" hidden>
+                <Input />
+              </Form.Item>
+              <Form.Item name="id" hidden>
+                <Input />
+              </Form.Item>
+            </>
+          )}
+          {kind === "memberships" && (
+            <>
+              <Form.Item
+                name="group_id"
+                label="组合"
+                rules={[{ required: true }]}
+              >
+                <Select
+                  disabled={!!current}
+                  options={catalog.groups.map((g) => ({
+                    value: g.id,
+                    label: g.name,
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item name="status" label="成员状态" initialValue="active">
+                <Select
+                  options={[
+                    { value: "active", label: "活动中" },
+                    { value: "inactive", label: "活动暂停" },
+                    { value: "former", label: "已退出" },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item name="relationship_type" label="身份">
+                <Select
+                  options={["MEMBER", "SUB_UNIT", "SOLO", "PROJECT_GROUP"].map(
+                    (value) => ({ value, label: value }),
+                  )}
+                />
+              </Form.Item>
+              <Form.Item name="is_primary" label="主身份">
+                <Select
+                  options={[
+                    { value: true, label: "是" },
+                    { value: false, label: "否" },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item name="member_role" label="成员职务">
+                <Input />
+              </Form.Item>
+              <Form.Item name="display_order" label="显示顺序">
+                <InputNumber min={0} />
+              </Form.Item>
+              <Form.Item name="is_original_member" label="初始成员">
+                <Select
+                  options={[
+                    { value: true, label: "是" },
+                    { value: false, label: "否" },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item name="membership_id" hidden>
+                <Input />
+              </Form.Item>
+            </>
+          )}
+          {kind === "company_relations" && (
+            <>
+              <Form.Item
+                name="company_id"
+                label="公司"
+                rules={[{ required: true }]}
+              >
+                <Select
+                  options={companies.map((c) => ({
+                    value: c.id,
+                    label: c.data.name,
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item name="relation_type" label="关系类型">
+                <Input placeholder="Agency / Label" />
+              </Form.Item>
+            </>
+          )}
+          {["memberships", "company_relations"].includes(kind) && (
+            <>
+              <Form.Item
+                name="start_date"
+                label="开始日期"
+                extra={
+                  kind === "company_relations" && current?.data.date_unknown
+                    ? "原始数据未提供开始日期，可保持待核实。"
+                    : undefined
+                }
+                rules={[
+                  {
+                    required:
+                      kind === "memberships" || !current?.data.date_unknown,
+                  },
+                ]}
+              >
+                <Input type="date" />
+              </Form.Item>
+              <Form.Item name="end_date" label="结束日期">
+                <Input type="date" />
+              </Form.Item>
+              <Form.Item name="remark" label="备注">
+                <Input.TextArea />
+              </Form.Item>
+            </>
+          )}
+          {kind === "batches" && (
+            <>
+              <Form.Item name="group_id" label="组合（Solo 可留空）">
+                <Select
+                  allowClear
+                  options={catalog.groups.map((g) => ({
+                    value: g.id,
+                    label: g.name,
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item
+                name="source_key"
+                label="发行来源"
+                rules={[{ required: true }]}
+              >
+                <Select
+                  options={sources}
+                  onChange={(value) => {
+                    const [k, id] = value.split(":");
+                    form.setFieldsValue({
+                      source_entity_id: id,
+                      source_entity_type: (
+                        {
+                          albums: "ALBUM",
+                          events: "EVENT",
+                          others: "OTHER",
+                        } as Record<string, string>
+                      )[k],
+                    });
+                  }}
+                />
+              </Form.Item>
+              <Form.Item name="source_entity_id" hidden>
+                <Input />
+              </Form.Item>
+              <Form.Item name="source_entity_type" hidden>
+                <Input />
+              </Form.Item>
+              <Form.Item name="entity_version_id" label="发行版本">
+                <Select
+                  allowClear
+                  options={versions.map((v) => ({
+                    value: v.id,
+                    label: v.data.name,
+                  }))}
+                  onChange={(id) =>
+                    form.setFieldsValue({
+                      version:
+                        versions.find((v) => v.id === id)?.data.name || "",
+                    })
+                  }
+                />
+              </Form.Item>
+              <Form.Item name="version" label="版本文本">
+                <Input />
+              </Form.Item>
+              <Form.Item name="edition" label="Edition">
+                <Input />
+              </Form.Item>
+              <Form.Item name="card_type" label="卡类型">
+                <Input />
+              </Form.Item>
+              <Form.Item name="release_date" label="发行日期">
+                <Input type="date" />
+              </Form.Item>
+              <Form.Item name="tags" label="标签">
+                <Select mode="tags" />
+              </Form.Item>
+            </>
+          )}
+        </Form>
+      </Modal>
+    </>
+  );
+}

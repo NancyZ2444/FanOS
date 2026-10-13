@@ -1,0 +1,151 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fan_os
+      POSTGRES_USER: fan_os
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run cloud init first}
+    volumes:
+    - fan_os_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U fan_os
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  redis:
+    image: redis:7-alpine
+    volumes:
+    - fan_os_redis:/data
+    healthcheck:
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  api:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://fan_os:${POSTGRES_PASSWORD}@postgres:5432/fan_os
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?Run cloud init first}
+      AUTO_SEED: 'false'
+      STORAGE_BACKEND: local
+      CARD_MATCHER_FACE: mock
+      CARD_MATCHER_BODY: real
+      CARD_MATCHER_EXPRESSION: real
+      CARD_MATCHER_POSE: real
+      WORKER_TOKEN: ${WORKER_TOKEN:?Run cloud init first}
+      LOCAL_MEDIA_ROOT: /srv/api/data/uploads
+      PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-http://localhost:5173/media}
+      DEV_PHONE_CODE: ${DEV_PHONE_CODE:?Run cloud init first}
+    ports:
+    - 127.0.0.1:8000:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+    - fan_os_matcher_index:/srv/api/data/card_matcher
+    - fan_os_uploads:/srv/api/data/uploads
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  admin:
+    build:
+      context: .
+      dockerfile: deploy/docker/admin.Dockerfile
+    ports:
+    - 127.0.0.1:5173:80
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    volumes:
+    - ./deploy/nginx/cloud-admin.conf:/etc/nginx/conf.d/default.conf:ro
+  catalog-index-worker:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+    command:
+    - python
+    - -m
+    - app.modules.admin.catalog_jobs
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://fan_os:${POSTGRES_PASSWORD}@postgres:5432/fan_os
+      STORAGE_BACKEND: local
+      CARD_MATCHER_FACE: mock
+      CARD_MATCHER_BODY: real
+      CARD_MATCHER_EXPRESSION: real
+      CARD_MATCHER_POSE: real
+      LOCAL_MEDIA_ROOT: /srv/api/data/uploads
+      PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-http://localhost:5173/media}
+      JWT_SECRET: ${JWT_SECRET:?Run cloud init first}
+      WORKER_TOKEN: ${WORKER_TOKEN:?Run cloud init first}
+      DEV_PHONE_CODE: ${DEV_PHONE_CODE:?Run cloud init first}
+    depends_on:
+      api:
+        condition: service_started
+    volumes:
+    - fan_os_matcher_index:/srv/api/data/card_matcher
+    - fan_os_uploads:/srv/api/data/uploads
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  worker:
+    profiles: ["demo-social"]
+    build:
+      context: .
+      dockerfile: deploy/docker/worker.Dockerfile
+    environment:
+      API_BASE_URL: http://api:8000/api/v1
+      REDIS_URL: redis://redis:6379/0
+      WORKER_TOKEN: ${WORKER_TOKEN:?Run cloud init first}
+      SOCIAL_PROVIDER_MODE: mock
+      SYNC_INTERVAL_MINUTES: 15
+    depends_on:
+      api:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+volumes:
+  fan_os_postgres: null
+  fan_os_redis: null
+  fan_os_matcher_index: null
+  fan_os_uploads: null

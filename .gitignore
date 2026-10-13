@@ -1,0 +1,47 @@
+.DS_Store
+**/.DS_Store
+*.ses
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/*.pyc
+**/*.egg-info/
+
+# Local runtimes, generated bundles, credentials and test state
+**/.venv/
+**/node_modules/
+**/.test-data/
+**/test-results/
+**/playwright-report/
+**/*.tsbuildinfo
+apps/admin/dist/
+apps/mobile/dist/
+apps/api/data/
+apps/api/tests/*.db
+apps/api/tests/cards.json*
+apps/api/tests/media/
+output/
+outputs/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+**/.env
+**/.env.*
+!**/.env.example
+
+# Credentials, signing material and machine-local configuration
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+.env.cloud
+
+# Optional third-party ML weights; verify redistribution licenses first
+apps/api/app/integrations/card_matcher/vendor/models/

@@ -1,0 +1,601 @@
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import {
+  Alert,
+  App,
+  Button,
+  Checkbox,
+  Space,
+  Select,
+  Steps,
+  Table,
+  Upload,
+  Modal,
+  Form,
+  Input,
+} from "antd";
+import {
+  CheckCircleOutlined,
+  CloudUploadOutlined,
+  DownloadOutlined,
+  FileExcelOutlined,
+} from "@ant-design/icons";
+import type { ImportTask, ImportKind } from "../api/types";
+import { importLabels } from "../api/types";
+import { consoleApi, send } from "../api/client";
+import { useConsole } from "../state";
+import { Panel, StatusTag } from "../components/shared";
+
+export default function Imports() {
+  const { catalog, reload, actor } = useConsole();
+  const [params, setParams] = useSearchParams();
+  const kind = (
+    Object.hasOwn(importLabels, params.get("kind") || "")
+      ? params.get("kind")
+      : "cards"
+  ) as ImportKind;
+  const label = importLabels[kind];
+  const isCard = kind === "cards";
+  const isAlbum = kind === "albums";
+  const isCompany = kind === "companies";
+  const artistNames = (data: Record<string, unknown>) => {
+    if (!Array.isArray(data.artists)) return "—";
+    return (
+      data.artists
+        .map((artist: { type: string; id: string }) => {
+          const entities =
+            artist.type === "groups"
+              ? catalog.groups
+              : artist.type === "idols"
+                ? catalog.idols
+                : [];
+          return (
+            entities.find((entity) => entity.id === artist.id)?.name ||
+            artist.id
+          );
+        })
+        .join(" / ") || "—"
+    );
+  };
+  const { message, modal } = App.useApp();
+  const [tasks, setTasks] = useState<ImportTask[]>([]);
+  const [task, setTask] = useState<ImportTask>();
+  const [busy, setBusy] = useState(false);
+  const [skip, setSkip] = useState(false);
+  const [error, setError] = useState("");
+  const [editingRow, setEditingRow] = useState<number>();
+  const [rawRow, setRawRow] = useState<Record<string, unknown>>({});
+  const [skippedRows, setSkippedRows] = useState<number[]>([]);
+  const [rowForm] = Form.useForm();
+  const editRow = async (row: number) => {
+    try {
+      const source = (
+        await consoleApi(`/records/import_input?entity_id=${task?.id}`)
+      ).items[0];
+      if (!source) throw new Error("历史任务不含原始预览，请重新上传");
+      const data = source.data.rows[row - 2];
+      setRawRow(data);
+      setSkippedRows(source.data.skipped_rows || []);
+      rowForm.setFieldsValue(data);
+      setEditingRow(row);
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
+  const updateRow = async (skipRow = false) => {
+    try {
+      const data = await rowForm.validateFields();
+      const result = await consoleApi(
+        `/imports/${task?.id}/edit-preview`,
+        send({
+          edits: skipRow ? [] : [{ row: editingRow, data }],
+          skip_rows: skipRow
+            ? [...skippedRows, editingRow]
+            : skippedRows.filter((r) => r !== editingRow),
+        }),
+      );
+      setTask(result);
+      setEditingRow(undefined);
+      await load();
+      message.success("已重新预检");
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
+  const load = async (signal?: AbortSignal) => {
+    try {
+      const data = await consoleApi(`/imports?kind=${kind}`, { signal });
+      setTasks(data.items);
+    } catch (e) {
+      if (!signal?.aborted) setError((e as Error).message);
+    }
+  };
+  useEffect(() => {
+    const controller = new AbortController();
+    setTask(undefined);
+    setTasks([]);
+    setSkip(false);
+    setError("");
+    load(controller.signal);
+    return () => controller.abort();
+  }, [kind]);
+  const upload = async (file: File) => {
+    setBusy(true);
+    setError("");
+    setSkip(false);
+    const form = new FormData();
+    form.append("file", file);
+    form.append("kind", kind);
+    try {
+      const data = await consoleApi<ImportTask>("/imports", {
+        method: "POST",
+        body: form,
+      });
+      setTask(data);
+      await load();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+    return false;
+  };
+  const confirm = () =>
+    modal.confirm({
+      title: isAlbum
+        ? `确认导入 ${task?.rows.length} 行专辑与版本数据？`
+        : `确认导入 ${task?.rows.length} 条${label}？`,
+      content: isCompany
+        ? "导入后建立公司档案，可立即在组合和艺人资料中选择；已有公司不会被覆盖。"
+        : isAlbum
+          ? `${skip ? "将跳过错误行。" : ""}同名且参与艺人相同的不同版本归入同一专辑；可向已有专辑追加新版本，不覆盖专辑的其他字段。新增专辑保存为草稿。`
+          : skip
+            ? "将跳过错误行，其余内容保存为草稿，之后仍需审核发布。"
+            : "导入后保存为草稿，之后仍需审核发布。",
+      okText: "确认导入",
+      cancelText: "返回检查",
+      onOk: async () => {
+        setBusy(true);
+        try {
+          const data = await consoleApi<ImportTask>(
+            `/imports/${task?.id}/confirm`,
+            send({ skip_invalid: skip }),
+          );
+          setTask(data);
+          message.success(
+            isAlbum
+              ? `成功处理 ${data.imported_count} 行专辑与版本数据`
+              : `成功导入 ${data.imported_count} 条${label}`,
+          );
+          await Promise.all([load(), reload()]);
+        } catch (e) {
+          message.error((e as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  const template = async (format: "csv" | "xlsx") => {
+    try {
+      const blob = await consoleApi<Blob>(
+        `/imports/template?kind=${kind}&format=${format}`,
+      );
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `FanOS-${label}导入模板.${format}`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
+  return (
+    <>
+      <div className="page-heading">
+        <div>
+          <div className="eyebrow">BATCH IMPORT</div>
+          <h1>批量导入</h1>
+          <p>批量建立图鉴档案，逐行检查，确认后写入草稿。</p>
+        </div>
+        <Space>
+          <Button
+            icon={<DownloadOutlined aria-hidden="true" />}
+            onClick={() => template("xlsx")}
+          >
+            下载 Excel 模板
+          </Button>
+          <Button onClick={() => template("csv")}>下载 CSV 模板</Button>
+        </Space>
+      </div>
+      <Panel>
+        <div className="import-type-control">
+          <label htmlFor="import-kind">导入类型</label>
+          <Select
+            id="import-kind"
+            value={kind}
+            disabled={busy}
+            style={{ width: 240 }}
+            onChange={(value) => setParams({ kind: value })}
+            options={Object.entries(importLabels).map(([value, text]) => ({
+              value,
+              label: text,
+            }))}
+          />
+          <span>
+            当前模板：{label} ·{" "}
+            {isAlbum
+              ? "新增专辑或追加版本，保留原资料"
+              : "仅新增，不覆盖已有记录"}
+          </span>
+        </div>
+        <Alert
+          type="info"
+          showIcon
+          message={
+            isCompany
+              ? "name 为必填公司名称，description 为可选描述。导入后可在组合与艺人资料中关联公司。"
+              : isCard
+                ? "小卡需要已发布的组合、艺人与来源，并完整填写图片和版权字段。"
+                : isAlbum
+                  ? "name 填专辑作品名；versions 填版本名，多个版本用 | 分隔。artist_names 可填写多个组合或个人艺人名称，用 | 分隔并精确匹配已有档案。"
+                  : kind === "others"
+                    ? "Other 只需 name；可选 original_name、start_date、end_date、description、tags。"
+                    : kind === "groups"
+                      ? "name 为必填列。先导入组合，再导入艺人和专辑等关联内容。"
+                      : "name 必填；group_id / group_name 二选一。名称需精确匹配已有组合，未发布组合也可用于建立草稿。"
+          }
+          description={
+            isCompany
+              ? "公司名称按大小写、全半角和多余空格归一后查重，含已归档公司。错误行可修正或明确跳过。"
+              : isCard
+                ? "标签用 | 分隔，布尔值用 true / false；确认后仍需审核发布。"
+                : isAlbum
+                  ? "专辑名不拼接版本名。同名且参与艺人集合相同的不同版本行归入同一专辑；新版本可追加到已有专辑，其他专辑字段保留原值。重复版本会报错。兼容 group_name / idol_name 和 artists JSON；release_date 使用 YYYY-MM-DD，tags 用 | 分隔。"
+                  : kind === "others"
+                    ? "起止日期使用 YYYY-MM-DD，tags 用 | 分隔；不需要组合归属或商品字段。"
+                    : "name_en / name_ko / name_translated 为多语言名称；release_date 使用 YYYY-MM-DD（艺人为生日、组合为出道日期），tags 用 | 分隔。可选封面 image_url 使用 HTTP(S) 地址；同组合同名记录视为重复。"
+          }
+        />
+      </Panel>
+      {error && (
+        <Alert
+          type="error"
+          message={error}
+          action={<Button onClick={() => load()}>重试</Button>}
+        />
+      )}
+      <Panel>
+        <Steps
+          current={
+            !task
+              ? 0
+              : task.status === "COMPLETED"
+                ? 3
+                : task.errors.length
+                  ? 1
+                  : 2
+          }
+          items={["上传文件", "检查数据", "确认导入", "完成"].map((title) => ({
+            title,
+          }))}
+        />
+      </Panel>
+      <div className="import-columns">
+        <Panel
+          title={`上传${label}数据`}
+          subtitle="支持 CSV / Excel，单次最多 2,000 行，文件不超过 5 MB。"
+        >
+          <Upload.Dragger
+            accept=".csv,.xlsx"
+            disabled={busy || actor.role === "operation_admin"}
+            beforeUpload={upload}
+            showUploadList={false}
+          >
+            <CloudUploadOutlined
+              aria-hidden="true"
+              className="big-upload-icon"
+            />
+            <h3>{busy ? "正在检查文件…" : "点击上传，或将文件拖拽到这里"}</h3>
+            <p>使用标准模板，确保字段名称与数据格式一致</p>
+            <Button loading={busy}>选择文件</Button>
+          </Upload.Dragger>
+          <div className="import-hints">
+            <p>
+              <CheckCircleOutlined aria-hidden="true" />{" "}
+              {isCompany
+                ? "公司无需填写组合或艺人，关联关系在资料页维护"
+                : isCard
+                  ? "group_id / idol_id / source_entity_id 请使用后台真实 ID"
+                  : isAlbum
+                    ? "artist_names 支持组合与个人合作，例如 Aria|Lin"
+                    : "组合可使用 group_name 关联，或填写准确的 group_id"}
+            </p>
+            <p>
+              <CheckCircleOutlined aria-hidden="true" />{" "}
+              {isCompany
+                ? "description 可填写公司描述"
+                : isAlbum
+                  ? "versions 单独填写，例如 Photo Book Ver.|Digipack Ver."
+                  : "标签以 | 分隔；布尔值使用 true / false"}
+            </p>
+            <p>
+              <CheckCircleOutlined aria-hidden="true" />{" "}
+              {isCompany
+                ? "相同公司不会重复建立或覆盖原资料"
+                : "图片先通过小卡编辑页上传，填写可访问的图片地址"}
+            </p>
+          </div>
+        </Panel>
+        <Panel title="导入检查规则">
+          <div className="rule-list">
+            {[
+              [
+                "01",
+                "字段完整性",
+                isCompany
+                  ? "检查公司名称与描述长度"
+                  : isCard
+                    ? "检查名称、组合、图片与来源"
+                    : isAlbum
+                      ? "检查专辑作品名、版本名、参与艺人与日期格式"
+                      : "检查名称、日期格式与所属组合",
+              ],
+              [
+                "02",
+                "关联关系",
+                isCompany
+                  ? "建立公司档案后，由组合或艺人资料选择关联"
+                  : isCard
+                    ? "检查艺人与来源是否属于所选组合"
+                    : "组合与艺人必须存在，名称和 ID 不能互相冲突",
+              ],
+              [
+                "03",
+                isCard ? "图片与版权" : "重复检查",
+                isCompany
+                  ? "检查文件内及公司管理中同名记录，包含归档公司"
+                  : isCard
+                    ? "检查双面卡素材、来源链接与授权状态"
+                    : isAlbum
+                      ? "同名且参与艺人相同的不同版本归入同一专辑，重复版本报错"
+                      : "检查文件内及数据库中同组合同名的记录",
+              ],
+              ["04", "逐行反馈", "错误不会静默跳过，确认后再写入"],
+            ].map(([n, t, d]) => (
+              <div key={n}>
+                <span>{n}</span>
+                <div>
+                  <b>{t}</b>
+                  <p>{d}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+      {task && (
+        <Panel
+          title="数据检查结果"
+          extra={
+            <Space>
+              <FileExcelOutlined aria-hidden="true" />
+              {task.filename}
+              <StatusTag status={task.status} />
+            </Space>
+          }
+        >
+          <div className="import-result-summary">
+            <div>
+              <strong>{task.rows.length}</strong>
+              <span>可导入行</span>
+            </div>
+            <div>
+              <strong className="warning-text">
+                {new Set(task.errors.map((e) => e.row)).size}
+              </strong>
+              <span>待修复行</span>
+            </div>
+            <div>
+              <strong>{task.imported_count}</strong>
+              <span>已导入</span>
+            </div>
+          </div>
+          {task.rows.length > 0 && (
+            <Table
+              size="small"
+              rowKey="row"
+              dataSource={task.rows}
+              pagination={{ pageSize: 5 }}
+              scroll={{ x: isAlbum ? 950 : 650 }}
+              columns={[
+                { title: "表格行号", dataIndex: "row" },
+                {
+                  title: "修正 / 跳过",
+                  render: (_, r) =>
+                    task.status !== "COMPLETED" ? (
+                      <Button type="link" onClick={() => editRow(r.row)}>
+                        修正 / 跳过
+                      </Button>
+                    ) : (
+                      "—"
+                    ),
+                },
+                {
+                  title: `${label}名称`,
+                  render: (_, r) =>
+                    String(
+                      r.data.title ||
+                        r.data.name ||
+                        r.data.stage_name ||
+                        r.data.idol_name ||
+                        "—",
+                    ),
+                },
+                ...(isAlbum
+                  ? [
+                      {
+                        title: "参与艺人",
+                        render: (_: unknown, r: ImportTask["rows"][number]) =>
+                          artistNames(r.data),
+                      },
+                      {
+                        title: "专辑版本",
+                        render: (_: unknown, r: ImportTask["rows"][number]) =>
+                          Array.isArray(r.data.versions)
+                            ? r.data.versions.join(" / ") || "—"
+                            : "—",
+                      },
+                    ]
+                  : [
+                      {
+                        title: isCompany ? "公司描述" : "所属组合 ID",
+                        render: (_: unknown, r: ImportTask["rows"][number]) =>
+                          String(
+                            (isCompany
+                              ? r.data.description
+                              : r.data.group_id) || "—",
+                          ),
+                      },
+                    ]),
+                {
+                  title: "创建结果",
+                  render: (_, r) => r.created_id || "待确认导入",
+                },
+              ]}
+            />
+          )}
+          {task.errors.length > 0 && (
+            <Table
+              size="small"
+              rowKey={(r) => `${r.row}-${r.field}`}
+              dataSource={task.errors}
+              pagination={{ pageSize: 5 }}
+              columns={[
+                {
+                  title: "操作",
+                  render: (_, r) => (
+                    <Button type="link" onClick={() => editRow(r.row)}>
+                      修正 / 跳过
+                    </Button>
+                  ),
+                },
+                {
+                  title: "错误行号",
+                  dataIndex: "row",
+                  render: (v) => `Row ${v}`,
+                },
+                { title: "字段名称", dataIndex: "field" },
+                { title: "错误原因", dataIndex: "message" },
+                { title: "修复建议", dataIndex: "suggestion" },
+                {
+                  title: "允许跳过",
+                  dataIndex: "can_skip",
+                  render: (v) => (v ? "可以" : "不可以"),
+                },
+              ]}
+            />
+          )}
+          <div className="import-confirm">
+            {task.status === "COMPLETED" ? (
+              <Alert
+                type="success"
+                showIcon
+                message={
+                  isAlbum
+                    ? `已处理 ${task.imported_count} 行专辑与版本数据`
+                    : `已导入 ${task.imported_count} 条${label}，状态为草稿`
+                }
+              />
+            ) : (
+              <>
+                <Checkbox
+                  checked={skip}
+                  onChange={(e) => setSkip(e.target.checked)}
+                  disabled={!task.errors.length}
+                >
+                  跳过错误行，仅导入通过校验的数据
+                </Checkbox>
+                <Button
+                  type="primary"
+                  loading={busy}
+                  disabled={
+                    actor.role === "operation_admin" ||
+                    !task.rows.length ||
+                    (!!task.errors.length && !skip)
+                  }
+                  onClick={confirm}
+                >
+                  确认导入 {task.rows.length} 行
+                </Button>
+              </>
+            )}
+          </div>
+        </Panel>
+      )}
+      <Panel title="导入任务记录" className="table-panel">
+        <Table
+          rowKey="id"
+          dataSource={tasks}
+          pagination={{ pageSize: 5 }}
+          columns={[
+            { title: "文件名", dataIndex: "filename" },
+            {
+              title: "类型",
+              dataIndex: "kind",
+              render: (value: ImportKind) => importLabels[value || "cards"],
+            },
+            {
+              title: "状态",
+              dataIndex: "status",
+              render: (v) => <StatusTag status={v} />,
+            },
+            { title: "导入数量", dataIndex: "imported_count" },
+            {
+              title: "创建时间",
+              dataIndex: "created_at",
+              render: (v) => new Date(v).toLocaleString("zh-CN"),
+            },
+            {
+              title: "操作",
+              key: "action",
+              render: (_, r) => (
+                <button
+                  className="text-button"
+                  disabled={busy}
+                  onClick={() => {
+                    setTask(r);
+                    setSkip(false);
+                  }}
+                >
+                  查看结果
+                </button>
+              ),
+            },
+          ]}
+        />
+      </Panel>
+      <Modal
+        title={`修正第 ${editingRow} 行`}
+        open={editingRow !== undefined}
+        onCancel={() => setEditingRow(undefined)}
+        footer={
+          <Space>
+            <Button onClick={() => setEditingRow(undefined)}>取消</Button>
+            <Button onClick={() => updateRow(true)}>跳过此行</Button>
+            <Button type="primary" onClick={() => updateRow()}>
+              保存并重新预检
+            </Button>
+          </Space>
+        }
+      >
+        <Form form={rowForm} layout="vertical">
+          {Object.keys(rawRow).map((field) => (
+            <Form.Item key={field} name={field} label={field}>
+              <Input />
+            </Form.Item>
+          ))}
+        </Form>
+      </Modal>
+    </>
+  );
+}

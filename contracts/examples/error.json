@@ -1,0 +1,6 @@
+{
+  "code": 1,
+  "error_code": "AUTH_REQUIRED",
+  "message": "请先登录",
+  "data": {}
+}

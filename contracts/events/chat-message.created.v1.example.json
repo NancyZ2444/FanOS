@@ -1,0 +1,18 @@
+{
+  "event_id": "event_01HCHATEXAMPLE",
+  "event_type": "chat.message.created",
+  "event_version": 1,
+  "occurred_at": "2026-09-16T10:00:00Z",
+  "producer": "realtime-service",
+  "aggregate": { "type": "chat_room", "id": "room_lune_fans" },
+  "trace_id": "trace_01HCHATEXAMPLE",
+  "payload": {
+    "message_id": "message_01HCHATEXAMPLE",
+    "room_id": "room_lune_fans",
+    "room_sequence": 1052,
+    "sender_id": "user_demo",
+    "message_type": "idol_card",
+    "target": { "type": "card", "target_id": "card-aria-01", "version": 1 },
+    "sent_at": "2026-09-16T10:00:00Z"
+  }
+}

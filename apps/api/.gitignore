@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+data/fan_os.db
+data/uploads/
+data/card_matcher/cards.json
+tests/fan_os_test.db
+tests/cards.json
+tests/media/
+htmlcov/
+.coverage

@@ -1,0 +1,121 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fan_os
+      POSTGRES_USER: fan_os
+      POSTGRES_PASSWORD: fan_os_dev
+    ports: ["5432:5432"]
+    volumes: ["fan_os_postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fan_os"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes: ["fan_os_redis:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: fan_os_minio
+      MINIO_ROOT_PASSWORD: fan_os_minio_secret
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["fan_os_minio:/data"]
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "until mc alias set local http://minio:9000 fan_os_minio fan_os_minio_secret; do sleep 2; done;
+      mc mb --ignore-existing local/fan-os-media;
+      mc anonymous set download local/fan-os-media;"
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://fan_os:fan_os_dev@postgres:5432/fan_os
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: fan-os-compose-secret-change-before-production
+      AUTO_SEED: "true"
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_BASE_URL: http://localhost:9000
+      S3_ACCESS_KEY: fan_os_minio
+      S3_SECRET_KEY: fan_os_minio_secret
+      S3_BUCKET: fan-os-media
+      CARD_MATCHER_FACE: mock
+      CARD_MATCHER_BODY: real
+      CARD_MATCHER_EXPRESSION: real
+      CARD_MATCHER_POSE: real
+      WORKER_TOKEN: fan-os-dev-worker-token
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    volumes:
+      - fan_os_matcher_index:/srv/api/data/card_matcher
+
+  admin:
+    build:
+      context: .
+      dockerfile: deploy/docker/admin.Dockerfile
+    ports: ["5173:80"]
+    depends_on:
+      api: {condition: service_started}
+
+  catalog-index-worker:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+    command: ["python", "-m", "app.modules.admin.catalog_jobs"]
+    restart: on-failure
+    environment:
+      DATABASE_URL: postgresql+psycopg://fan_os:fan_os_dev@postgres:5432/fan_os
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_BASE_URL: http://localhost:9000
+      S3_ACCESS_KEY: fan_os_minio
+      S3_SECRET_KEY: fan_os_minio_secret
+      S3_BUCKET: fan-os-media
+      CARD_MATCHER_FACE: mock
+      CARD_MATCHER_BODY: real
+      CARD_MATCHER_EXPRESSION: real
+      CARD_MATCHER_POSE: real
+    depends_on:
+      api: {condition: service_started}
+    volumes:
+      - fan_os_matcher_index:/srv/api/data/card_matcher
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/docker/worker.Dockerfile
+    environment:
+      API_BASE_URL: http://api:8000/api/v1
+      REDIS_URL: redis://redis:6379/0
+      WORKER_TOKEN: fan-os-dev-worker-token
+      SOCIAL_PROVIDER_MODE: mock
+      SYNC_INTERVAL_MINUTES: 15
+    depends_on:
+      api: {condition: service_started}
+      redis: {condition: service_healthy}
+
+volumes:
+  fan_os_postgres:
+  fan_os_redis:
+  fan_os_minio:
+  fan_os_matcher_index:
