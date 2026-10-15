@@ -1,4 +1,6 @@
 import hashlib
+import importlib.util
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -48,3 +50,20 @@ def test_offline_transfer_rejects_path_escape(client, tmp_path, monkeypatch):
     item = transfer_item(tmp_path)
     with SessionLocal() as db, pytest.raises(ValueError, match="Invalid transfer file"):
         transfer.import_item(db, {**item, "file": "../outside.image"}, tmp_path)
+
+
+def test_prefetch_preserves_source_identity_and_standard_size():
+    path = Path(__file__).resolve().parents[3] / "scripts" / "prefetch-catalog-media.py"
+    spec = importlib.util.spec_from_file_location("prefetch_media", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = "https://upload.wikimedia.org/wikipedia/commons/f/fa/20230630_Song_Yu-qi.jpg"
+    assert module.download_url(source, False) == source
+    assert module.download_url(source, True) == (
+        "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fa/"
+        "20230630_Song_Yu-qi.jpg/960px-20230630_Song_Yu-qi.jpg"
+    )
+    other = "https://i.scdn.co/image/album-cover"
+    assert module.download_url(other, True) == other
+    assert "127.0.0.1" not in module.ALLOWED_HOSTS
+    assert "i.scdn.co" in module.ALLOWED_HOSTS

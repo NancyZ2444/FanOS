@@ -15,6 +15,12 @@ Use a reviewed, pushed immutable Git commit; never deploy a stale patch ZIP.
    Download those exact URLs using scripts/prefetch-catalog-media.py on an
    authorized network. No account data or user uploads are sent to the image host.
    Copy the bounded files and manifest to a private server transfer directory.
+   Resume a partially completed download using its manifest.json as input.
+   --wikimedia-thumbnails uses the same file's official 960px rendition and
+   records download_url alongside the original source URL. It does not crop or
+   substitute another photo. Standard sizes: https://www.mediawiki.org/wiki/Common_thumbnail_sizes
+   Explicit source hosts also include the three Spotify CDNs used by existing
+   album covers. HTTPS, public DNS, size limits and no redirects remain required.
 5. Apply migrations to the live database, then import verified image files via
    python scripts/catalog_media_transfer.py import /transfer/manifest.json
    (mount the transfer directory read-only into a one-off API container).

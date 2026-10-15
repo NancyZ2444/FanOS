@@ -93,6 +93,7 @@ def import_item(db, item, root):
         "stored_url": stored,
         "thumbnail_url": thumbnail,
         "transfer": "checksum_verified_offline",
+        "download_url": item.get("download_url", source),
     }
     event.published_at = datetime.now(UTC)
     event.last_error = None

@@ -33,7 +33,14 @@ class Settings(BaseSettings):
     storage_backend: str = "local"
     local_media_root: Path = API_ROOT / "data" / "uploads"
     public_media_base_url: str = "http://localhost:8000/media"
-    catalog_image_hosts: list[str] = Field(default_factory=lambda: ["upload.wikimedia.org"])
+    catalog_image_hosts: list[str] = Field(
+        default_factory=lambda: [
+            "upload.wikimedia.org",
+            "image-cdn-fa.spotifycdn.com",
+            "image-cdn-ak.spotifycdn.com",
+            "i.scdn.co",
+        ]
+    )
     catalog_remote_portraits_enabled: bool = True
     catalog_images_local_only: bool = True
     catalog_image_user_agent: str = "FanOS-CatalogThumbnail/1.0"
