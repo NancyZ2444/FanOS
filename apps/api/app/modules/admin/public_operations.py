@@ -39,6 +39,9 @@ def announcements(db: Session = Depends(get_db)) -> dict:
 
 @router.get("/notifications/inbox")
 def inbox(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    from app.modules.feedback.service import deliver_notices
+
+    deliver_notices(db, user.id)
     rows = db.scalars(
         select(NotificationInboxItem)
         .where(NotificationInboxItem.user_id == user.id)

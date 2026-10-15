@@ -1,4 +1,5 @@
 import 'package:fan_os/core/data/models.dart';
+import 'package:fan_os/core/config/feature_flags.dart';
 import 'package:fan_os/core/data/social_feed_models.dart';
 import 'package:fan_os/features/albums/presentation/album_editor_page.dart';
 import 'package:fan_os/features/albums/presentation/album_shelf_page.dart';
@@ -12,6 +13,7 @@ import 'package:fan_os/features/catalog/presentation/group_detail_page.dart';
 import 'package:fan_os/features/catalog/presentation/idol_detail_page.dart';
 import 'package:fan_os/features/catalog/presentation/search_page.dart';
 import 'package:fan_os/features/collection/presentation/collection_page.dart';
+import 'package:fan_os/features/collection/presentation/library_search_page.dart';
 import 'package:fan_os/features/daily_card/presentation/daily_card_page.dart';
 import 'package:fan_os/features/feed/presentation/feed_page.dart';
 import 'package:fan_os/features/feed/presentation/feed_post_detail_page.dart';
@@ -26,7 +28,9 @@ import 'package:fan_os/features/profile/presentation/profile_page.dart';
 import 'package:fan_os/features/profile/presentation/profile_support_pages.dart';
 import 'package:fan_os/features/scan/presentation/scan_page.dart';
 import 'package:fan_os/features/scan/presentation/scan_feedback_page.dart';
-import 'package:fan_os/features/scan/presentation/scan_feedback_history_page.dart';
+import 'package:fan_os/features/feedback/feedback_center.dart';
+import 'package:fan_os/features/feedback/correction_page.dart';
+import 'package:fan_os/features/feedback/missing_card_page.dart';
 import 'package:fan_os/features/scan/presentation/catalog_missing_feedback_page.dart';
 import 'package:fan_os/features/scan/presentation/scan_result_page.dart';
 import 'package:fan_os/features/shell/presentation/main_shell.dart';
@@ -44,6 +48,11 @@ final GoRouter fanOsRouter = GoRouter(
   initialLocation: _initialLocation,
   routes: [
     GoRoute(path: '/', builder: (context, state) => const LaunchPage()),
+    GoRoute(
+      path: '/collection/search',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) => const LibrarySearchPage(),
+    ),
     GoRoute(path: '/privacy', builder: (context, state) => const PrivacyPage()),
     GoRoute(
       path: '/login',
@@ -53,7 +62,9 @@ final GoRouter fanOsRouter = GoRouter(
     GoRoute(
       path: '/onboarding/favorites',
       parentNavigatorKey: _rootNavigatorKey,
-      builder: (context, state) => const FavoriteSetupPage(),
+      builder: (context, state) => FavoriteSetupPage(
+        isOnboarding: state.uri.queryParameters['welcome'] == '1',
+      ),
     ),
     StatefulShellRoute.indexedStack(
       builder: (context, state, navigationShell) =>
@@ -241,7 +252,7 @@ final GoRouter fanOsRouter = GoRouter(
     GoRoute(
       path: '/scan-feedback',
       parentNavigatorKey: _rootNavigatorKey,
-      builder: (context, state) => ScanFeedbackPage(
+      builder: (context, state) => MissingCardFeedbackPage(
         args: state.extra is ScanFeedbackRouteArgs
             ? state.extra! as ScanFeedbackRouteArgs
             : null,
@@ -250,7 +261,28 @@ final GoRouter fanOsRouter = GoRouter(
     GoRoute(
       path: '/scan-feedback-history',
       parentNavigatorKey: _rootNavigatorKey,
-      builder: (context, state) => const ScanFeedbackHistoryPage(),
+      builder: (context, state) =>
+          const FeedbackCenterPage(initialKind: 'MISSING_CARD'),
+    ),
+    GoRoute(
+      path: '/feedback',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) =>
+          FeedbackCenterPage(initialKind: state.uri.queryParameters['kind']),
+    ),
+    GoRoute(
+      path: '/feedback/:id',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) =>
+          FeedbackDetailPage(id: state.pathParameters['id']!),
+    ),
+    GoRoute(
+      path: '/catalog-correction',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) => CorrectionPage(
+        entityType: state.uri.queryParameters['type'] ?? 'cards',
+        entityId: state.uri.queryParameters['id'] ?? '',
+      ),
     ),
     GoRoute(
       path: '/notifications',
@@ -259,11 +291,13 @@ final GoRouter fanOsRouter = GoRouter(
     ),
     GoRoute(
       path: '/feed',
+      redirect: (context, state) => idolFeedEnabled ? null : '/home',
       parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) => const FeedPage(),
     ),
     GoRoute(
       path: '/feed/post/:postId',
+      redirect: (context, state) => idolFeedEnabled ? null : '/home',
       parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) => FeedPostDetailPage(
         postId: state.pathParameters['postId']!,

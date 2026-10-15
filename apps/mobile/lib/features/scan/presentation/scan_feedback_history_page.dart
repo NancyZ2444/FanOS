@@ -130,7 +130,13 @@ class _FeedbackRecordCard extends StatelessWidget {
             showMark: false,
           ),
         ),
-        title: Text(record.idolName ?? record.groupName ?? '未识别小卡'),
+        title: record.idolId != null
+            ? FanEntityName(
+                kind: 'idols',
+                id: record.idolId!,
+                officialName: record.idolName ?? '未识别小卡',
+              )
+            : Text(record.idolName ?? record.groupName ?? '未识别小卡'),
         subtitle: Text('${record.statusLabel} · ${_date(record.createdAt)}'),
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         expandedCrossAxisAlignment: CrossAxisAlignment.start,
@@ -174,7 +180,11 @@ class _FeedbackRecordCard extends StatelessWidget {
                 ),
               ),
               title: Text('已收录：${matched.displayTitle}'),
-              subtitle: Text(matched.idolName),
+              subtitle: FanEntityName(
+                kind: 'idols',
+                id: matched.idolId,
+                officialName: matched.idolName,
+              ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => context.push('/card/${matched.id}'),
             ),

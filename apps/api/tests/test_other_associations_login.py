@@ -31,7 +31,9 @@ def test_other_requires_association_and_publishes_solo_metadata(client, admin_he
     public = client.get(f"/api/v1/catalog/others/{item['id']}").json()["data"]
     assert public["artists"] == item["artists"]
     assert public["artist_name"] == "Aria"
-    assert public["image_url"] == image
+    # External originals remain admin-only until the media worker has transferred them.
+    assert item["image_url"] == image
+    assert public["image_url"] is None
     filtered = client.get("/api/v1/catalog/others", params={"idol_id": "idol-aria"}).json()["data"][
         "items"
     ]

@@ -8,7 +8,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 class FavoriteSetupPage extends ConsumerStatefulWidget {
-  const FavoriteSetupPage({super.key});
+  const FavoriteSetupPage({super.key, this.isOnboarding = false});
+  final bool isOnboarding;
 
   @override
   ConsumerState<FavoriteSetupPage> createState() => _FavoriteSetupPageState();
@@ -19,6 +20,8 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
   String? _primary;
   String _query = '';
   bool _saving = false;
+  late final Set<String> _initialSelection;
+  String? _initialPrimary;
 
   @override
   void initState() {
@@ -26,6 +29,8 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
     final favorites = ref.read(favoritesProvider);
     _selected = {...favorites.selectedIds};
     _primary = favorites.primaryId;
+    _initialSelection = {..._selected};
+    _initialPrimary = _primary;
   }
 
   void _close() {
@@ -56,6 +61,8 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
   @override
   Widget build(BuildContext context) {
     final catalog = ref.watch(catalogProvider);
+    final managing =
+        ref.watch(sessionProvider).isLoggedIn && !widget.isOnboarding;
     final validIds =
         catalog.asData?.value.idols.map((idol) => idol.id).toSet() ??
         <String>{};
@@ -72,6 +79,12 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
             ),
             child: const Text('名称与备注'),
           ),
+          if (managing)
+            TextButton(
+              key: const Key('save-favorites'),
+              onPressed: _saving || catalog.asData == null ? null : _save,
+              child: Text(_saving ? '保存中…' : '保存'),
+            ),
         ],
       ),
       body: SafeArea(
@@ -79,12 +92,12 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(height: 12),
-              Text('选择你的本命', style: Theme.of(context).textTheme.headlineMedium),
+              const SizedBox(height: 4),
+              Text('选择你的本命', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
               Text(
                 '选择 0–20 位艺人。点亮星星可优先展示一位，再点可取消，也可以不设置。',
-                style: Theme.of(context).textTheme.bodyMedium
+                style: Theme.of(context).textTheme.bodySmall
                     ?.copyWith(color: FanColors.textSecondary),
               ),
               const SizedBox(height: 20),
@@ -110,11 +123,28 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
                     final idols = data.idols
                         .where(
                           (idol) =>
-                              '${idol.displayName} ${idol.secondaryName} ${idol.groupName}'
+                              '${idol.displayName} ${idol.name} ${idol.nameTranslated} ${idol.nameKo} ${idol.nameEn} ${idol.realName} ${idol.groupName}'
                                   .toLowerCase()
                                   .contains(_query),
                         )
                         .toList();
+                    if (managing) {
+                      int priority(IdolProfile idol) =>
+                          idol.id == _initialPrimary
+                          ? 0
+                          : _initialSelection.contains(idol.id)
+                          ? 1
+                          : 2;
+                      final order = {
+                        for (var i = 0; i < idols.length; i++) idols[i].id: i,
+                      };
+                      idols.sort((a, b) {
+                        final ranked = priority(a).compareTo(priority(b));
+                        return ranked != 0
+                            ? ranked
+                            : order[a.id]!.compareTo(order[b.id]!);
+                      });
+                    }
                     return GridView.builder(
                       gridDelegate:
                           const SliverGridDelegateWithFixedCrossAxisCount(
@@ -156,18 +186,20 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
                   },
                 ),
               ),
-              FilledButton.icon(
-                onPressed: _saving || catalog.asData == null ? null : _save,
-                icon: const Icon(Icons.arrow_forward_rounded),
-                label: Text(_saving ? '正在保存…' : '完成（已选 $selectedCount）'),
-              ),
-              const SizedBox(height: 6),
-              Center(
-                child: TextButton(
-                  onPressed: _saving ? null : _close,
-                  child: const Text('暂时跳过'),
+              if (!managing) ...[
+                FilledButton.icon(
+                  onPressed: _saving || catalog.asData == null ? null : _save,
+                  icon: const Icon(Icons.arrow_forward_rounded),
+                  label: Text(_saving ? '正在保存…' : '完成（已选 $selectedCount）'),
                 ),
-              ),
+                const SizedBox(height: 6),
+                Center(
+                  child: TextButton(
+                    onPressed: _saving ? null : _close,
+                    child: const Text('暂时跳过'),
+                  ),
+                ),
+              ],
             ],
           ),
         ),

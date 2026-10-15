@@ -6,6 +6,61 @@ from app.models import Card, CardAlbum, UserCollectionItem, new_id
 BASE = "/api/v1/albums"
 
 
+def test_stacked_cover_summary_tracks_main_order_and_published_snapshot(client, auth_headers):
+    album = create(client, auth_headers)
+    pages = [page(["card-aria-01", "card-lin-01"] * 3)]
+    ids = [s["id"] for s in pages[0]["slots"]]
+    view = {
+        "card_order": ids[::-1],
+        "order_customized": True,
+        "featured_slot_id": ids[2],
+        "default_mode": "CARDS",
+        "cover_style": "STACK_V1",
+        "display_fields": ["idol", "source"],
+        "background": {"type": "SOLID", "colors": ["#EDE8FF"]},
+    }
+    album = data(
+        patch(
+            client,
+            auth_headers,
+            album,
+            pages=pages,
+            card_view=view,
+            confirm_duplicates=True,
+            visibility="PUBLIC",
+        )
+    )
+    expected = [ids[2], ids[5], ids[4], ids[3], ids[1]]
+    shelf = next(
+        a for a in data(client.get(BASE, headers=auth_headers))["items"] if a["id"] == album["id"]
+    )
+    assert "pages" not in shelf and "card_order" not in shelf["card_view"]
+    assert [s["id"] for s in shelf["cover_slots"]] == expected
+    assert shelf["card_view"]["default_mode"] == "CARDS"
+    assert shelf["card_view"]["display_fields"] == ["idol", "source"]
+    assert set(shelf["cards"]) == {"card-aria-01", "card-lin-01"}
+    album = data(
+        client.post(
+            f"{BASE}/{album['id']}/publish",
+            headers=auth_headers,
+            json={"revision": album["revision"]},
+        )
+    )
+    view["featured_slot_id"] = ids[0]
+    album = data(patch(client, auth_headers, album, card_view=view))
+    assert data(client.get(f"{BASE}/{album['id']}"))["cover_slots"][0]["id"] == ids[2]
+    assert album["cover_slots"][0]["id"] == ids[0]
+    # Revoked imagery must not reappear on the newly added shelf cover path.
+    with SessionLocal() as db:
+        db.get(Card, "card-aria-01").status = "OFFLINE"
+        db.commit()
+    shelf = next(
+        a for a in data(client.get(BASE, headers=auth_headers))["items"] if a["id"] == album["id"]
+    )
+    assert shelf["cards"]["card-aria-01"]["available"] is False
+    assert "image_url" not in shelf["cards"]["card-aria-01"]
+
+
 def data(response):
     assert response.status_code == 200, response.text
     return response.json()["data"]

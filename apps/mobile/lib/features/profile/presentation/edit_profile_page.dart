@@ -59,6 +59,29 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
     super.dispose();
   }
 
+  Future<void> _pickImage(bool background) async {
+    try {
+      final image = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 85,
+        maxWidth: background ? 1600 : 512,
+        maxHeight: background ? 1600 : 512,
+      );
+      if (image == null || !mounted) return;
+      setState(() {
+        if (background) {
+          _backgroundPath = image.path;
+          _backgroundChanged = true;
+        } else {
+          _avatarPath = image.path;
+          _avatarChanged = true;
+        }
+      });
+    } catch (_) {
+      if (mounted) showFanToast(context, '暂时无法打开相册，请检查系统权限');
+    }
+  }
+
   Future<void> _save() async {
     if (_saving) return;
     setState(() => _saving = true);
@@ -138,110 +161,36 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
             children: [
               const SizedBox(height: 8),
               Center(
-                child: SizedBox(
+                child: _ImageEditTarget(
+                  label: '更换头像',
+                  imageUrl: _avatarPath,
                   width: 84,
                   height: 84,
-                  child: ClipOval(
-                    child: FanImage(
-                      imageUrl: _avatarPath,
-                      fallback: ColoredBox(
-                        color: FanColors.lavenderSoft,
-                        child: Center(
-                          child: Text(
-                            _nameController.text.isEmpty
-                                ? '星'
-                                : _nameController.text.characters.first,
-                            style: const TextStyle(
-                              fontSize: 27,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                  circular: true,
+                  onTap: _saving ? null : () => _pickImage(false),
                 ),
               ),
-              const SizedBox(height: 8),
-              Center(
-                child: TextButton(
-                  onPressed: () async {
-                    try {
-                      final image = await ImagePicker().pickImage(
-                        source: ImageSource.gallery,
-                        imageQuality: 88,
-                      );
-                      if (image != null && mounted) {
-                        setState(() {
-                          _avatarPath = image.path;
-                          _avatarChanged = true;
-                        });
-                      }
-                    } catch (_) {
-                      if (context.mounted) {
-                        showFanToast(context, '暂时无法打开相册，请检查系统权限');
-                      }
-                    }
-                  },
-                  child: const Text('更换头像'),
-                ),
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
+              const SizedBox(height: 18),
+              _ImageEditTarget(
+                key: const Key('choose-profile-background'),
+                label: '更换主页背景',
+                imageUrl: _backgroundPath,
                 height: 140,
-                width: double.infinity,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: FanImage(
-                    imageUrl: _backgroundPath,
-                    fallback: const ColoredBox(
-                      color: FanColors.lavenderSoft,
-                      child: Center(
-                        child: Icon(Icons.panorama_outlined, size: 38),
-                      ),
-                    ),
-                  ),
-                ),
+                onTap: _saving ? null : () => _pickImage(true),
               ),
-              Row(
-                children: [
-                  TextButton.icon(
-                    key: const Key('choose-profile-background'),
+              if (_backgroundPath != null)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
                     onPressed: _saving
                         ? null
-                        : () async {
-                            try {
-                              final image = await ImagePicker().pickImage(
-                                source: ImageSource.gallery,
-                                imageQuality: 88,
-                              );
-                              if (image != null && mounted) {
-                                setState(() {
-                                  _backgroundPath = image.path;
-                                  _backgroundChanged = true;
-                                });
-                              }
-                            } catch (_) {
-                              if (context.mounted) {
-                                showFanToast(context, '暂时无法打开相册，请检查权限');
-                              }
-                            }
-                          },
-                    icon: const Icon(Icons.image_outlined),
-                    label: const Text('设置主页背景'),
+                        : () => setState(() {
+                            _backgroundPath = null;
+                            _backgroundChanged = true;
+                          }),
+                    child: const Text('移除背景', style: TextStyle(fontSize: 12)),
                   ),
-                  if (_backgroundPath != null)
-                    TextButton(
-                      onPressed: _saving
-                          ? null
-                          : () => setState(() {
-                              _backgroundPath = null;
-                              _backgroundChanged = true;
-                            }),
-                      child: const Text('移除背景'),
-                    ),
-                ],
-              ),
+                ),
               const SizedBox(height: 14),
               const Text('基本资料', style: TextStyle(fontWeight: FontWeight.w800)),
               const SizedBox(height: 10),
@@ -368,14 +317,14 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
               ),
               const SizedBox(height: 24),
               OutlinedButton(
-                onPressed: () {
-                  ref.read(sessionProvider.notifier).reset();
-                  context.go('/');
+                onPressed: () async {
+                  await ref.read(sessionProvider.notifier).logout();
+                  if (context.mounted) context.go('/');
                 },
                 style: OutlinedButton.styleFrom(
                   foregroundColor: FanColors.coral,
                 ),
-                child: const Text('退出登录并重置演示'),
+                child: const Text('退出登录'),
               ),
             ],
           ),
@@ -383,4 +332,68 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
       ),
     );
   }
+}
+
+class _ImageEditTarget extends StatelessWidget {
+  const _ImageEditTarget({
+    required this.label,
+    required this.imageUrl,
+    required this.height,
+    required this.onTap,
+    this.width = double.infinity,
+    this.circular = false,
+    super.key,
+  });
+  final String label;
+  final String? imageUrl;
+  final double width, height;
+  final bool circular;
+  final VoidCallback? onTap;
+  @override
+  Widget build(BuildContext context) => Semantics(
+    button: true,
+    label: label,
+    child: Tooltip(
+      message: label,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(circular ? 99 : 16),
+        child: SizedBox(
+          width: width,
+          height: height,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(circular ? 99 : 16),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                FanImage(
+                  imageUrl: imageUrl,
+                  fallback: const ColoredBox(
+                    color: FanColors.lavenderSoft,
+                    child: Icon(
+                      Icons.image_outlined,
+                      color: FanColors.textSecondary,
+                    ),
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.bottomCenter,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    color: Colors.black.withValues(alpha: .38),
+                    child: Text(
+                      label,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 11, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }

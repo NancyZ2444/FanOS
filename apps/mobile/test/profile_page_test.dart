@@ -77,27 +77,35 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
       await tester.pump();
 
-      expect(find.text('收藏'), findsNWidgets(2));
-      expect(find.text('我的喜欢'), findsOneWidget);
+      expect(find.text('已拥有'), findsNWidgets(2));
+      expect(find.text('心愿单'), findsNWidgets(2));
       expect(find.text('卡册'), findsNWidgets(2));
-      expect(find.text('照片'), findsOneWidget);
+      expect(find.text('我的贡献'), findsNWidgets(2));
+      expect(find.text('照片'), findsNothing);
+      expect(find.text('喜欢'), findsNothing);
       expect(find.textContaining('Lv.12'), findsOneWidget);
       expect(find.byKey(const Key('favorite-idols-showcase')), findsOneWidget);
       expect(find.byKey(const Key('primary-idol-card')), findsOneWidget);
       expect(find.text('128 关注'), findsOneWidget);
       expect(find.text('2356 粉丝'), findsOneWidget);
       expect(
+        tester.getTopLeft(find.text('我的本命')).dy -
+            tester.getBottomLeft(find.text('128 关注')).dy,
+        lessThan(55),
+      );
+      expect(
         find.byKey(const ValueKey('profile-gallery-collection')),
         findsOneWidget,
       );
 
-      await tester.ensureVisible(find.text('我的喜欢'));
-      await tester.tap(find.text('我的喜欢'));
+      await tester.ensureVisible(find.text('心愿单').last);
+      await tester.tap(find.text('心愿单').last);
       await tester.pumpAndSettle();
       expect(
         find.byKey(const ValueKey('profile-gallery-likes')),
         findsOneWidget,
       );
+      expect(find.text('喜欢'), findsNothing);
 
       final toggle = find.byKey(const Key('profile-view-toggle'));
       await tester.ensureVisible(toggle);
@@ -110,57 +118,61 @@ void main() {
       expect(find.byType(AlbumShelfBody), findsOneWidget);
       expect(find.text('我创建的'), findsOneWidget);
       expect(find.text('我收藏的'), findsOneWidget);
+      expect(find.text('我的相册'), findsNothing);
+      expect(find.text('搜索相册名称'), findsNothing);
+      expect(find.text('最近更新'), findsOneWidget);
+      expect(find.text('草稿'), findsNothing);
 
-      await tester.tap(find.text('照片').last);
+      await tester.tap(find.text('我的贡献').last);
       await tester.pumpAndSettle();
-      expect(
-        find.byKey(const ValueKey('profile-gallery-photos')),
-        findsOneWidget,
-      );
-      expect(find.text('添加图片'), findsOneWidget);
+      expect(find.text('还没有收录的贡献小卡'), findsOneWidget);
+      expect(find.text('添加图片'), findsNothing);
 
-      await tester.tap(find.text('我的喜欢'));
+      await tester.tap(find.text('心愿单').last);
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('profile-list-likes')), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
 
-  testWidgets('collection shows favorites prominently above tabs', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(375, 812);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    final container = ProviderContainer(
-      overrides: [
-        authRepositoryProvider.overrideWithValue(_InstantAuthRepository()),
-      ],
-    );
-    addTearDown(container.dispose);
-    await container.read(sessionProvider.notifier).login(LoginMethod.phone);
-    container.read(favoritesProvider.notifier).hydrate({
-      'idol-aria',
-      'idol-lin',
-    }, 'idol-aria');
+  testWidgets(
+    'collection starts with library tabs, favorites remain on profile only',
+    (tester) async {
+      tester.view.physicalSize = const Size(375, 812);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final container = ProviderContainer(
+        overrides: [
+          authRepositoryProvider.overrideWithValue(_InstantAuthRepository()),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(sessionProvider.notifier).login(LoginMethod.phone);
+      container.read(favoritesProvider.notifier).hydrate({
+        'idol-aria',
+        'idol-lin',
+      }, 'idol-aria');
 
-    await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: MaterialApp(
-          theme: FanOsTheme.light,
-          home: const CollectionPage(),
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            theme: FanOsTheme.light,
+            home: const CollectionPage(),
+          ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('favorite-idols-showcase')), findsOneWidget);
-    expect(find.byKey(const Key('primary-idol-card')), findsOneWidget);
-    expect(find.text('Owned'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
+      expect(find.byKey(const Key('favorite-idols-showcase')), findsNothing);
+      expect(find.byKey(const Key('primary-idol-card')), findsNothing);
+      expect(find.text('我的收藏'), findsNothing);
+      expect(find.text('已拥有'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('public profile respects privacy and supports back follow', (
     tester,

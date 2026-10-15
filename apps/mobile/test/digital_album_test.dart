@@ -15,6 +15,7 @@ import 'package:fan_os/features/albums/presentation/album_viewer_page.dart';
 import 'package:fan_os/features/albums/presentation/album_widgets.dart';
 import 'package:fan_os/features/albums/state/album_state.dart';
 import 'package:flutter/material.dart';
+import 'package:fan_os/features/albums/presentation/album_editor_panels.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -574,7 +575,7 @@ void main() {
     await tester.enterText(find.byType(TextField).first, '#AABBCC');
     await tester.tap(find.text('完成'));
     await tester.pumpAndSettle();
-    expect(result?['colors'], ['#AABBCC', '#F9DEE9']);
+    expect(result?['colors'], ['#AABBCC']);
     expect(find.text('背景设置'), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -612,7 +613,12 @@ void main() {
       await tester.tap(find.text('文字'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '我的星光收藏');
-      await tester.tap(find.text('确定'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AlbumToolPanel),
+          matching: find.text('完成'),
+        ),
+      );
       await tester.pumpAndSettle();
       expect(find.text('添加文字'), findsNothing);
       expect(find.text('我的星光收藏'), findsOneWidget);
@@ -622,17 +628,20 @@ void main() {
       await tester.tap(find.text('编辑'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '更新后的封面文字');
-      await tester.tap(find.text('确定'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AlbumToolPanel),
+          matching: find.text('完成'),
+        ),
+      );
       await tester.pumpAndSettle();
       expect(find.text('更新后的封面文字'), findsOneWidget);
-      for (final dismiss in ['cancel', 'barrier', 'back']) {
+      for (final dismiss in ['cancel', 'back']) {
         await tester.tap(find.text('编辑'));
         await tester.pumpAndSettle();
         await tester.enterText(find.byType(TextField), '不应保存的文字');
         if (dismiss == 'cancel') {
-          await tester.tap(find.text('取消'));
-        } else if (dismiss == 'barrier') {
-          await tester.tapAt(const Offset(8, 8));
+          await tester.tap(find.byTooltip('取消'));
         } else {
           await tester.binding.handlePopRoute();
         }
@@ -678,8 +687,9 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('设置'));
-    await tester.tap(find.text('设置'));
+    await tester.tap(find.byTooltip('相册操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('相册设置'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).first, '新的相册名称');
     await tester.ensureVisible(find.text('返回编辑'));

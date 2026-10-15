@@ -5,7 +5,10 @@ import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/features/albums/data/album_models.dart';
+import 'package:fan_os/features/albums/data/album_favorites_repository.dart';
+import 'package:fan_os/features/albums/presentation/album_favorite_sheet.dart';
 import 'package:fan_os/features/albums/presentation/album_input_scope.dart';
+import 'package:fan_os/features/albums/presentation/album_card_scene.dart';
 import 'package:fan_os/features/albums/presentation/album_widgets.dart';
 import 'package:fan_os/features/albums/state/album_state.dart';
 import 'package:flutter/material.dart';
@@ -19,10 +22,12 @@ class AlbumViewerPage extends ConsumerWidget {
     required this.albumId,
     this.previewAlbum,
     this.initialPage = 0,
+    this.allowSave = false,
   });
   final String albumId;
   final PhotocardAlbum? previewAlbum;
   final int initialPage;
+  final bool allowSave;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     if (previewAlbum != null) {
@@ -30,6 +35,7 @@ class AlbumViewerPage extends ConsumerWidget {
         album: previewAlbum!,
         preview: true,
         initialPage: initialPage,
+        allowSave: allowSave,
       );
     }
     return ref
@@ -60,10 +66,12 @@ class AlbumViewer extends ConsumerStatefulWidget {
     required this.album,
     this.preview = false,
     this.initialPage = 0,
+    this.allowSave = false,
   });
   final PhotocardAlbum album;
   final bool preview;
   final int initialPage;
+  final bool allowSave;
   @override
   ConsumerState<AlbumViewer> createState() => _AlbumViewerState();
 }
@@ -71,20 +79,20 @@ class AlbumViewer extends ConsumerStatefulWidget {
 class _AlbumViewerState extends ConsumerState<AlbumViewer> {
   bool _cards = false, _turning = false, _reacting = false;
   late int _page;
-  int _focus = 0;
+  bool _expanded = false;
+  final _scene = GlobalKey<AlbumCardSceneState>();
   double _drag = 0;
   Timer? _flipTimer;
-  PageController? _carousel;
   @override
   void initState() {
     super.initState();
     _page = widget.initialPage;
+    _cards = widget.album.opensAsCards;
   }
 
   @override
   void dispose() {
     _flipTimer?.cancel();
-    _carousel?.dispose();
     super.dispose();
   }
 
@@ -103,12 +111,6 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
   }
 
   void _mode(bool cards) {
-    if (cards && _carousel == null) {
-      final slots = widget.album.orderedSlots;
-      final featured = widget.album.cardView['featured_slot_id'];
-      _focus = math.max(0, slots.indexWhere((s) => s['id'] == featured));
-      _carousel = PageController(viewportFraction: .60, initialPage: _focus);
-    }
     setState(() => _cards = cards);
   }
 
@@ -155,9 +157,19 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
     }
     setState(() => _reacting = true);
     try {
-      await ref
-          .read(albumRepositoryProvider)
-          .react(widget.album.id, kind, active);
+      if (kind == 'favorite') {
+        if (active) {
+          await showAlbumFavoriteSheet(context, widget.album.id);
+        } else {
+          await ref
+              .read(albumFavoritesRepositoryProvider)
+              .remove(widget.album.id);
+        }
+      } else {
+        await ref
+            .read(albumRepositoryProvider)
+            .react(widget.album.id, kind, active);
+      }
       ref.invalidate(albumDetailProvider(widget.album.id));
     } catch (e) {
       if (mounted) showFanToast(context, e.toString());
@@ -196,7 +208,7 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
             if (album.isOwner)
               ListTile(
                 leading: const AlbumIcon('GripVertical'),
-                title: const Text('调整轮播顺序与关键卡面'),
+                title: const Text('设置主图与顺序'),
                 onTap: () => Navigator.pop(context, 'order'),
               ),
             if (album.isOwner)
@@ -273,215 +285,215 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
   Widget build(BuildContext context) {
     final album = widget.album;
     final resources = ref.watch(albumResourcesProvider).value ?? <AlbumJson>[];
-    final firstSlot = album.orderedSlots.isEmpty
-        ? null
-        : album.orderedSlots[_focus.clamp(0, album.orderedSlots.length - 1)];
-    final focused = album.card(firstSlot?['card_id'] as String?);
-    return Scaffold(
-      backgroundColor: const Color(0xFFF1EEFC),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        title: Text(
-          widget.preview ? '相册预览' : album.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        actions: [
-          if (!widget.preview)
-            IconButton(
-              tooltip: '相册操作',
-              onPressed: _actions,
-              icon: const AlbumIcon('Ellipsis'),
-            ),
-        ],
-      ),
-      body: SafeArea(
-        child: DecoratedBox(
-          decoration: _cards
-              ? albumDecoration(
-                  album.cardView['background'] as AlbumJson?,
-                  radius: 0,
+    return PopScope(
+      canPop: !_expanded,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _scene.currentState?.collapse();
+      },
+      child: Scaffold(
+        backgroundColor: _cards
+            ? albumDecoration(album.cardView['background'] as AlbumJson?).color
+            : const Color(0xFFF1EEFC),
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          leading: _expanded
+              ? IconButton(
+                  tooltip: '收回小卡',
+                  onPressed: () => _scene.currentState?.collapse(),
+                  icon: const Icon(Icons.arrow_back),
                 )
-              : const BoxDecoration(),
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 8,
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: SegmentedButton<bool>(
-                        segments: const [
-                          ButtonSegment(
-                            value: false,
-                            label: Text('相册模式'),
-                            icon: AlbumIcon('BookOpen', size: 18),
-                          ),
-                          ButtonSegment(
-                            value: true,
-                            label: Text('卡片模式'),
-                            icon: AlbumIcon('RectangleVertical', size: 18),
-                          ),
-                        ],
-                        selected: {_cards},
-                        onSelectionChanged: (s) => _mode(s.first),
-                      ),
-                    ),
-                  ],
-                ),
+              : null,
+          title: Text(
+            widget.preview ? '相册预览' : album.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          actions: [
+            if (widget.preview && widget.allowSave && !_expanded)
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('保存'),
               ),
-              if (!album.isOwner && !widget.preview)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  child: InkWell(
-                    onTap: () => context.push('/user/${album.json['user_id']}'),
+            if (_expanded)
+              IconButton(
+                tooltip: '关闭放大',
+                onPressed: () => _scene.currentState?.collapse(),
+                icon: const Icon(Icons.close),
+              )
+            else if (album.isOwner && !widget.preview)
+              TextButton(onPressed: _actions, child: const Text('编辑'))
+            else if (!widget.preview)
+              IconButton(
+                tooltip: '相册操作',
+                onPressed: _actions,
+                icon: const AlbumIcon('Ellipsis'),
+              ),
+          ],
+        ),
+        body: SafeArea(
+          child: DecoratedBox(
+            decoration: _cards
+                ? albumDecoration(
+                    album.cardView['background'] as AlbumJson?,
+                    radius: 0,
+                  )
+                : const BoxDecoration(),
+            child: Column(
+              children: [
+                if (!_expanded)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 8,
+                    ),
                     child: Row(
                       children: [
-                        const Icon(Icons.person_outline, size: 18),
-                        const SizedBox(width: 6),
-                        Text(album.json['author_name'] as String? ?? '创建者'),
-                        const Spacer(),
-                        const Text('查看主页', style: TextStyle(fontSize: 12)),
+                        Expanded(
+                          child: SegmentedButton<bool>(
+                            showSelectedIcon: false,
+                            style: SegmentedButton.styleFrom(
+                              side: BorderSide.none,
+                              backgroundColor: Colors.white.withValues(
+                                alpha: .65,
+                              ),
+                              selectedBackgroundColor: FanColors.lavenderSoft,
+                              selectedForegroundColor: FanColors.lavender,
+                              textStyle: const TextStyle(fontSize: 13),
+                            ),
+                            segments: const [
+                              ButtonSegment(
+                                value: false,
+                                label: Text('相册模式'),
+                                icon: AlbumIcon('BookOpen', size: 18),
+                              ),
+                              ButtonSegment(
+                                value: true,
+                                label: Text('卡片模式'),
+                                icon: AlbumIcon('RectangleVertical', size: 18),
+                              ),
+                            ],
+                            selected: {_cards},
+                            onSelectionChanged: (s) => _mode(s.first),
+                          ),
+                        ),
                       ],
                     ),
                   ),
-                ),
-              Expanded(
-                child: _cards ? _cardCarousel(album) : _book(album, resources),
-              ),
-              if (_cards)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 18),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        focused?.displayTitle ??
-                            (album.occupiedSlots.isEmpty ? '还没有小卡' : '小卡暂不可用'),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
+                if (!album.isOwner && !widget.preview)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: InkWell(
+                      onTap: () =>
+                          context.push('/user/${album.json['user_id']}'),
+                      child: Row(
                         children: [
-                          Expanded(child: Text(focused?.source ?? '仅引用官方图鉴')),
-                          Text(
-                            album.orderedSlots.isEmpty
-                                ? '0 / 0'
-                                : '${_focus + 1} / ${album.orderedSlots.length}',
-                          ),
-                          const SizedBox(width: 12),
-                          IconButton(
-                            tooltip: '下一张',
-                            onPressed:
-                                album.orderedSlots.isEmpty ||
-                                    _focus >= album.orderedSlots.length - 1
-                                ? null
-                                : () => _carousel!.nextPage(
-                                    duration: const Duration(milliseconds: 300),
-                                    curve: Curves.easeOut,
-                                  ),
-                            icon: const AlbumIcon('ChevronRight'),
-                          ),
+                          const Icon(Icons.person_outline, size: 18),
+                          const SizedBox(width: 6),
+                          Text(album.json['author_name'] as String? ?? '创建者'),
+                          const Spacer(),
+                          const Text('查看主页', style: TextStyle(fontSize: 12)),
                         ],
                       ),
-                    ],
+                    ),
                   ),
-                )
-              else
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      IconButton.filledTonal(
-                        tooltip: '上一页',
-                        onPressed: _page == 0 ? null : () => _flip(-1),
-                        icon: const AlbumIcon('ChevronLeft'),
-                      ),
-                      TextButton(
-                        onPressed: _contents,
-                        child: Text(
-                          _page == 0
-                              ? '封面 · ${album.pageCount} 页'
-                              : album.isDouble
-                              ? '${(_page - 1) * 2 + 1}–${math.min(_page * 2, album.pageCount)} / ${album.pageCount}'
-                              : '$_page / ${album.pageCount}',
-                        ),
-                      ),
-                      IconButton.filledTonal(
-                        tooltip: '下一页',
-                        onPressed: _page >= _bookSteps - 1
-                            ? null
-                            : () => _flip(1),
-                        icon: const AlbumIcon('ChevronRight'),
-                      ),
-                    ],
-                  ),
+                Expanded(
+                  child: _cards
+                      ? AlbumCardScene(
+                          key: _scene,
+                          album: album,
+                          onExpandedChanged: (value) =>
+                              setState(() => _expanded = value),
+                        )
+                      : _book(album, resources),
                 ),
-              if (widget.preview)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
-                  child: FilledButton.tonal(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('返回编辑'),
-                  ),
-                )
-              else if (album.isOwner)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
-                  child: OutlinedButton.icon(
-                    onPressed: _actions,
-                    icon: const AlbumIcon('Type', size: 18),
-                    label: const Text('编辑与展示设置'),
-                  ),
-                )
-              else
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      TextButton.icon(
-                        onPressed: _reacting
-                            ? null
-                            : () => _reaction('like', !album.liked),
-                        icon: AlbumIcon(
-                          'Heart',
-                          color: album.liked
-                              ? FanColors.lavender
-                              : FanColors.ink,
+                if (!_cards)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        IconButton.filledTonal(
+                          tooltip: '上一页',
+                          onPressed: _page == 0 ? null : () => _flip(-1),
+                          icon: const AlbumIcon('ChevronLeft'),
                         ),
-                        label: Text('${album.likeCount}'),
-                      ),
-                      TextButton.icon(
-                        onPressed: _reacting
-                            ? null
-                            : () => _reaction('favorite', !album.favorited),
-                        icon: AlbumIcon(
-                          'BookCopy',
-                          color: album.favorited
-                              ? FanColors.lavender
-                              : FanColors.ink,
+                        TextButton(
+                          onPressed: _contents,
+                          child: Text(
+                            _page == 0
+                                ? '封面 · ${album.pageCount} 页'
+                                : album.isDouble
+                                ? '${(_page - 1) * 2 + 1}–${math.min(_page * 2, album.pageCount)} / ${album.pageCount}'
+                                : '$_page / ${album.pageCount}',
+                          ),
                         ),
-                        label: Text(album.favorited ? '已收藏相册' : '收藏相册'),
-                      ),
-                      IconButton(
-                        tooltip: '分享链接',
-                        onPressed: _share,
-                        icon: const AlbumIcon('Share'),
-                      ),
-                    ],
+                        IconButton.filledTonal(
+                          tooltip: '下一页',
+                          onPressed: _page >= _bookSteps - 1
+                              ? null
+                              : () => _flip(1),
+                          icon: const AlbumIcon('ChevronRight'),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-            ],
+                if (widget.preview && !_expanded)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+                    child: FilledButton.tonal(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('返回编辑'),
+                    ),
+                  )
+                else if (album.isOwner && !_cards)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+                    child: OutlinedButton.icon(
+                      onPressed: _actions,
+                      icon: const AlbumIcon('Type', size: 18),
+                      label: const Text('编辑与展示设置'),
+                    ),
+                  )
+                else if (!widget.preview && !album.isOwner && !_expanded)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        TextButton.icon(
+                          onPressed: _reacting
+                              ? null
+                              : () => _reaction('like', !album.liked),
+                          icon: AlbumIcon(
+                            'Heart',
+                            color: album.liked
+                                ? FanColors.lavender
+                                : FanColors.ink,
+                          ),
+                          label: Text('${album.likeCount}'),
+                        ),
+                        TextButton.icon(
+                          onPressed: _reacting
+                              ? null
+                              : () => _reaction('favorite', !album.favorited),
+                          icon: AlbumIcon(
+                            'BookCopy',
+                            color: album.favorited
+                                ? FanColors.lavender
+                                : FanColors.ink,
+                          ),
+                          label: Text(album.favorited ? '已收藏相册' : '收藏相册'),
+                        ),
+                        IconButton(
+                          tooltip: '分享链接',
+                          onPressed: _share,
+                          icon: const AlbumIcon('Share'),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -595,92 +607,4 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
           },
         ),
       );
-  Widget _cardCarousel(PhotocardAlbum album) {
-    final slots = album.orderedSlots;
-    if (slots.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(height: 200, child: AlbumCoverWidget(album)),
-            const SizedBox(height: 20),
-            const Text('还没有小卡，先去添加你的第一张吧。'),
-          ],
-        ),
-      );
-    }
-    return LayoutBuilder(
-      builder: (context, c) => Center(
-        child: SizedBox(
-          height: math.min(c.maxHeight * .80, 400),
-          child: PageView.builder(
-            controller: _carousel,
-            onPageChanged: (index) => setState(() => _focus = index),
-            itemCount: slots.length,
-            itemBuilder: (context, index) => AnimatedBuilder(
-              animation: _carousel!,
-              builder: (context, _) {
-                final current =
-                    _carousel!.hasClients &&
-                        _carousel!.position.hasContentDimensions
-                    ? _carousel!.page ?? _focus.toDouble()
-                    : _focus.toDouble();
-                final distance = (index - current).clamp(-2.0, 2.0);
-                return Transform(
-                  alignment: Alignment.center,
-                  transform: Matrix4.identity()
-                    ..setEntry(3, 2, .001)
-                    ..translateByDouble(0, distance.abs() * 18, 0, 1)
-                    ..rotateY(distance * -.16)
-                    ..rotateZ(distance * .04)
-                    ..scaleByDouble(
-                      1 - distance.abs() * .12,
-                      1 - distance.abs() * .12,
-                      1,
-                      1,
-                    ),
-                  child: GestureDetector(
-                    onTap: () {
-                      if (index != _focus) {
-                        _carousel!.animateToPage(
-                          index,
-                          duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeOut,
-                        );
-                      } else {
-                        showAlbumCardPreview(
-                          context,
-                          album.card(slots[index]['card_id'] as String),
-                        );
-                      }
-                    },
-                    child: Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 6),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(16),
-                        color: Colors.white.withValues(alpha: .5),
-                        boxShadow: [
-                          BoxShadow(
-                            color: FanColors.ink.withValues(alpha: .14),
-                            blurRadius: 18,
-                            offset: const Offset(0, 8),
-                          ),
-                        ],
-                      ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
-                        child: AlbumCardImage(
-                          album.card(slots[index]['card_id'] as String),
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }

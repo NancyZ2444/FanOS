@@ -472,7 +472,8 @@ class SocialFeedCard extends ConsumerWidget {
                 ),
               ],
               const SizedBox(height: 6),
-              Row(
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   TextButton.icon(
                     key: Key('feed-like-${post.id}'),
@@ -497,7 +498,6 @@ class SocialFeedCard extends ConsumerWidget {
                     ),
                     label: Text('评论 ${engagement.commentCount(post)}'),
                   ),
-                  const Spacer(),
                   TextButton.icon(
                     onPressed: onOpenOriginal,
                     icon: const Icon(Icons.open_in_new_rounded, size: 17),
@@ -585,7 +585,8 @@ class _PostHeader extends ConsumerWidget {
                 ],
               ),
               const SizedBox(height: 3),
-              Row(
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   if (!post.isGroupAuthor) ...[
                     InkWell(

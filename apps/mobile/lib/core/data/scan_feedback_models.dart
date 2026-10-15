@@ -10,6 +10,7 @@ class ScanFeedbackRecord {
     this.originalImageUrl,
     this.groupName,
     this.idolName,
+    this.idolId,
     this.source,
     this.sourceMode = 'KNOWN',
     this.sourceEntityType,
@@ -29,6 +30,7 @@ class ScanFeedbackRecord {
   final String? originalImageUrl;
   final String? groupName;
   final String? idolName;
+  final String? idolId;
   final String? source;
   final String sourceMode;
   final String? sourceEntityType;
@@ -56,6 +58,7 @@ class ScanFeedbackRecord {
         originalImageUrl: json['original_image_url'] as String?,
         groupName: json['group_name'] as String?,
         idolName: json['idol_name'] as String?,
+        idolId: json['idol_id'] as String?,
         source: json['source'] as String?,
         sourceMode: (json['source_mode'] as String?) ?? 'KNOWN',
         sourceEntityType: json['source_entity_type'] as String?,

@@ -5,6 +5,8 @@ import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/features/albums/data/album_models.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 
@@ -29,6 +31,33 @@ class AlbumIcon extends StatelessWidget {
 
 Color albumColor(String hex) =>
     Color(int.parse('FF${hex.replaceFirst('#', '')}', radix: 16));
+
+/// Constant-scale neutral weave, independent of pigment and canvas bounds.
+class AlbumMaterial extends StatelessWidget {
+  const AlbumMaterial({super.key, this.linen = false});
+  final bool linen;
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        image: DecorationImage(
+          image: ExactAssetImage(
+            'assets/album/materials/${linen ? 'linen' : 'paper'}.png',
+            scale: 8,
+          ),
+          fit: BoxFit.none,
+          repeat: ImageRepeat.repeat,
+          opacity: linen ? .22 : .18,
+          colorFilter: const ColorFilter.mode(
+            Color(0xFFE0DBD3),
+            BlendMode.modulate,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 BoxDecoration albumDecoration(AlbumJson? background, {double radius = 16}) {
   final bg = background ?? albumBackground();
   final colors = ((bg['colors'] as List?) ?? ['#EDE8FF', '#F9EDF2'])
@@ -50,9 +79,15 @@ BoxDecoration albumDecoration(AlbumJson? background, {double radius = 16}) {
 }
 
 class AlbumCardImage extends StatefulWidget {
-  const AlbumCardImage(this.card, {super.key, this.back = false});
+  const AlbumCardImage(
+    this.card, {
+    super.key,
+    this.back = false,
+    this.thumbnail = false,
+  });
   final CollectibleCard? card;
   final bool back;
+  final bool thumbnail;
   @override
   State<AlbumCardImage> createState() => _AlbumCardImageState();
 }
@@ -67,7 +102,11 @@ class _AlbumCardImageState extends State<AlbumCardImage> {
         child: AlbumIcon('CircleOff', color: FanColors.textSecondary),
       );
     }
-    final url = widget.back ? card.backImageUrl : card.imageUrl;
+    final url = widget.back
+        ? card.backImageUrl
+        : (widget.thumbnail
+              ? card.thumbnailUrl ?? card.imageUrl
+              : card.imageUrl);
     if (url == null || url.isEmpty) {
       return FanArtwork(
         startColor: Color(card.colorStart),
@@ -101,6 +140,7 @@ class AlbumCanvasWidget extends StatelessWidget {
     this.resources = const [],
     this.child,
     this.showName = false,
+    this.radius = 14,
   });
   final AlbumJson config;
   final PhotocardAlbum album;
@@ -110,6 +150,7 @@ class AlbumCanvasWidget extends StatelessWidget {
   final List<AlbumJson> resources;
   final Widget? child;
   final bool showName;
+  final double radius;
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
@@ -119,27 +160,32 @@ class AlbumCanvasWidget extends StatelessWidget {
               (a, b) => (a['z_index'] as num).compareTo(b['z_index'] as num),
             );
       return ClipRRect(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(radius),
         child: DecoratedBox(
-          decoration: albumDecoration(config['background'] as AlbumJson?),
+          decoration: albumDecoration(
+            config['background'] as AlbumJson?,
+            radius: radius,
+          ),
           child: Stack(
             clipBehavior: Clip.hardEdge,
             fit: StackFit.expand,
             children: [
+              Positioned.fill(child: AlbumMaterial(linen: showName)),
               if (showName) ...[
                 Positioned(
-                  left: 8,
-                  top: 8,
-                  bottom: 8,
+                  left: 9,
+                  top: 0,
+                  bottom: 0,
                   child: Container(
-                    width: 5,
+                    width: 1,
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: .35),
+                      color: const Color(0xFF786F60).withValues(alpha: .16),
                       borderRadius: BorderRadius.circular(4),
                     ),
                   ),
                 ),
-                if (!elements.any((e) => e['type'] == 'TEXT'))
+                if (elements.isNotEmpty &&
+                    !elements.any((e) => e['type'] == 'TEXT'))
                   Positioned(
                     left: 18,
                     right: 18,
@@ -151,12 +197,33 @@ class AlbumCanvasWidget extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: constraints.maxWidth * .08,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w500,
                         color: FanColors.ink.withValues(alpha: .75),
                       ),
                     ),
                   ),
               ],
+              if (showName && elements.isEmpty && child == null)
+                const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.photo_outlined,
+                        size: 28,
+                        color: FanColors.textSecondary,
+                      ),
+                      SizedBox(height: 8),
+                      Text(
+                        '暂无封面',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: FanColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ?child,
               for (final e in elements)
                 Positioned(
@@ -227,10 +294,12 @@ class _AlbumElementWidgetState extends State<AlbumElementWidget> {
                 '✦'
           : (matches.first['config'] as AlbumJson)['symbol'] as String? ?? '✦';
     }
-    final body = e['type'] == 'CARD'
+    final body = e['type'] == 'STROKE'
+        ? CustomPaint(painter: AlbumStrokePainter(e))
+        : e['type'] == 'CARD'
         ? AlbumCardImage(widget.album.card(content))
         : FittedBox(
-            fit: BoxFit.scaleDown,
+            fit: e['type'] == 'TEXT' ? BoxFit.contain : BoxFit.scaleDown,
             alignment: Alignment.center,
             child: Text(
               content,
@@ -303,6 +372,44 @@ class _AlbumElementWidgetState extends State<AlbumElementWidget> {
   }
 }
 
+class AlbumStrokePainter extends CustomPainter {
+  AlbumStrokePainter(this.element);
+  final AlbumJson element;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final points = (element['points'] as List?) ?? [];
+    if (points.length < 2) return;
+    final style = element['style'] as AlbumJson? ?? {};
+    final path = Path();
+    for (var i = 0; i < points.length; i++) {
+      final point = points[i] as List;
+      final x = (point[0] as num).toDouble() * size.width,
+          y = (point[1] as num).toDouble() * size.height;
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = albumColor(style['color'] ?? '#6D5DD3')
+            .withValues(alpha: (style['opacity'] as num?)?.toDouble() ?? 1)
+        ..strokeWidth =
+            ((style['stroke_width'] as num?)?.toDouble() ?? 3) *
+            size.width /
+            300
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+  }
+
+  @override
+  bool shouldRepaint(AlbumStrokePainter oldDelegate) => true;
+}
+
 class AlbumCoverWidget extends StatelessWidget {
   const AlbumCoverWidget(this.album, {super.key, this.resources = const []});
   final PhotocardAlbum album;
@@ -315,20 +422,212 @@ class AlbumCoverWidget extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         boxShadow: [
           BoxShadow(
-            color: FanColors.ink.withValues(alpha: .13),
-            blurRadius: 12,
-            offset: const Offset(3, 5),
+            color: const Color(0xFF756B5E).withValues(alpha: .14),
+            blurRadius: 7,
+            offset: const Offset(2, 4),
           ),
         ],
       ),
-      child: AlbumCanvasWidget(
-        config: album.cover,
-        album: album,
-        resources: resources,
-        showName: true,
+      child: album.usesStackCover
+          ? AlbumStackCover(album: album)
+          : AlbumBookCover(album: album, resources: resources),
+    ),
+  );
+}
+
+class AlbumBookCover extends StatelessWidget {
+  const AlbumBookCover({
+    super.key,
+    required this.album,
+    this.resources = const [],
+  });
+  final PhotocardAlbum album;
+  final List<AlbumJson> resources;
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.fromLTRB(1, 1, 2, 3),
+    decoration: BoxDecoration(
+      color: const Color(0xFFE3DED3),
+      borderRadius: BorderRadius.circular(5),
+    ),
+    child: ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          AlbumCanvasWidget(
+            config: album.cover,
+            album: album,
+            resources: resources,
+            showName: true,
+            radius: 4,
+          ),
+          if (((album.cover['elements'] as List?) ?? []).isEmpty &&
+              album.coverSlots.isNotEmpty)
+            DecoratedBox(
+              decoration: albumDecoration(
+                album.cover['background'] as AlbumJson?,
+              ),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  const Positioned.fill(child: AlbumMaterial(linen: true)),
+                  FractionallySizedBox(
+                    widthFactor: .62,
+                    heightFactor: .66,
+                    alignment: const Alignment(.1, -.18),
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFAF8F2),
+                        borderRadius: BorderRadius.circular(5),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x22756B5E),
+                            blurRadius: 3,
+                            offset: Offset(1, 2),
+                          ),
+                        ],
+                      ),
+                      child: AlbumCardImage(
+                        album.card(album.coverSlots.first['card_id']),
+                        thumbnail: true,
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    left: 18,
+                    right: 12,
+                    bottom: 12,
+                    child: Text(
+                      album.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF62665E),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 12,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    const Color(0xFF756B5E).withValues(alpha: .12),
+                    Colors.white.withValues(alpha: .12),
+                    const Color(0xFF756B5E).withValues(alpha: .08),
+                  ],
+                ),
+                border: Border(
+                  right: BorderSide(
+                    color: const Color(0xFF756B5E).withValues(alpha: .14),
+                    width: .7,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     ),
   );
+}
+
+/// Fixed STACK_V1 layout: no generated image, randomness or external renderer.
+/// Slots, featured ID and background are persisted in the album document.
+class AlbumStackCover extends StatelessWidget {
+  const AlbumStackCover({super.key, required this.album});
+  final PhotocardAlbum album;
+  @override
+  Widget build(BuildContext context) {
+    final slots = album.coverSlots;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: DecoratedBox(
+        decoration: albumDecoration(
+          album.cardView['background'] as AlbumJson? ??
+              album.cover['background'] as AlbumJson?,
+        ),
+        child: LayoutBuilder(
+          builder: (context, bounds) {
+            final w = bounds.maxWidth, h = bounds.maxHeight;
+            if (slots.isEmpty) {
+              return const Center(
+                child: AlbumIcon(
+                  'BookOpen',
+                  size: 32,
+                  color: FanColors.lavender,
+                ),
+              );
+            }
+            // Index 0 is always drawn last, in front. Angles are degrees.
+            const poses = [
+              (0.0, -.025, -3.0, 1.0),
+              (-.21, .025, -12.0, .87),
+              (.21, .015, 12.0, .87),
+              (-.30, -.05, -15.0, .78),
+              (.30, -.06, 15.0, .78),
+            ];
+            final width = math.min(
+              w * (slots.length == 1 ? .70 : .53),
+              h * .47,
+            );
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                const Positioned.fill(child: AlbumMaterial()),
+                for (var i = slots.length - 1; i >= 0; i--)
+                  Positioned(
+                    key: ValueKey('stack-cover-${slots[i]['id']}'),
+                    left: w / 2 + poses[i].$1 * w - width * poses[i].$4 / 2,
+                    top:
+                        h / 2 +
+                        poses[i].$2 * h -
+                        width * poses[i].$4 * 1.55 / 2,
+                    width: width * poses[i].$4,
+                    height: width * poses[i].$4 * 1.55,
+                    child: Transform.rotate(
+                      angle: poses[i].$3 * math.pi / 180,
+                      child: Container(
+                        padding: const EdgeInsets.all(1.5),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFF756B5E)
+                                  .withValues(alpha: .16),
+                              blurRadius: 6,
+                              offset: const Offset(2, 3),
+                            ),
+                          ],
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: AlbumCardImage(
+                            album.card(slots[i]['card_id'] as String?),
+                            thumbnail: true,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
 }
 
 class AlbumBinderWidget extends StatelessWidget {
@@ -587,7 +886,7 @@ Future<void> showAlbumCardPreview(
   );
 }
 
-class _CardPreview extends StatefulWidget {
+class _CardPreview extends ConsumerStatefulWidget {
   const _CardPreview({
     required this.card,
     required this.allowDetail,
@@ -597,77 +896,174 @@ class _CardPreview extends StatefulWidget {
   final bool allowDetail;
   final VoidCallback onDetail;
   @override
-  State<_CardPreview> createState() => _CardPreviewState();
+  ConsumerState<_CardPreview> createState() => _CardPreviewState();
 }
 
-class _CardPreviewState extends State<_CardPreview> {
-  bool back = false;
+class _CardPreviewState extends ConsumerState<_CardPreview>
+    with SingleTickerProviderStateMixin {
+  final _messenger = GlobalKey<ScaffoldMessengerState>();
+  late final AnimationController _flip = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 500),
+  );
+  bool _back = false;
   @override
-  Widget build(BuildContext context) => Dialog(
-    backgroundColor: const Color(0xFF3D3E48),
-    insetPadding: const EdgeInsets.all(20),
-    child: Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Align(
-            alignment: Alignment.centerRight,
-            child: IconButton(
-              tooltip: '关闭',
-              onPressed: () => Navigator.pop(context),
-              icon: const AlbumIcon('X', color: Colors.white),
-            ),
-          ),
-          ConstrainedBox(
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.sizeOf(context).height * .48,
-            ),
-            child: AspectRatio(
-              aspectRatio: 55 / 85,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: AlbumCardImage(widget.card, back: back),
+  void dispose() {
+    _flip.dispose();
+    super.dispose();
+  }
+
+  void _turn() {
+    if (_flip.isAnimating) return;
+    if (widget.card.backImageUrl?.trim().isNotEmpty != true) {
+      _messenger.currentState?.hideCurrentSnackBar();
+      _messenger.currentState?.showSnackBar(
+        const SnackBar(
+          content: Text('暂无背面'),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    _back = !_back;
+    _back ? _flip.forward() : _flip.reverse();
+    HapticFeedback.selectionClick();
+  }
+
+  @override
+  Widget build(BuildContext context) => Dialog.fullscreen(
+    backgroundColor: const Color(0xFFF5F3FC),
+    child: ScaffoldMessenger(
+      key: _messenger,
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF5F3FC),
+        body: SafeArea(
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  const SizedBox(width: 48),
+                  Expanded(
+                    child: Text(
+                      widget.card.displayTitle,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
               ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          if (widget.card.backImageUrl?.isNotEmpty == true)
-            SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(value: false, label: Text('正面')),
-                ButtonSegment(value: true, label: Text('背面')),
-              ],
-              selected: {back},
-              onSelectionChanged: (s) => setState(() => back = s.first),
-            ),
-          const SizedBox(height: 12),
-          Text(
-            widget.card.displayTitle,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          Text(
-            '${widget.card.groupName} · ${widget.card.source} · ${widget.card.version}',
-            style: const TextStyle(color: Colors.white70),
-            textAlign: TextAlign.center,
-          ),
-          if (widget.allowDetail)
-            Padding(
-              padding: const EdgeInsets.only(top: 16),
-              child: FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: Colors.white,
-                  foregroundColor: FanColors.ink,
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, bounds) => Center(
+                    child: SizedBox(
+                      width: math.min(
+                        bounds.maxWidth - 40,
+                        bounds.maxHeight / 1.55 - 16,
+                      ),
+                      child: AspectRatio(
+                        aspectRatio: 1 / 1.55,
+                        child: GestureDetector(
+                          key: const Key('album-preview-flip'),
+                          onTap: _turn,
+                          child: AnimatedBuilder(
+                            animation: _flip,
+                            builder: (context, _) {
+                              final angle =
+                                  Curves.easeInOutCubic.transform(_flip.value) *
+                                  math.pi;
+                              final back = angle > math.pi / 2;
+                              return Transform(
+                                alignment: Alignment.center,
+                                transform: Matrix4.identity()
+                                  ..setEntry(3, 2, .001)
+                                  ..rotateY(angle),
+                                child: Transform(
+                                  alignment: Alignment.center,
+                                  transform: Matrix4.rotationY(
+                                    back ? math.pi : 0,
+                                  ),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(14),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: FanColors.ink.withValues(
+                                            alpha: .14,
+                                          ),
+                                          blurRadius: 22,
+                                          offset: const Offset(0, 8),
+                                        ),
+                                      ],
+                                    ),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: AlbumCardImage(
+                                        widget.card,
+                                        back: back,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-                onPressed: widget.onDetail,
-                child: const Text('查看官方图鉴详情'),
               ),
-            ),
-        ],
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
+                child: Text(
+                  [
+                    entityDisplayName(
+                      ref,
+                      'idols',
+                      widget.card.idolId,
+                      widget.card.idolName,
+                    ),
+                    widget.card.source,
+                    widget.card.version,
+                  ].where((s) => s.trim().isNotEmpty).join(' · '),
+                  textAlign: TextAlign.center,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: FanColors.textSecondary,
+                  ),
+                ),
+              ),
+              const Text(
+                '轻点小卡翻面',
+                style: TextStyle(fontSize: 12, color: FanColors.textSecondary),
+              ),
+              if (widget.allowDetail)
+                TextButton(
+                  onPressed: widget.onDetail,
+                  child: const Text('查看官方图鉴详情'),
+                ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
       ),
     ),
   );

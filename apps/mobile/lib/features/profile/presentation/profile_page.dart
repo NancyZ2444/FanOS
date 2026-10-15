@@ -5,12 +5,14 @@ import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/features/albums/presentation/album_shelf_page.dart';
 import 'package:fan_os/features/albums/state/album_state.dart';
+import 'package:fan_os/features/profile/presentation/profile_backdrop.dart';
+import 'package:fan_os/features/feedback/feedback_center.dart';
+import 'package:fan_os/features/feedback/feedback_data.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
 
-enum _ProfileTab { collection, likes, albums, photos }
+enum _ProfileTab { collection, likes, albums, contributions }
 
 enum _LibraryView { gallery, list }
 
@@ -69,19 +71,6 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
     });
   }
 
-  Future<void> _addPhotos() async {
-    try {
-      final photos = await ImagePicker().pickMultiImage(imageQuality: 88);
-      if (photos.isEmpty) return;
-      ref
-          .read(profileAssetProvider.notifier)
-          .addPhotos(photos.map((item) => item.path));
-      if (mounted) showFanToast(context, '已添加 ${photos.length} 张图片');
-    } catch (_) {
-      if (mounted) showFanToast(context, '暂时无法打开相册，请检查系统权限');
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(sessionProvider);
@@ -129,7 +118,7 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
       if (widget.isSelf || privacy.collectionVisible) _ProfileTab.collection,
       if (widget.isSelf || privacy.likesVisible) _ProfileTab.likes,
       if (widget.isSelf || privacy.albumsVisible) _ProfileTab.albums,
-      if (widget.isSelf || privacy.photosVisible) _ProfileTab.photos,
+      _ProfileTab.contributions,
     ];
     if (tabs.isEmpty) tabs.add(_ProfileTab.collection);
     if (!tabs.contains(_activeTab)) _activeTab = tabs.first;
@@ -168,7 +157,6 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
           ? (ref.watch(albumQuotaProvider).value?.albumCount ??
                 assets.albums.length)
           : other!.albumCount,
-      photoCount: widget.isSelf ? assets.photos.length : other!.photoCount,
       weiboName: widget.isSelf
           ? (session.weiboVisible ? '@${session.displayName}' : null)
           : other!.weiboName,
@@ -180,14 +168,22 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
           ? null
           : AppBar(leading: const BackButton(), title: const Text('个人主页')),
       body: SafeArea(
+        top: !widget.isSelf,
         child: NestedScrollView(
           headerSliverBuilder: (context, innerBoxIsScrolled) => [
             SliverToBoxAdapter(
               child: FanContent(
-                padding: const EdgeInsets.fromLTRB(20, 6, 20, 18),
+                padding: const EdgeInsets.only(bottom: 18),
                 child: _ProfileHeader(
                   profile: profile,
                   isSelf: widget.isSelf,
+                  contributionCount: ref
+                      .watch(
+                        contributionCountProvider(
+                          widget.isSelf ? 'me' : profile.id,
+                        ),
+                      )
+                      .value,
                   catalog: catalog.value,
                   relationshipStatus: widget.isSelf
                       ? null
@@ -229,6 +225,7 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
               pinned: true,
               delegate: _StickyProfileTabs(
                 child: _ProfileLibraryBar(
+                  isSelf: widget.isSelf,
                   tabs: tabs,
                   activeTab: _activeTab,
                   activeView: _activeView,
@@ -254,11 +251,15 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                 for (final tab in tabs)
                   if (tab == _ProfileTab.albums)
                     AlbumShelfBody(
+                      profileMode: true,
+                      showTitle: false,
                       key: PageStorageKey(
                         'profile-${profile.id}-digital-albums',
                       ),
                       userId: widget.isSelf ? null : profile.id,
                     )
+                  else if (tab == _ProfileTab.contributions)
+                    ContributionShelf(userId: widget.isSelf ? 'me' : profile.id)
                   else
                     _ProfileLibraryPage(
                       key: PageStorageKey('profile-${profile.id}-${tab.name}'),
@@ -275,11 +276,6 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                           : (useMockApi
                                 ? _demoAlbums(profile.albumCount)
                                 : other!.albums),
-                      photos: widget.isSelf
-                          ? assets.photos
-                          : (useMockApi
-                                ? _demoPhotos(profile.photoCount)
-                                : other!.photos),
                       onFilterChanged: (value) =>
                           setState(() => _filters[tab] = value),
                       onOpenCard: (card) => context.push('/card/${card.id}'),
@@ -287,7 +283,6 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                         ref.read(profileAssetProvider.notifier).createAlbum();
                         showFanToast(context, '已创建一本新卡册');
                       },
-                      onAddPhotos: _addPhotos,
                     ),
               ],
             ),
@@ -345,15 +340,6 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
       colorEnd: index.isEven ? 0xFF272B53 : 0xFF87415D,
     ),
   );
-
-  List<ProfilePhoto> _demoPhotos(int count) => List.generate(
-    count,
-    (index) => ProfilePhoto(
-      id: 'public-photo-$index',
-      colorStart: index.isEven ? 0xFF91D7F2 : 0xFFFFB7C8,
-      colorEnd: index.isEven ? 0xFF3977A8 : 0xFFB84670,
-    ),
-  );
 }
 
 class _ProfileViewData {
@@ -373,7 +359,6 @@ class _ProfileViewData {
     required this.ownedIds,
     required this.likedIds,
     required this.albumCount,
-    required this.photoCount,
     required this.privacy,
     this.weiboName,
     this.backgroundPath,
@@ -395,7 +380,6 @@ class _ProfileViewData {
   final Set<String> ownedIds;
   final Set<String> likedIds;
   final int albumCount;
-  final int photoCount;
   final String? weiboName;
   final ProfilePrivacy privacy;
 }
@@ -404,6 +388,7 @@ class _ProfileHeader extends StatelessWidget {
   const _ProfileHeader({
     required this.profile,
     required this.isSelf,
+    this.contributionCount,
     required this.catalog,
     required this.relationshipStatus,
     required this.followBusy,
@@ -420,6 +405,7 @@ class _ProfileHeader extends StatelessWidget {
 
   final _ProfileViewData profile;
   final bool isSelf;
+  final int? contributionCount;
   final CatalogBundle? catalog;
   final UserRelationStatus? relationshipStatus;
   final bool followBusy;
@@ -443,207 +429,234 @@ class _ProfileHeader extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (profile.backgroundPath != null) ...[
-          SizedBox(
-            key: const Key('profile-background'),
-            height: 150,
-            width: double.infinity,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(18),
-              child: FanImage(
-                imageUrl: profile.backgroundPath,
-                fallback: const ColoredBox(color: FanColors.lavenderSoft),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-        ],
-        Row(
-          children: [
-            Text(
-              isSelf ? '我的空间' : '个人主页',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-            const Spacer(),
-            IconButton(
-              tooltip: '分享主页',
-              onPressed: onShare,
-              icon: const Icon(Icons.ios_share_rounded),
-            ),
-            if (isSelf)
-              IconButton(
-                tooltip: '我的扫描反馈',
-                onPressed: () => context.push('/scan-feedback-history'),
-                icon: const Icon(Icons.history_rounded),
-              ),
-            if (isSelf)
-              IconButton(
-                tooltip: '设置',
-                onPressed: onSettings,
-                icon: const Icon(Icons.settings_outlined),
-              )
-            else
-              IconButton(
-                tooltip: '更多',
-                onPressed: () => showFanToast(context, '举报与屏蔽功能将在后续开放'),
-                icon: const Icon(Icons.more_horiz_rounded),
-              ),
-          ],
-        ),
-        const SizedBox(height: 14),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: 76,
-              height: 76,
-              alignment: Alignment.center,
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  colors: [Color(0xFFBBA9FF), Color(0xFF5A58A4)],
+        ClipRRect(
+          borderRadius: BorderRadius.zero,
+          child: Stack(
+            children: [
+              if (profile.backgroundPath != null)
+                Positioned.fill(
+                  key: const Key('profile-background'),
+                  child: ProfileBackdrop(imageUrl: profile.backgroundPath!),
                 ),
-              ),
-              child: profile.avatarPath == null
-                  ? Text(
-                      profile.initial,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 27,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    )
-                  : ClipOval(
-                      child: FanImage(
-                        imageUrl: profile.avatarPath,
-                        fallback: Text(
-                          profile.initial,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 27,
-                            fontWeight: FontWeight.w900,
+              Padding(
+                padding: EdgeInsets.fromLTRB(
+                  20,
+                  (isSelf ? MediaQuery.paddingOf(context).top : 0) + 8,
+                  20,
+                  8,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Spacer(),
+                        IconButton(
+                          tooltip: '分享主页',
+                          onPressed: onShare,
+                          icon: const Icon(Icons.ios_share_rounded),
+                        ),
+                        if (isSelf)
+                          IconButton(
+                            tooltip: '我的扫描反馈',
+                            onPressed: () => context.push('/feedback'),
+                            icon: const Icon(Icons.history_rounded),
+                          ),
+                        if (isSelf)
+                          IconButton(
+                            tooltip: '设置',
+                            onPressed: onSettings,
+                            icon: const Icon(Icons.settings_outlined),
+                          )
+                        else
+                          IconButton(
+                            tooltip: '更多',
+                            onPressed: () =>
+                                showFanToast(context, '举报与屏蔽功能将在后续开放'),
+                            icon: const Icon(Icons.more_horiz_rounded),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 64,
+                          height: 64,
+                          alignment: Alignment.center,
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              colors: [Color(0xFFBBA9FF), Color(0xFF5A58A4)],
+                            ),
+                          ),
+                          child: profile.avatarPath == null
+                              ? Text(
+                                  profile.initial,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 27,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                )
+                              : ClipOval(
+                                  child: FanImage(
+                                    imageUrl: profile.avatarPath,
+                                    fallback: Text(
+                                      profile.initial,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 27,
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                        ),
+                        const SizedBox(width: 15),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                profile.displayName,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 5),
+                              InkWell(
+                                key: const Key('profile-level-entry'),
+                                onTap: onOpenLevel,
+                                borderRadius: BorderRadius.circular(99),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 9,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: FanColors.lavenderSoft,
+                                    borderRadius: BorderRadius.circular(99),
+                                  ),
+                                  child: Text(
+                                    'Lv.${profile.level} · ${profile.experience} EXP',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      ),
+                        if (isSelf)
+                          SizedBox(
+                            width: 82,
+                            child: OutlinedButton(
+                              onPressed: onEdit,
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size(0, 34),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                ),
+                                backgroundColor: Colors.white.withValues(
+                                  alpha: .6,
+                                ),
+                              ),
+                              child: const Text(
+                                '编辑资料',
+                                maxLines: 1,
+                                style: TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          )
+                        else
+                          _FollowButton(
+                            status: relationshipStatus!,
+                            busy: followBusy,
+                            onPressed: onFollow,
+                          ),
+                      ],
                     ),
-            ),
-            const SizedBox(width: 15),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    profile.displayName,
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const SizedBox(height: 5),
-                  InkWell(
-                    key: const Key('profile-level-entry'),
-                    onTap: onOpenLevel,
-                    borderRadius: BorderRadius.circular(99),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 9,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: FanColors.lavenderSoft,
-                        borderRadius: BorderRadius.circular(99),
-                      ),
-                      child: Text(
-                        'Lv.${profile.level} · ${profile.experience} EXP',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
+                    if (profile.bio.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Text(profile.bio, style: const TextStyle(height: 1.45)),
+                    ] else if (isSelf) ...[
+                      const SizedBox(height: 10),
+                      const Text(
+                        '还没有填写简介',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: FanColors.textSecondary,
                         ),
                       ),
+                    ],
+                    const SizedBox(height: 15),
+                    if (profile.weiboName != null) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.rss_feed_rounded,
+                            size: 15,
+                            color: FanColors.coral,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            profile.weiboName!,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: FanColors.coral,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 24,
+                      runSpacing: 8,
+                      children: [
+                        _RelationStat(
+                          value: profile.followingCount,
+                          label: '关注',
+                          onTap: onOpenFollowing,
+                        ),
+                        _RelationStat(
+                          value: profile.followersCount,
+                          label: '粉丝',
+                          onTap: onOpenFollowers,
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 5),
-                  const Text(
-                    'Fan OS ID 10086',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: FanColors.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (isSelf)
-              SizedBox(
-                width: 96,
-                child: OutlinedButton(
-                  onPressed: onEdit,
-                  child: const Text('编辑资料'),
+                  ],
                 ),
-              )
-            else
-              _FollowButton(
-                status: relationshipStatus!,
-                busy: followBusy,
-                onPressed: onFollow,
-              ),
-          ],
-        ),
-        if (profile.bio.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          Text(profile.bio, style: const TextStyle(height: 1.45)),
-        ] else if (isSelf) ...[
-          const SizedBox(height: 10),
-          TextButton.icon(
-            onPressed: onEdit,
-            icon: const Icon(Icons.add_rounded, size: 17),
-            label: const Text('添加一句自我介绍'),
-          ),
-        ],
-        const SizedBox(height: 15),
-        if (profile.weiboName != null) ...[
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              const Icon(
-                Icons.rss_feed_rounded,
-                size: 15,
-                color: FanColors.coral,
-              ),
-              const SizedBox(width: 5),
-              Text(
-                profile.weiboName!,
-                style: const TextStyle(fontSize: 12, color: FanColors.coral),
               ),
             ],
           ),
-        ],
-        const SizedBox(height: 17),
-        Row(
-          children: [
-            _RelationStat(
-              value: profile.followingCount,
-              label: '关注',
-              onTap: onOpenFollowing,
-            ),
-            const SizedBox(width: 28),
-            _RelationStat(
-              value: profile.followersCount,
-              label: '粉丝',
-              onTap: onOpenFollowers,
-            ),
-          ],
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 4),
         if ((profile.privacy.favoritesVisible || isSelf) &&
             (isSelf || favoriteIdols.isNotEmpty)) ...[
-          FavoriteIdolsShowcase(
-            idols: favoriteIdols,
-            primaryId: profile.primaryIdolId,
-            onManage: isSelf ? onManageFavorites : null,
-            onOpen: (idol) => onOpenFavorite(idol.id),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: FavoriteIdolsShowcase(
+              idols: favoriteIdols,
+              primaryId: profile.primaryIdolId,
+              onManage: isSelf ? onManageFavorites : null,
+              onOpen: (idol) => onOpenFavorite(idol.id),
+            ),
           ),
           const SizedBox(height: 20),
         ],
         Container(
           padding: const EdgeInsets.symmetric(vertical: 13),
+          margin: const EdgeInsets.symmetric(horizontal: 20),
           decoration: const BoxDecoration(
             border: Border.symmetric(
               horizontal: BorderSide(color: FanColors.line),
@@ -652,13 +665,15 @@ class _ProfileHeader extends StatelessWidget {
           child: Row(
             children: [
               if (isSelf || profile.privacy.collectionVisible)
-                _AssetStat(value: profile.ownedIds.length, label: '收藏'),
+                _AssetStat(value: profile.ownedIds.length, label: '已拥有'),
               if (isSelf || profile.privacy.likesVisible)
-                _AssetStat(value: profile.likedIds.length, label: '喜欢'),
+                _AssetStat(value: profile.likedIds.length, label: '心愿单'),
               if (isSelf || profile.privacy.albumsVisible)
                 _AssetStat(value: profile.albumCount, label: '卡册'),
-              if (isSelf || profile.privacy.photosVisible)
-                _AssetStat(value: profile.photoCount, label: '相册'),
+              _AssetStat(
+                value: contributionCount ?? 0,
+                label: isSelf ? '我的贡献' : 'TA 的贡献',
+              ),
             ],
           ),
         ),
@@ -761,6 +776,7 @@ class _AssetStat extends StatelessWidget {
 class _ProfileLibraryBar extends StatelessWidget {
   const _ProfileLibraryBar({
     required this.tabs,
+    this.isSelf = true,
     required this.activeTab,
     required this.activeView,
     required this.onTabChanged,
@@ -768,16 +784,17 @@ class _ProfileLibraryBar extends StatelessWidget {
   });
 
   final List<_ProfileTab> tabs;
+  final bool isSelf;
   final _ProfileTab activeTab;
   final _LibraryView activeView;
   final ValueChanged<_ProfileTab> onTabChanged;
   final VoidCallback onViewChanged;
 
   String _label(_ProfileTab tab) => switch (tab) {
-    _ProfileTab.collection => '收藏',
-    _ProfileTab.likes => '我的喜欢',
+    _ProfileTab.collection => '已拥有',
+    _ProfileTab.likes => '心愿单',
     _ProfileTab.albums => '卡册',
-    _ProfileTab.photos => '照片',
+    _ProfileTab.contributions => isSelf ? '我的贡献' : 'TA 的贡献',
   };
 
   @override
@@ -878,11 +895,9 @@ class _ProfileLibraryPage extends StatefulWidget {
     required this.likedIds,
     required this.collection,
     required this.albums,
-    required this.photos,
     required this.onFilterChanged,
     required this.onOpenCard,
     required this.onCreateAlbum,
-    required this.onAddPhotos,
     super.key,
   });
 
@@ -895,11 +910,9 @@ class _ProfileLibraryPage extends StatefulWidget {
   final Set<String> likedIds;
   final CollectionState collection;
   final List<DigitalCardAlbum> albums;
-  final List<ProfilePhoto> photos;
   final ValueChanged<String> onFilterChanged;
   final ValueChanged<CollectibleCard> onOpenCard;
   final VoidCallback onCreateAlbum;
-  final VoidCallback onAddPhotos;
 
   @override
   State<_ProfileLibraryPage> createState() => _ProfileLibraryPageState();
@@ -933,7 +946,13 @@ class _ProfileLibraryPageState extends State<_ProfileLibraryPage>
   Widget build(BuildContext context) {
     super.build(context);
     if (widget.tab == _ProfileTab.albums) return _buildAlbums(context);
-    if (widget.tab == _ProfileTab.photos) return _buildPhotos(context);
+    if (widget.tab == _ProfileTab.contributions) {
+      return const FanEmptyState(
+        icon: Icons.volunteer_activism_outlined,
+        title: '贡献记录即将开放',
+        message: '后续可在这里查看图鉴贡献，本版本暂不展示。',
+      );
+    }
     final cards = _visibleCards;
     return CustomScrollView(
       key: PageStorageKey('profile-scroll-${widget.tab.name}'),
@@ -948,11 +967,11 @@ class _ProfileLibraryPageState extends State<_ProfileLibraryPage>
                   : Icons.favorite_border_rounded,
               title: widget.isSelf
                   ? (widget.tab == _ProfileTab.collection
-                        ? '还没有收藏小卡'
-                        : '还没有喜欢的小卡')
+                        ? '还没有拥有的小卡'
+                        : '心愿单还是空的')
                   : (widget.tab == _ProfileTab.collection
-                        ? 'TA 还没有公开收藏'
-                        : 'TA 还没有喜欢的 Card'),
+                        ? 'TA 还没有公开拥有的小卡'
+                        : 'TA 的心愿单还是空的'),
               message: widget.isSelf ? '去逛图鉴或使用 AI Scan 发现喜欢的小卡。' : '稍后再来看看吧。',
             ),
           )
@@ -1008,6 +1027,7 @@ class _ProfileLibraryPageState extends State<_ProfileLibraryPage>
         ..add(card.cardType)
         ..add(card.releaseDate.split('.').first);
     }
+    options.removeWhere((value) => value.trim().isEmpty);
     return SizedBox(
       height: 48,
       child: ListView.separated(
@@ -1076,59 +1096,9 @@ class _ProfileLibraryPageState extends State<_ProfileLibraryPage>
     );
   }
 
-  Widget _buildPhotos(BuildContext context) {
-    return CustomScrollView(
-      key: const ValueKey('profile-gallery-photos'),
-      slivers: [
-        if (widget.isSelf)
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton.tonalIcon(
-                  onPressed: widget.onAddPhotos,
-                  icon: const Icon(
-                    Icons.add_photo_alternate_outlined,
-                    size: 18,
-                  ),
-                  label: const Text('添加图片'),
-                ),
-              ),
-            ),
-          ),
-        if (widget.photos.isEmpty)
-          SliverFillRemaining(
-            hasScrollBody: false,
-            child: FanEmptyState(
-              icon: Icons.photo_library_outlined,
-              title: widget.isSelf ? '建立你的追星相册' : 'TA 还没有公开相册',
-              message: widget.isSelf ? '保存活动、收藏和喜欢的 Idol 图片。' : '稍后再来看看吧。',
-              actionLabel: widget.isSelf ? '添加第一张图片' : null,
-              onAction: widget.isSelf ? widget.onAddPhotos : null,
-            ),
-          )
-        else
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(8, 10, 8, 30),
-            sliver: SliverGrid.builder(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                crossAxisSpacing: 4,
-                mainAxisSpacing: 4,
-              ),
-              itemCount: widget.photos.length,
-              itemBuilder: (context, index) =>
-                  _PhotoTile(photo: widget.photos[index]),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _badge(CollectibleCard card) {
+  Widget? _badge(CollectibleCard card) {
     if (widget.tab == _ProfileTab.likes) {
-      return const StatusBadge(label: '喜欢');
+      return null;
     }
     final quantity = widget.isSelf ? widget.collection.quantity(card.id) : 1;
     return StatusBadge(label: '×$quantity', dark: true);
@@ -1142,7 +1112,7 @@ class _CompactCardArtwork extends StatelessWidget {
     required this.onTap,
   });
   final CollectibleCard card;
-  final Widget badge;
+  final Widget? badge;
   final VoidCallback onTap;
 
   @override
@@ -1160,7 +1130,7 @@ class _CompactCardArtwork extends StatelessWidget {
             label: card.idolName.characters.take(2).toString().toUpperCase(),
             borderRadius: 11,
           ),
-          Positioned(right: 5, bottom: 5, child: badge),
+          if (badge != null) Positioned(right: 5, bottom: 5, child: badge!),
         ],
       ),
     );
@@ -1174,7 +1144,7 @@ class _ProfileCardListTile extends StatelessWidget {
     required this.onTap,
   });
   final CollectibleCard card;
-  final Widget badge;
+  final Widget? badge;
   final VoidCallback onTap;
 
   @override
@@ -1228,8 +1198,10 @@ class _ProfileCardListTile extends StatelessWidget {
                       '${card.cardType} · ${card.version}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
-                    const SizedBox(height: 7),
-                    Align(alignment: Alignment.centerLeft, child: badge),
+                    if (badge != null) ...[
+                      const SizedBox(height: 7),
+                      Align(alignment: Alignment.centerLeft, child: badge!),
+                    ],
                   ],
                 ),
               ),
@@ -1284,35 +1256,6 @@ class _AlbumCover extends StatelessWidget {
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
-    );
-  }
-}
-
-class _PhotoTile extends StatelessWidget {
-  const _PhotoTile({required this.photo});
-  final ProfilePhoto photo;
-
-  @override
-  Widget build(BuildContext context) {
-    final path = photo.localPath;
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: path == null
-          ? DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Color(photo.colorStart), Color(photo.colorEnd)],
-                ),
-              ),
-              child: const Icon(Icons.photo_outlined, color: Colors.white),
-            )
-          : FanImage(
-              imageUrl: path,
-              fallback: const ColoredBox(
-                color: FanColors.lavenderSoft,
-                child: Icon(Icons.broken_image_outlined),
-              ),
-            ),
     );
   }
 }

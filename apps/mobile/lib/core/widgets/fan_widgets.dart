@@ -10,6 +10,23 @@ import 'package:fan_os/core/state/app_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+String entityDisplayName(
+  WidgetRef ref,
+  String kind,
+  String id,
+  String fallback,
+) {
+  final catalog = ref.watch(catalogProvider).value;
+  if (kind == 'idols') {
+    final idol = catalog?.idols.where((i) => i.id == id).firstOrNull;
+    if (idol != null) return idol.displayName;
+  } else if (kind == 'groups') {
+    final group = catalog?.groups.where((g) => g.id == id).firstOrNull;
+    if (group != null) return group.displayName;
+  }
+  return ref.watch(namePreferencesProvider).display(kind, id, fallback);
+}
+
 class FanEntityName extends ConsumerWidget {
   const FanEntityName({
     required this.kind,
@@ -27,7 +44,7 @@ class FanEntityName extends ConsumerWidget {
   final TextOverflow? overflow;
   @override
   Widget build(BuildContext context, WidgetRef ref) => Text(
-    '${ref.watch(namePreferencesProvider).display(kind, id, officialName)}$suffix',
+    '${entityDisplayName(ref, kind, id, officialName)}$suffix',
     style: style,
     maxLines: maxLines,
     overflow: overflow,
@@ -84,12 +101,14 @@ class SectionHeader extends StatelessWidget {
     this.actionLabel,
     this.onAction,
     this.subtitle,
+    this.titleStyle,
   });
 
   final String title;
   final String? subtitle;
   final String? actionLabel;
   final VoidCallback? onAction;
+  final TextStyle? titleStyle;
 
   @override
   Widget build(BuildContext context) {
@@ -100,7 +119,10 @@ class SectionHeader extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: Theme.of(context).textTheme.titleLarge),
+              Text(
+                title,
+                style: titleStyle ?? Theme.of(context).textTheme.titleLarge,
+              ),
               if (subtitle != null) ...[
                 const SizedBox(height: 3),
                 Text(subtitle!, style: Theme.of(context).textTheme.bodySmall),
@@ -171,19 +193,34 @@ class FanImage extends StatelessWidget {
     required this.fallback,
     super.key,
     this.fit = BoxFit.cover,
+    this.fallbackImageUrl,
   });
   final String? imageUrl;
   final Widget fallback;
   final BoxFit fit;
+  final String? fallbackImageUrl;
 
   @override
   Widget build(BuildContext context) {
     final source = ApiClient.resolveMediaUrl(imageUrl?.trim() ?? '');
-    if (source.isEmpty) return fallback;
+    final alternate = ApiClient.resolveMediaUrl(fallbackImageUrl?.trim() ?? '');
+    final errorFallback = alternate.isNotEmpty && alternate != source
+        ? FanImage(imageUrl: alternate, fallback: fallback, fit: fit)
+        : fallback;
+    if (source.isEmpty) return errorFallback;
     final uri = Uri.tryParse(source);
     if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
-      if (uri.path.contains('/catalog/images/')) {
-        return PortraitImage(url: source, fallback: fallback, fit: fit);
+      if (uri.path.contains('/catalog/images/') ||
+          uri.path.startsWith('/media/catalog/') ||
+          uri.path.contains('/catalog-managed/thumbs/') ||
+          uri.host == 'upload.wikimedia.org') {
+        return PortraitImage(
+          key: ValueKey(publicThumbnailSource(source)),
+          url: publicThumbnailSource(source),
+          fallback: fallback,
+          errorFallback: errorFallback,
+          fit: fit,
+        );
       }
       return Image.network(
         source,
@@ -192,7 +229,7 @@ class FanImage extends StatelessWidget {
         height: double.infinity,
         frameBuilder: (_, child, frame, synchronous) =>
             synchronous || frame != null ? child : fallback,
-        errorBuilder: (_, _, _) => fallback,
+        errorBuilder: (_, _, _) => errorFallback,
       );
     }
     if (source.startsWith('/')) {
@@ -208,6 +245,25 @@ class FanImage extends StatelessWidget {
   }
 }
 
+/// Use an existing public derivative when a legacy API still sends a large original.
+String publicThumbnailSource(String source) {
+  final uri = Uri.tryParse(source);
+  const prefix = '/wikipedia/commons/';
+  if (uri?.host == 'upload.wikimedia.org' && uri!.path.startsWith(prefix)) {
+    final tail = uri.path.substring(prefix.length);
+    if (!tail.startsWith('thumb/') &&
+        RegExp(
+          r'\.(jpg|jpeg|png|webp)$',
+          caseSensitive: false,
+        ).hasMatch(tail)) {
+      return uri
+          .replace(path: '${prefix}thumb/$tail/500px-${tail.split('/').last}')
+          .toString();
+    }
+  }
+  return source;
+}
+
 class FanArtwork extends StatelessWidget {
   const FanArtwork({
     required this.startColor,
@@ -218,6 +274,7 @@ class FanArtwork extends StatelessWidget {
     this.borderRadius = 18,
     this.showMark = true,
     this.imageUrl,
+    this.fit = BoxFit.cover,
   });
 
   final Color startColor;
@@ -226,6 +283,7 @@ class FanArtwork extends StatelessWidget {
   final double aspectRatio;
   final double borderRadius;
   final bool showMark;
+  final BoxFit fit;
   final String? imageUrl;
 
   @override
@@ -236,6 +294,7 @@ class FanArtwork extends StatelessWidget {
         borderRadius: BorderRadius.circular(borderRadius),
         child: FanImage(
           imageUrl: imageUrl,
+          fit: fit,
           fallback: Stack(
             fit: StackFit.expand,
             children: [
@@ -360,20 +419,17 @@ class IdolAvatar extends StatelessWidget {
       child: ClipOval(
         child: FanImage(
           imageUrl: idol.thumbnailUrl ?? idol.imageUrl,
+          fallbackImageUrl: idol.imageUrl,
           fallback: Container(
             alignment: Alignment.center,
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               shape: BoxShape.circle,
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(idol.colorStart), Color(idol.colorEnd)],
-              ),
+              color: FanColors.lavenderSoft,
             ),
             child: Text(
               idol.initials,
               style: TextStyle(
-                color: Colors.white,
+                color: FanColors.lavender,
                 fontSize: size * .24,
                 fontWeight: FontWeight.w800,
               ),
@@ -410,7 +466,7 @@ class FavoriteIdolsShowcase extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SectionHeader(
-          title: '✦  $title',
+          title: title,
           actionLabel: onManage == null ? null : '管理',
           onAction: onManage,
         ),
@@ -537,6 +593,7 @@ class _PrimaryIdolCard extends StatelessWidget {
           children: [
             FanImage(
               imageUrl: idol.thumbnailUrl ?? idol.imageUrl,
+              fallbackImageUrl: idol.imageUrl,
               fallback: const SizedBox.shrink(),
             ),
             if (idol.imageUrl?.isNotEmpty == true)
@@ -657,6 +714,25 @@ class _AddIdolButton extends StatelessWidget {
   }
 }
 
+enum CardTileCaption { general, idol, group }
+
+/// The image retains its ratio while captions get room at larger text scales.
+SliverGridDelegate fanCardGrid(
+  BuildContext context, {
+  double horizontalInset = 40,
+}) {
+  final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+  final width = MediaQuery.sizeOf(context).width - horizontalInset;
+  final count = width < 300 || scale > 1.3 ? 2 : 3;
+  final cellWidth = (width - (count - 1) * 9) / count;
+  return SliverGridDelegateWithFixedCrossAxisCount(
+    crossAxisCount: count,
+    crossAxisSpacing: 9,
+    mainAxisSpacing: 16,
+    mainAxisExtent: cellWidth / .74 + 12 + 42 * scale,
+  );
+}
+
 class CollectibleCardTile extends StatelessWidget {
   const CollectibleCardTile({
     required this.card,
@@ -664,15 +740,23 @@ class CollectibleCardTile extends StatelessWidget {
     this.onTap,
     this.compact = false,
     this.badge,
+    this.caption = CardTileCaption.general,
+    this.sourceLabel,
+    this.versionLabel,
   });
 
   final CollectibleCard card;
   final VoidCallback? onTap;
   final bool compact;
   final Widget? badge;
+  final CardTileCaption caption;
+  final String? sourceLabel;
+  final String? versionLabel;
 
   @override
   Widget build(BuildContext context) {
+    final source = sourceLabel ?? card.source;
+    final version = versionLabel ?? card.version;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(18),
@@ -683,7 +767,7 @@ class CollectibleCardTile extends StatelessWidget {
           Stack(
             children: [
               FanArtwork(
-                imageUrl: card.imageUrl,
+                imageUrl: card.thumbnailUrl ?? card.imageUrl,
                 startColor: Color(card.colorStart),
                 endColor: Color(card.colorEnd),
                 label: card.idolName.characters
@@ -696,19 +780,45 @@ class CollectibleCardTile extends StatelessWidget {
             ],
           ),
           SizedBox(height: compact ? 7 : 9),
-          FanEntityName(
-            kind: 'idols',
-            id: card.idolId,
-            officialName: card.idolName,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: compact ? 12 : 14,
-              fontWeight: FontWeight.w700,
+          if (caption == CardTileCaption.idol ||
+              (caption == CardTileCaption.group && !card.hasIndividualIdol))
+            Text(
+              source.isEmpty ? '来源待补充' : source,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: compact ? 12 : 14,
+                fontWeight: FontWeight.w700,
+              ),
+            )
+          else
+            FanEntityName(
+              kind: 'idols',
+              id: card.idolId,
+              officialName: card.idolName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: compact ? 12 : 14,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-          ),
           const SizedBox(height: 2),
-          if (card.tags.isNotEmpty)
+          if (caption == CardTileCaption.idol)
+            Text(
+              version.isEmpty ? '版本待补充' : version,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            )
+          else if (caption == CardTileCaption.group && card.hasIndividualIdol)
+            Text(
+              source.isEmpty ? '来源待补充' : source,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            )
+          else if (caption == CardTileCaption.general && card.tags.isNotEmpty)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
               decoration: BoxDecoration(
@@ -722,7 +832,7 @@ class CollectibleCardTile extends StatelessWidget {
                 style: const TextStyle(fontSize: 10, color: Color(0xFF7154B6)),
               ),
             )
-          else
+          else if (caption == CardTileCaption.general)
             Text(
               card.version,
               maxLines: 1,
@@ -733,6 +843,57 @@ class CollectibleCardTile extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Static skeletons preserve content geometry and respect reduced-motion users.
+class FanPageSkeleton extends StatelessWidget {
+  const FanPageSkeleton({super.key});
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: '正在加载内容',
+    child: ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        Container(
+          height: 132,
+          decoration: BoxDecoration(
+            color: FanColors.line,
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+        const SizedBox(height: 16),
+        for (var i = 0; i < 3; i++) ...[
+          Row(
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                decoration: const BoxDecoration(
+                  color: FanColors.line,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(height: 16, color: FanColors.line),
+                    const SizedBox(height: 8),
+                    FractionallySizedBox(
+                      widthFactor: .65,
+                      child: Container(height: 12, color: FanColors.line),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+        ],
+      ],
+    ),
+  );
 }
 
 class FanEmptyState extends StatelessWidget {
@@ -755,7 +916,7 @@ class FanEmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
+        padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 360),
           child: SizedBox(
@@ -764,15 +925,7 @@ class FanEmptyState extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Container(
-                  width: 64,
-                  height: 64,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: FanColors.lavenderSoft,
-                  ),
-                  child: Icon(icon, color: FanColors.lavender, size: 30),
-                ),
+                FanEmptyArtwork(icon: icon),
                 const SizedBox(height: 16),
                 Text(
                   title,
@@ -802,6 +955,164 @@ class FanEmptyState extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A local state keeps the surrounding search, navigation and sections usable.
+class FanStatusCard extends StatelessWidget {
+  const FanStatusCard({
+    required this.title,
+    required this.message,
+    this.icon = Icons.auto_stories_outlined,
+    this.actionLabel,
+    this.onAction,
+    this.vertical = false,
+    super.key,
+  });
+  final String title, message;
+  final IconData icon;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+  final bool vertical;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(20),
+    decoration: BoxDecoration(
+      gradient: const LinearGradient(
+        colors: [Colors.white, Color(0xFFF4F1FF)],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      ),
+      border: Border.all(color: Colors.white, width: 1.5),
+      borderRadius: BorderRadius.circular(20),
+    ),
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final stacked =
+            vertical ||
+            constraints.maxWidth < 260 ||
+            MediaQuery.textScalerOf(context).scale(14) > 20;
+        final text = Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: stacked
+              ? CrossAxisAlignment.center
+              : CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              textAlign: stacked ? TextAlign.center : TextAlign.start,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              message,
+              textAlign: stacked ? TextAlign.center : TextAlign.start,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (actionLabel != null) ...[
+              const SizedBox(height: 12),
+              OutlinedButton(
+                onPressed: onAction,
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(96, 40),
+                  foregroundColor: const Color(0xFF6750CE),
+                  side: const BorderSide(color: Color(0xFFD9D1FF)),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 8,
+                  ),
+                  shape: const StadiumBorder(),
+                ),
+                child: Text(actionLabel!, textAlign: TextAlign.center),
+              ),
+            ],
+          ],
+        );
+        return stacked
+            ? Column(
+                children: [
+                  FanEmptyArtwork(icon: icon),
+                  const SizedBox(height: 12),
+                  text,
+                ],
+              )
+            : Row(
+                children: [
+                  FanEmptyArtwork(icon: icon),
+                  const SizedBox(width: 18),
+                  Expanded(child: text),
+                ],
+              );
+      },
+    ),
+  );
+}
+
+class FanEmptyArtwork extends StatelessWidget {
+  const FanEmptyArtwork({required this.icon, super.key});
+  final IconData icon;
+  @override
+  Widget build(BuildContext context) => ExcludeSemantics(
+    child: SizedBox(
+      width: 92,
+      height: 86,
+      child: CustomPaint(
+        painter: _EmptyCloudPainter(),
+        child: Center(
+          child: Container(
+            width: 55,
+            height: 64,
+            margin: const EdgeInsets.only(bottom: 5),
+            transform: Matrix4.rotationZ(-.09),
+            transformAlignment: Alignment.center,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              gradient: const LinearGradient(
+                colors: [Colors.white, FanColors.lavenderSoft],
+              ),
+              border: Border.all(color: const Color(0xFFC8BCFF)),
+            ),
+            child: Icon(icon, color: const Color(0xFFAC99EE), size: 29),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _EmptyCloudPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    void cloud(double x, double y, double scale) {
+      canvas.save();
+      canvas.translate(x, y);
+      canvas.scale(scale);
+      final shape = Path()
+        ..moveTo(4, 19)
+        ..cubicTo(-3, 13, 1, 5, 8, 6)
+        ..cubicTo(9, -3, 25, -3, 27, 7)
+        ..cubicTo(37, 5, 42, 20, 30, 22)
+        ..lineTo(9, 22)
+        ..quadraticBezierTo(5, 22, 4, 19)
+        ..close();
+      canvas.drawPath(shape, Paint()..color = const Color(0xFFF3EFFF));
+      canvas.drawPath(
+        shape,
+        Paint()
+          ..color = const Color(0xFFC8BCFF)
+          ..style = PaintingStyle.stroke,
+      );
+      canvas.restore();
+    }
+
+    cloud(65, 6, .65);
+    cloud(0, 54, .5);
+    cloud(51, 61, 1);
+  }
+
+  @override
+  bool shouldRepaint(_EmptyCloudPainter oldDelegate) => false;
 }
 
 class StatusBadge extends StatelessWidget {

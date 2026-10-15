@@ -16,6 +16,35 @@ const complete = () => ({
   },
 });
 describe("catalog publication requirements", () => {
+  it("user-submitted image links are optional but copyright checks remain required", () => {
+    const card = {
+      ...complete(),
+      front_source: {
+        source_type: "USER_SUBMITTED",
+        source_url: "",
+        copyright_status: "AUTHORIZED",
+      },
+    };
+    expect(validateCard(card, true)).toEqual([]);
+    expect(
+      validateCard(
+        {
+          ...card,
+          front_source: { ...card.front_source, copyright_status: "UNKNOWN" },
+        },
+        true,
+      ).map((e) => e.field),
+    ).toEqual(["front_source.copyright_status"]);
+    expect(
+      validateCard(
+        {
+          ...card,
+          front_source: { ...card.front_source, source_type: "OFFICIAL" },
+        },
+        true,
+      ).map((e) => e.field),
+    ).toContain("front_source.source_url");
+  });
   it("does not require a hand-entered name or serial number", () => {
     expect(
       validateCard({ ...complete(), title: "", card_number: "" }, true),

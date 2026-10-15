@@ -242,7 +242,7 @@ void main() {
     await tester.ensureVisible(idol);
     await tester.enterText(idol, 'Aria');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Aria · LUMINA').last);
+    await tester.tap(find.text('艾莉娅 · LUMINA').last);
     await tester.pumpAndSettle();
     expect(fixture.options.queries.last, {
       'source': '专辑',

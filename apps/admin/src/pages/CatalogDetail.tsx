@@ -19,6 +19,7 @@ import { consoleApi, send } from "../api/client";
 import { useConsole } from "../state";
 import { names } from "../api/types";
 import RecordManager from "./RecordManager";
+import MediaIngestionStatus from "../components/MediaIngestionStatus";
 
 export default function CatalogDetail() {
   const { kind = "groups", id = "" } = useParams();
@@ -319,6 +320,11 @@ export default function CatalogDetail() {
             label: kind === "cards" ? "图片 / 素材" : "素材",
             children: content(
               <>
+                <MediaIngestionStatus
+                  kind={kind}
+                  id={id}
+                  canEdit={actor.role !== "operation_admin"}
+                />
                 <Space wrap>
                   {[
                     ["主图 / 正面", entity?.image_url],

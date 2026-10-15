@@ -159,91 +159,91 @@ void main() {
     expect(values, ['Lucky Draw']);
     expect(tester.takeException(), isNull);
   });
-  testWidgets(
-    'Other supplement submits stable fields and tags without group ownership',
-    (tester) async {
-      phone(tester);
-      final repository = MockScanFeedbackOptionsRepository();
-      final container = ProviderContainer(
-        overrides: [
-          catalogProvider.overrideWith((_) async => DemoCatalog.bundle),
-          scanFeedbackOptionsRepositoryProvider.overrideWithValue(repository),
-          catalogTagOptionsProvider('OTHER')
-              .overrideWith((_) async => const []),
-        ],
-      );
-      addTearDown(container.dispose);
-      await tester.runAsync(
-        () => container.read(sessionProvider.notifier).login(LoginMethod.phone),
-      );
-      await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: container,
-          child: MaterialApp(
-            theme: FanOsTheme.light,
-            home: Builder(
-              builder: (context) => Scaffold(
-                body: TextButton(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute<void>(
-                      builder: (_) => const CatalogMissingFeedbackPage(
-                        args: CatalogMissingFeedbackRouteArgs(
-                          source: '其他',
-                          groupId: 'group-lumina',
-                        ),
+  testWidgets('Other supplement includes its selected group association', (
+    tester,
+  ) async {
+    phone(tester);
+    final repository = MockScanFeedbackOptionsRepository();
+    final container = ProviderContainer(
+      overrides: [
+        catalogProvider.overrideWith((_) async => DemoCatalog.bundle),
+        scanFeedbackOptionsRepositoryProvider.overrideWithValue(repository),
+        catalogTagOptionsProvider('OTHER').overrideWith((_) async => const []),
+      ],
+    );
+    addTearDown(container.dispose);
+    await tester.runAsync(
+      () => container.read(sessionProvider.notifier).login(LoginMethod.phone),
+    );
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          theme: FanOsTheme.light,
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => const CatalogMissingFeedbackPage(
+                      args: CatalogMissingFeedbackRouteArgs(
+                        source: '其他',
+                        groupId: 'group-lumina',
                       ),
                     ),
                   ),
-                  child: const Text('open'),
                 ),
+                child: const Text('open'),
               ),
             ),
           ),
         ),
-      );
-      await tester.tap(find.text('open'));
-      await tester.pumpAndSettle();
-      expect(find.text('组合'), findsNothing);
-      await tester.enterText(
-        find.byKey(const Key('catalog-missing-name')),
-        'Brand Collaboration',
-      );
-      await tester.enterText(
-        find.byKey(const Key('catalog-missing-notes')),
-        '活动说明',
-      );
-      await tester.ensureVisible(find.byKey(const Key('catalog-tag-search')));
-      await tester.enterText(
-        find.byKey(const Key('catalog-tag-search')),
-        'Japan Exclusive',
-      );
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byKey(const Key('catalog-add-tag')));
-      await tester.tap(find.byKey(const Key('catalog-add-tag')));
-      await tester.pumpAndSettle();
-      FocusManager.instance.primaryFocus?.unfocus();
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(
-        find.byKey(const Key('submit-catalog-missing-feedback')),
-      );
-      await tester.tap(
-        find.byKey(const Key('submit-catalog-missing-feedback')),
-      );
-      await tester.pumpAndSettle();
-      final request = repository.suggestions.single;
-      expect(request.entityType, 'others');
-      expect(request.suggested.keys.toSet(), {
-        'missing_kind',
-        'name',
-        'original_name',
-        'start_date',
-        'end_date',
-        'description',
-        'tags',
-      });
-      expect(request.suggested['tags'], ['Japan Exclusive']);
-      expect(tester.takeException(), isNull);
-    },
-  );
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    expect(find.text('组合'), findsWidgets);
+    await tester.enterText(
+      find.byKey(const Key('catalog-missing-name')),
+      'Brand Collaboration',
+    );
+    await tester.enterText(
+      find.byKey(const Key('catalog-missing-notes')),
+      '活动说明',
+    );
+    await tester.ensureVisible(find.byKey(const Key('catalog-tag-search')));
+    await tester.enterText(
+      find.byKey(const Key('catalog-tag-search')),
+      'Japan Exclusive',
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('catalog-add-tag')));
+    await tester.tap(find.byKey(const Key('catalog-add-tag')));
+    await tester.pumpAndSettle();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const Key('submit-catalog-missing-feedback')),
+    );
+    await tester.tap(find.byKey(const Key('submit-catalog-missing-feedback')));
+    await tester.pumpAndSettle();
+    final request = repository.suggestions.single;
+    expect(request.entityType, 'others');
+    expect(request.suggested.keys.toSet(), {
+      'missing_kind',
+      'group_id',
+      'artists',
+      'missing_references',
+      'name',
+      'original_name',
+      'start_date',
+      'end_date',
+      'description',
+      'tags',
+    });
+    expect(request.suggested['group_id'], 'group-lumina');
+    expect(request.suggested['tags'], ['Japan Exclusive']);
+    expect(tester.takeException(), isNull);
+  });
 }

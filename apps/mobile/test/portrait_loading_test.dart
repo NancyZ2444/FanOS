@@ -1,15 +1,166 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:fan_os/core/api/api_client.dart';
 import 'package:fan_os/core/data/models.dart';
+import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/state/app_state.dart';
+import 'package:fan_os/features/catalog/presentation/catalog_page.dart';
 import 'package:fan_os/core/data/name_preferences.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/core/widgets/portrait_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+// Keep widget timing deterministic; real filesystem caching is tested below.
+class _WidgetPortraitCache extends PortraitCache {
+  _WidgetPortraitCache()
+    : super(
+        directory: () async => throw UnimplementedError(),
+        download: (_) async => throw UnimplementedError(),
+      );
+
+  int calls = 0;
+  File? recoveredFile;
+  File? _readyFile;
+
+  @override
+  File? peek(String url) => _readyFile;
+
+  @override
+  Future<File> get(String url) async {
+    calls++;
+    final file = recoveredFile;
+    if (file == null) throw const SocketException('transient timeout');
+    _readyFile = file;
+    notifyListeners();
+    return file;
+  }
+
+  @override
+  Future<void> evict(String url) async => _readyFile = null;
+}
 
 void main() {
+  testWidgets(
+    'a recovered shared image refreshes an already-failed profile tile',
+    (tester) async {
+      final dir = (await tester.runAsync(
+        () => Directory.systemTemp.createTemp('portrait-sync'),
+      ))!;
+      final cache = _WidgetPortraitCache();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 100,
+            height: 100,
+            child: PortraitImage(
+              url: 'https://example.test/yuqi.webp',
+              cache: cache,
+              fallback: const Text('loading'),
+              errorFallback: const Text('failed'),
+              fit: BoxFit.cover,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('failed'), findsOneWidget);
+      // A later detail view succeeds without rebuilding the earlier profile tab.
+      cache.recoveredFile = await tester.runAsync(() async {
+        final recorder = ui.PictureRecorder();
+        Canvas(recorder).drawColor(Colors.purple, BlendMode.src);
+        final picture = recorder.endRecording();
+        final image = await picture.toImage(2, 2);
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        image.dispose();
+        picture.dispose();
+        return File('${dir.path}/portrait.png')
+            .writeAsBytes(data!.buffer.asUint8List());
+      });
+      await tester.runAsync(() => cache.get('https://example.test/yuqi.webp'));
+      await tester.pump();
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+      });
+      await tester.pump();
+      expect(find.text('failed'), findsNothing);
+      final future = tester.widget<FutureBuilder<File>>(
+        find.byType(FutureBuilder<File>),
+      );
+      expect(future.future, isNotNull);
+      expect(cache.calls, 2);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(() => dir.delete(recursive: true));
+      cache.dispose();
+    },
+  );
+
+  testWidgets('transient image requests retry once and cancel after disposal', (
+    tester,
+  ) async {
+    final cache = _WidgetPortraitCache();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PortraitImage(
+          url: 'missing',
+          cache: cache,
+          fit: BoxFit.cover,
+          fallback: const SizedBox.shrink(),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump(const Duration(seconds: 5));
+    expect(cache.calls, 2);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 2));
+    expect(cache.calls, 2);
+    cache.dispose();
+  });
+
+  testWidgets('popular groups use full-card photos, mask and white text', (
+    tester,
+  ) async {
+    final data = CatalogBundle(
+      idols: [],
+      cards: [],
+      groups: [
+        FanGroup.fromJson({
+          'id': 'seventeen',
+          'name': 'SEVENTEEN',
+          'name_ko': '세븐틴',
+          'image_url': '/private/tmp/fan-os-missing-portrait.jpg',
+          'member_ids': ['a', 'b'],
+        }),
+      ],
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [catalogProvider.overrideWith((ref) async => data)],
+        child: MaterialApp(theme: FanOsTheme.light, home: const CatalogPage()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final card = find.byKey(const ValueKey('popular-group-seventeen'));
+    expect(
+      find.descendant(of: card, matching: find.byType(CircleAvatar)),
+      findsNothing,
+    );
+    final picture = tester.widget<FanImage>(
+      find.descendant(of: card, matching: find.byType(FanImage)),
+    );
+    expect(picture.imageUrl, '/private/tmp/fan-os-missing-portrait.jpg');
+    expect(picture.fit, BoxFit.cover);
+    final texts = tester.widgetList<Text>(
+      find.descendant(of: card, matching: find.byType(Text)),
+    );
+    expect(texts.every((text) => text.style?.color == Colors.white), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   test('phone resolves legacy loopback uploads against the actual backend', () {
     const backend = 'http://192.168.0.112:8000/api/v1';
     expect(

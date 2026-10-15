@@ -57,6 +57,8 @@ services:
       LOCAL_MEDIA_ROOT: /srv/api/data/uploads
       PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-http://localhost:5173/media}
       DEV_PHONE_CODE: ${DEV_PHONE_CODE:?Run cloud init first}
+      CATALOG_IMAGES_LOCAL_ONLY: 'true'
+      CATALOG_REMOTE_PORTRAITS_ENABLED: 'false'
     ports:
     - 127.0.0.1:8000:8000
     depends_on:
@@ -116,6 +118,30 @@ services:
         condition: service_started
     volumes:
     - fan_os_matcher_index:/srv/api/data/card_matcher
+    - fan_os_uploads:/srv/api/data/uploads
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  catalog-media-worker:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+    command: [python, -m, app.modules.catalog.media_worker]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://fan_os:${POSTGRES_PASSWORD}@postgres:5432/fan_os
+      STORAGE_BACKEND: local
+      LOCAL_MEDIA_ROOT: /srv/api/data/uploads
+      PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-http://localhost:5173/media}
+      CATALOG_IMAGE_HOSTS: ${CATALOG_IMAGE_HOSTS:-["upload.wikimedia.org"]}
+      JWT_SECRET: ${JWT_SECRET:?Run cloud init first}
+      AUTO_SEED: 'false'
+    depends_on:
+      api:
+        condition: service_started
+    volumes:
     - fan_os_uploads:/srv/api/data/uploads
     logging:
       driver: json-file

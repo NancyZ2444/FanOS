@@ -1,3 +1,5 @@
+import 'package:fan_os/app/theme.dart';
+
 import 'dart:async';
 
 import 'package:fan_os/core/data/models.dart';
@@ -131,7 +133,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     final idols = data.idols
         .where(
           (item) => matches(
-            '${item.displayName} ${item.name} ${item.nameEn} ${item.nameKo} ${item.nameTranslated} ${item.groupName} ${item.company} ${item.role}',
+            '${item.displayName} ${item.name} ${item.nameEn} ${item.nameKo} ${item.nameTranslated} ${item.realName} ${item.groupName} ${item.company} ${item.role}',
           ),
         )
         .toList();
@@ -231,7 +233,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                   (group) => ListTile(
                     onTap: () => context.push('/group/${group.id}'),
                     leading: _GradientAvatar(
-                      imageUrl: group.imageUrl,
+                      imageUrl: group.thumbnailUrl ?? group.imageUrl,
                       label: group.displayName.characters.first,
                       start: group.colorStart,
                       end: group.colorEnd,
@@ -261,7 +263,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                   (item) => _SearchEntity(
                     title: item.displayName,
                     subtitle:
-                        '${item.secondaryName.isEmpty ? item.artistName : item.secondaryName} · ${item.albumType} ${item.tags.map((t) => t.name).join(" ")} · ${item.releaseDate}',
+                        '${item.secondaryName.isEmpty ? data.artistLabel(item.artists, item.artistName) : item.secondaryName} · ${item.albumType} ${item.tags.map((t) => t.name).join(" ")} · ${item.releaseDate}',
                     icon: Icons.album_outlined,
                     imageUrl: item.frontImageUrl,
                     start: item.colorStart,
@@ -338,12 +340,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           GridView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: 9,
-              mainAxisSpacing: 16,
-              childAspectRatio: .52,
-            ),
+            gridDelegate: fanCardGrid(context),
             itemCount: _selectedType == '全部'
                 ? cards.take(6).length
                 : cards.length,
@@ -524,7 +521,7 @@ class _GradientAvatar extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        gradient: LinearGradient(colors: [Color(start), Color(end)]),
+        color: FanColors.lavenderSoft,
       ),
       child: ClipOval(
         child: FanImage(

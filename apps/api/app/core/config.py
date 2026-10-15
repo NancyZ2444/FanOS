@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     public_media_base_url: str = "http://localhost:8000/media"
     catalog_image_hosts: list[str] = Field(default_factory=lambda: ["upload.wikimedia.org"])
     catalog_remote_portraits_enabled: bool = True
+    catalog_images_local_only: bool = True
     catalog_image_user_agent: str = "FanOS-CatalogThumbnail/1.0"
     s3_endpoint_url: str | None = None
     s3_access_key: str | None = None

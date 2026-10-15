@@ -1,3 +1,9 @@
+String? _firstImage(Iterable<dynamic> values) => values
+    .whereType<String>()
+    .map((value) => value.trim())
+    .where((value) => value.isNotEmpty)
+    .firstOrNull;
+
 class IdolProfile {
   const IdolProfile({
     required this.id,
@@ -15,8 +21,10 @@ class IdolProfile {
     this.nameEn = '',
     this.nameKo = '',
     this.nameTranslated = '',
+    this.realName = '',
     this.imageUrl,
     this.thumbnailUrl,
+    this.coverImageUrl,
     this.groupIds = const [],
   });
 
@@ -35,25 +43,28 @@ class IdolProfile {
   final String nameEn;
   final String nameKo;
   final String nameTranslated;
+  final String realName;
   final String? imageUrl;
   final String? thumbnailUrl;
+  final String? coverImageUrl;
   final List<String> groupIds;
   String get displayGroupName => groupName;
 
-  String get displayName => nameEn.isNotEmpty
-      ? nameEn
-      : (name.isNotEmpty
-            ? name
-            : (nameTranslated.isNotEmpty ? nameTranslated : nameKo));
-  String get secondaryName => nameKo.isNotEmpty && nameKo != displayName
-      ? nameKo
-      : (nameTranslated.isNotEmpty && nameTranslated != displayName
-            ? nameTranslated
-            : '');
+  List<String> get _names {
+    final seen = <String>{};
+    return [nameTranslated, name, nameKo, nameEn, realName]
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty && seen.add(s.toLowerCase()))
+        .toList();
+  }
+
+  String get officialDisplayName => _names.firstOrNull ?? '未命名艺人';
+  String get displayName => officialDisplayName;
+  String get secondaryName => _names.skip(1).firstOrNull ?? '';
 
   factory IdolProfile.fromJson(Map<String, dynamic> json) => IdolProfile(
     id: json['id'] as String,
-    name: json['name'] as String,
+    name: (json['name'] as String?) ?? '',
     groupName: (json['group_name'] as String?) ?? '',
     initials: (json['initials'] as String?) ?? '?',
     colorStart: (json['color_start'] as num?)?.toInt() ?? 0xFF8B7CFF,
@@ -70,8 +81,10 @@ class IdolProfile {
     nameEn: (json['name_en'] as String?) ?? '',
     nameKo: (json['name_ko'] as String?) ?? '',
     nameTranslated: (json['name_translated'] as String?) ?? '',
-    imageUrl: json['image_url'] as String?,
-    thumbnailUrl: json['thumbnail_url'] as String?,
+    realName: (json['real_name'] as String?) ?? '',
+    imageUrl: _firstImage([json['image_url'], json['cover_image']]),
+    thumbnailUrl: _firstImage([json['thumbnail_url']]),
+    coverImageUrl: _firstImage([json['cover_image'], json['image_url']]),
     groupIds: (json['group_ids'] as List<dynamic>? ?? const [])
         .whereType<String>()
         .toList(),
@@ -110,6 +123,8 @@ class FanGroup {
     this.region = '',
     this.formerMemberIds = const [],
     this.imageUrl,
+    this.coverImageUrl,
+    this.thumbnailUrl,
     this.nameEn = '',
     this.nameKo = '',
     this.nameTranslated = '',
@@ -127,6 +142,8 @@ class FanGroup {
   final String region;
   final List<String> formerMemberIds;
   final String? imageUrl;
+  final String? coverImageUrl;
+  final String? thumbnailUrl;
   final String nameEn;
   final String nameKo;
   final String nameTranslated;
@@ -158,7 +175,9 @@ class FanGroup {
     formerMemberIds: (json['former_member_ids'] as List<dynamic>? ?? const [])
         .whereType<String>()
         .toList(),
-    imageUrl: json['image_url'] as String?,
+    imageUrl: _firstImage([json['image_url'], json['cover_image']]),
+    coverImageUrl: _firstImage([json['cover_image'], json['image_url']]),
+    thumbnailUrl: _firstImage([json['thumbnail_url']]),
     nameEn: (json['name_en'] as String?) ?? '',
     nameKo: (json['name_ko'] as String?) ?? '',
     nameTranslated: (json['name_translated'] as String?) ?? '',
@@ -185,22 +204,27 @@ class CollectibleCard {
     this.titleKo = '',
     this.titleTranslated = '',
     this.imageUrl,
+    this.thumbnailUrl,
     this.backImageUrl,
     this.sourceEntityId,
     this.sourceEntityType,
     this.entityVersionId,
     this.cardNumber = '',
+    this.isGroupCard = false,
   });
 
   final List<CatalogTag> tags;
   final String id;
   final String title;
   final String? imageUrl;
+  final String? thumbnailUrl;
   final String? backImageUrl;
   final String? sourceEntityId;
   final String? sourceEntityType;
   final String? entityVersionId;
   final String cardNumber;
+  final bool isGroupCard;
+  bool get hasIndividualIdol => !isGroupCard && idolId.isNotEmpty;
   final String idolId;
   final String idolName;
   final String groupId;
@@ -216,16 +240,47 @@ class CollectibleCard {
   final String titleKo;
   final String titleTranslated;
 
-  String get displayTitle => titleEn.isNotEmpty
-      ? titleEn
-      : (title.isNotEmpty
-            ? title
-            : (titleTranslated.isNotEmpty ? titleTranslated : titleKo));
-  String get secondaryTitle => titleKo.isNotEmpty && titleKo != displayTitle
-      ? titleKo
-      : (titleTranslated.isNotEmpty && titleTranslated != displayTitle
-            ? titleTranslated
-            : '');
+  // Old imported titles are retained as data, never as an App-facing name.
+  String get displayTitle {
+    final parts = <String>[];
+    final seen = <String>{};
+    for (final value in [source, version, cardType]) {
+      for (final part in value.split(' · ').map((s) => s.trim())) {
+        if (part.isNotEmpty && seen.add(part.toLowerCase())) parts.add(part);
+      }
+    }
+    return parts.isEmpty ? '小卡资料待补充' : parts.join(' · ');
+  }
+
+  String get secondaryTitle => '';
+
+  CollectibleCard withIdolName(String value) => CollectibleCard(
+    id: id,
+    title: title,
+    idolId: idolId,
+    idolName: value,
+    groupId: groupId,
+    groupName: groupName,
+    source: source,
+    cardType: cardType,
+    version: version,
+    releaseDate: releaseDate,
+    region: region,
+    colorStart: colorStart,
+    colorEnd: colorEnd,
+    tags: tags,
+    titleEn: titleEn,
+    titleKo: titleKo,
+    titleTranslated: titleTranslated,
+    imageUrl: imageUrl,
+    thumbnailUrl: thumbnailUrl,
+    backImageUrl: backImageUrl,
+    sourceEntityId: sourceEntityId,
+    sourceEntityType: sourceEntityType,
+    entityVersionId: entityVersionId,
+    cardNumber: cardNumber,
+    isGroupCard: isGroupCard,
+  );
 
   factory CollectibleCard.fromJson(Map<String, dynamic> json) =>
       CollectibleCard(
@@ -233,12 +288,17 @@ class CollectibleCard {
         id: json['id'] as String,
         title: json['title'] as String,
         imageUrl: json['image_url'] as String?,
+        thumbnailUrl: json['thumbnail_url'] as String?,
         backImageUrl: json['back_image_url'] as String?,
         sourceEntityId: json['source_entity_id'] as String?,
         sourceEntityType: json['source_entity_type'] as String?,
         entityVersionId: json['entity_version_id'] as String?,
         cardNumber: (json['card_number'] as String?) ?? '',
-        idolId: json['idol_id'] as String,
+        isGroupCard:
+            json['is_group_pc'] == true ||
+            (json['idol_ids'] is List &&
+                (json['idol_ids'] as List).toSet().length > 1),
+        idolId: (json['idol_id'] as String?) ?? '',
         idolName: json['idol_name'] as String,
         groupId: (json['group_id'] as String?) ?? '',
         groupName: json['group_name'] as String,
@@ -271,6 +331,46 @@ class CatalogBundle {
   final List<CatalogAlbum> albums;
   final List<CatalogEvent> events;
   final List<CatalogOther> others;
+
+  String artistLabel(List<CatalogArtist> artists, String fallback) {
+    final labels = artists
+        .map(
+          (artist) => artist.type == 'idols'
+              ? idols.where((i) => i.id == artist.id).firstOrNull?.displayName
+              : groups.where((g) => g.id == artist.id).firstOrNull?.displayName,
+        )
+        .whereType<String>()
+        .where((s) => s.isNotEmpty)
+        .toSet();
+    return labels.isEmpty ? fallback : labels.join(' · ');
+  }
+
+  CatalogAlbum? albumForCard(CollectibleCard card) {
+    if (card.sourceEntityId != null) {
+      return card.sourceEntityType == 'ALBUM'
+          ? albums.where((a) => a.id == card.sourceEntityId).firstOrNull
+          : null;
+    }
+    // Legacy seed/import rows contain a source label instead of a source ID.
+    final matches = albums
+        .where(
+          (a) =>
+              a.belongsToGroup(card.groupId) &&
+              (card.source == a.name || card.source.startsWith('${a.name} · ')),
+        )
+        .toList();
+    return matches.length == 1 ? matches.single : null;
+  }
+
+  String cardSourceLabel(CollectibleCard card) =>
+      albumForCard(card)?.displayName ?? card.source;
+
+  String cardVersionLabel(CollectibleCard card) =>
+      albumForCard(card)?.versionDetails
+          .where((v) => v.id == card.entityVersionId)
+          .firstOrNull
+          ?.name ??
+      card.version;
 }
 
 class CatalogAlbum {
@@ -293,6 +393,7 @@ class CatalogAlbum {
     this.nameTranslated = '',
     this.frontImageUrl,
     this.backImageUrl,
+    this.thumbnailUrl,
   });
 
   final List<CatalogTag> tags;
@@ -317,6 +418,7 @@ class CatalogAlbum {
   final String nameTranslated;
   final String? frontImageUrl;
   final String? backImageUrl;
+  final String? thumbnailUrl;
 
   String get displayName => nameEn.isNotEmpty
       ? nameEn
@@ -362,7 +464,12 @@ class CatalogAlbum {
     nameEn: (json['name_en'] as String?) ?? '',
     nameKo: (json['name_ko'] as String?) ?? '',
     nameTranslated: (json['name_translated'] as String?) ?? '',
-    frontImageUrl: (json['front_image_url'] ?? json['image_url']) as String?,
+    frontImageUrl: _firstImage([
+      json['image_url'],
+      json['front_image_url'],
+      json['cover_image'],
+    ]),
+    thumbnailUrl: json['thumbnail_url'] as String?,
     backImageUrl: json['back_image_url'] as String?,
   );
 }
@@ -384,6 +491,7 @@ class CatalogEvent {
     required this.colorEnd,
     this.parentEventId,
     this.imageUrl,
+    this.thumbnailUrl,
     this.isOnline = false,
     this.platform = '',
     this.description = '',
@@ -409,6 +517,7 @@ class CatalogEvent {
   final String venue;
   final String? parentEventId;
   final String? imageUrl;
+  final String? thumbnailUrl;
   final bool isOnline;
   final String platform;
   String get locationLabel =>
@@ -450,6 +559,7 @@ class CatalogEvent {
     venue: (json['venue'] as String?) ?? '',
     parentEventId: json['parent_event_id'] as String?,
     imageUrl: json['image_url'] as String?,
+    thumbnailUrl: json['thumbnail_url'] as String?,
     isOnline: (json['is_online'] as bool?) ?? false,
     platform: (json['platform'] as String?) ?? '',
     colorStart: (json['color_start'] as num?)?.toInt() ?? 0xFF8B7CFF,
@@ -471,8 +581,10 @@ class CatalogOther {
     this.description = '',
     this.tags = const [],
     this.imageUrl,
+    this.thumbnailUrl,
     this.groupId = '',
     this.artistName = '',
+    this.artists = const [],
     this.type = '',
     this.releaseDate = '',
     this.region = '',
@@ -486,7 +598,12 @@ class CatalogOther {
   final String id, name, originalName, startDate, endDate, description;
   final List<CatalogTag> tags;
   final String? imageUrl;
-  // Read-only legacy presentation fields; new Other forms use the six stable fields.
+  final String? thumbnailUrl;
+  final List<CatalogArtist> artists;
+  bool belongsToGroup(String id) =>
+      groupId == id || artists.any((a) => a.type == 'groups' && a.id == id);
+  bool belongsToIdol(String id) =>
+      artists.any((a) => a.type == 'idols' && a.id == id);
   final String groupId,
       artistName,
       type,
@@ -507,7 +624,12 @@ class CatalogOther {
     endDate: json['end_date'] as String? ?? '',
     description: json['description'] as String? ?? '',
     imageUrl: json['image_url'] as String?,
+    thumbnailUrl: json['thumbnail_url'] as String?,
     groupId: json['group_id'] as String? ?? '',
+    artistName: json['artist_name'] as String? ?? '',
+    artists: (json['artists'] as List? ?? [])
+        .map((a) => CatalogArtist.fromJson(Map<String, dynamic>.from(a as Map)))
+        .toList(),
     tags: catalogTags(json, 'OTHER'),
   );
 }
@@ -735,4 +857,6 @@ class CatalogVersion {
 class CatalogArtist {
   const CatalogArtist({required this.type, required this.id});
   final String type, id;
+  factory CatalogArtist.fromJson(Map<String, dynamic> json) =>
+      CatalogArtist(type: json['type'] as String, id: json['id'] as String);
 }

@@ -1,0 +1,18 @@
+Fan OS 相册材质 / 2026-10-15
+
+生成方式：内置 image_gen（imagegen skill），未使用 CLI/API 中转。
+这里只生成中性的材质位图；书脊、照片、文字、固定叠放、白边和投影均由 Flutter 实时分层绘制。
+
+项目文件：
+/Users/nancy/Documents/ChatGPT/FanOS/apps/mobile/assets/album/materials/paper.png
+/Users/nancy/Documents/ChatGPT/FanOS/apps/mobile/assets/album/materials/linen.png
+
+纸纹生成提示词（规格归档）：
+Create a seamless square texture tile of fine archival uncoated ivory paper for a Flutter photo-album interface. Orthographic flat surface, evenly lit, tiny subtle paper fibers, extremely low contrast, neutral warm ivory. Clean and quiet at normal viewing distance; fine texture visible only close up. Uniform scale throughout; no objects, photos, text, logos, borders, vignette, directional shadows, stains, strong grain or obvious noise. The app will recolor the surface and render its own lighting separately.
+
+布纹生成提示词（规格归档）：
+Create a seamless square texture tile of fine dense ivory linen bookbinding cloth for a Flutter collectible-album cover. Orthographic flat surface with tiny regular warp and weft, delicate low-contrast weave, neutral warm ivory, uniform even lighting. Keep the texture clean and understated, suitable for repeating at physical book-cover scale. No objects, book silhouette, photos, text, logos, seams, folds, highlights, vignette, directional shadows, coarse fibers or obvious noise. Flutter will independently draw pigment, book spine, photographs, lettering and soft warm-gray shadows.
+
+使用：AlbumMaterial，ExactAssetImage(scale: 8)、ImageRepeat.repeat、BoxFit.none。
+纹理保持固定尺度，不随封面画布拉伸；使用独立底色和低透明度材质层。
+原有相册的背景色和手工排版保留；新建默认色为 #E8EBE3，推荐色为低饱和浅绿、雾蓝、灰粉、米白和雾紫。

@@ -318,7 +318,7 @@ export default function CardEditor() {
             placeholder="https:// 官方页面或来源地址"
             onChange={(e) => setSource(key, "source_url", e.target.value)}
           />,
-          key !== "source_info",
+          key !== "source_info" && data[key]?.source_type !== "USER_SUBMITTED",
         )}
       </div>
       {!short && (
@@ -1335,6 +1335,25 @@ export default function CardEditor() {
                     {h.data.source_url || "历史记录未填写来源"}
                   </a>
                   <p>操作人：{h.operator_id}</p>
+                  {h.data.version_identity && (
+                    <Tag color="purple">
+                      {h.data.version_identity === "OFFICIAL_CATALOG"
+                        ? "正式图鉴版本"
+                        : "用户提交版本"}
+                    </Tag>
+                  )}
+                  {h.data.submissions?.map((s: any) => (
+                    <p key={s.feedback_id}>
+                      提交用户：{s.user_id} · 反馈：{s.feedback_id} ·
+                      原始图片版本：{s.original_image_version_id}
+                    </p>
+                  ))}
+                  {h.data.converted_at && (
+                    <p>
+                      转正式图鉴：{formatTime(h.data.converted_at)} · 审核人：
+                      {h.data.converted_by}
+                    </p>
+                  )}
                 </div>
               ),
             }))}

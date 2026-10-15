@@ -141,11 +141,8 @@ void main() {
     expect(find.text('还没有设置本命'), findsOneWidget);
     expect(find.text('添加本命'), findsOneWidget);
     expect(find.byKey(const Key('empty-favorites-prompt')), findsOneWidget);
-    expect(find.byKey(const Key('home-feed-favorite-hint')), findsOneWidget);
-    expect(
-      tester.getSize(find.byKey(const Key('home-feed-favorite-hint'))).height,
-      lessThanOrEqualTo(40),
-    );
+    expect(find.byKey(const Key('home-feed-favorite-hint')), findsNothing);
+    expect(find.textContaining('本命动态'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

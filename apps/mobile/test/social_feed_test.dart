@@ -1,4 +1,5 @@
 import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/config/feature_flags.dart';
 import 'package:fan_os/core/data/social_feed_models.dart';
 import 'package:fan_os/core/data/social_feed_repository.dart';
 import 'package:fan_os/core/state/app_state.dart';
@@ -116,7 +117,9 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final container = ProviderContainer();
+    final container = ProviderContainer(
+      overrides: [idolFeedEnabledProvider.overrideWithValue(true)],
+    );
     addTearDown(container.dispose);
     container.read(favoritesProvider.notifier).hydrate({
       'idol-aria',
@@ -159,7 +162,9 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final container = ProviderContainer();
+    final container = ProviderContainer(
+      overrides: [idolFeedEnabledProvider.overrideWithValue(true)],
+    );
     addTearDown(container.dispose);
     await tester.runAsync(
       () => container.read(socialFeedProvider.notifier).ensureLoaded(),
@@ -224,6 +229,7 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
+        overrides: [idolFeedEnabledProvider.overrideWithValue(true)],
         child: MaterialApp(
           theme: FanOsTheme.light,
           home: GroupDetailPage(groupId: 'group-lumina'),
@@ -244,6 +250,7 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
+        overrides: [idolFeedEnabledProvider.overrideWithValue(true)],
         child: MaterialApp(
           theme: FanOsTheme.light,
           home: IdolDetailPage(idolId: 'idol-aria'),

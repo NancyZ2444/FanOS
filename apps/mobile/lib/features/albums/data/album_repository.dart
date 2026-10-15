@@ -9,6 +9,7 @@ abstract interface class AlbumRepository {
     String sort = 'updated',
     int offset = 0,
     bool favorites = false,
+    String status = 'ALL',
     String? userId,
   });
   Future<PhotocardAlbum> get(String id);
@@ -34,6 +35,7 @@ class ApiAlbumRepository implements AlbumRepository {
     String sort = 'updated',
     int offset = 0,
     bool favorites = false,
+    String status = 'ALL',
     String? userId,
   }) async {
     final path = favorites
@@ -44,7 +46,7 @@ class ApiAlbumRepository implements AlbumRepository {
     return AlbumShelfData.fromJson(
       await client.getData(
         path,
-        query: {'q': q, 'sort': sort, 'offset': offset},
+        query: {'q': q, 'sort': sort, 'offset': offset, 'status': status},
       ) as AlbumJson,
     );
   }
@@ -162,13 +164,18 @@ class MockAlbumRepository implements AlbumRepository {
     String sort = 'updated',
     int offset = 0,
     bool favorites = false,
+    String status = 'ALL',
     String? userId,
   }) async {
     await _load();
     final rows = favorites || userId != null
         ? <PhotocardAlbum>[]
         : _albums.values
-              .where((a) => a.name.toLowerCase().contains(q.toLowerCase()))
+              .where(
+                (a) =>
+                    a.name.toLowerCase().contains(q.toLowerCase()) &&
+                    (status == 'ALL' || a.json['status'] == status),
+              )
               .toList();
     if (sort == 'name') {
       rows.sort((a, b) => a.name.compareTo(b.name));

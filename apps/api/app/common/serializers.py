@@ -18,6 +18,7 @@ from app.models import (
     UserIdol,
     UserWishlistItem,
 )
+from app.modules.catalog.media_import import managed_thumbnail, public_image
 
 
 def card_payload(db: Session, card: Card) -> dict[str, object]:
@@ -55,9 +56,10 @@ def card_payload(db: Session, card: Card) -> dict[str, object]:
         "region": card.region,
         "color_start": card.color_start,
         "color_end": card.color_end,
-        "image_url": card.image_url,
+        "image_url": public_image(card.image_url),
+        "thumbnail_url": managed_thumbnail(metadata, card.image_url),
         "status": card.status,
-        "back_image_url": (card.admin_data or {}).get("back_image_url"),
+        "back_image_url": public_image((card.admin_data or {}).get("back_image_url")),
         **{
             key: metadata[key]
             for key in (
@@ -98,9 +100,9 @@ def catalog_album_payload(album: CatalogAlbum) -> dict[str, object]:
         "description": album.description,
         "color_start": album.color_start,
         "color_end": album.color_end,
-        "image_url": album.image_url,
-        "front_image_url": album.front_image_url or album.image_url,
-        "back_image_url": album.back_image_url,
+        "image_url": public_image(album.image_url),
+        "front_image_url": public_image(album.front_image_url or album.image_url),
+        "back_image_url": public_image(album.back_image_url),
     }
 
 
@@ -124,7 +126,7 @@ def catalog_event_payload(event: CatalogEvent) -> dict[str, object]:
         "description": event.description,
         "color_start": event.color_start,
         "color_end": event.color_end,
-        "image_url": event.image_url,
+        "image_url": public_image(event.image_url),
     }
 
 
@@ -144,7 +146,7 @@ def catalog_merchandise_payload(item: CatalogMerchandise) -> dict[str, object]:
         "description": item.description,
         "color_start": item.color_start,
         "color_end": item.color_end,
-        "image_url": item.image_url,
+        "image_url": public_image(item.image_url),
     }
 
 

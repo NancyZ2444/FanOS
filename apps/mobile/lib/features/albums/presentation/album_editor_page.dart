@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'album_editor_panels.dart';
+
 import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/features/albums/data/album_models.dart';
@@ -29,6 +31,36 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
   bool _finishing = false;
   bool _allowPop = false;
   bool _leaving = false;
+  Widget? _panel;
+  VoidCallback? _cancelPanel;
+  AlbumJson? _backgroundPreview;
+  bool _drawing = false;
+  String _penColor = '#6D5DD3';
+  double _penWidth = 3;
+  final List<AlbumJson> _strokes = [];
+  AlbumJson? _stroke;
+  Future<T?> _openPanel<T>(Widget Function(ValueChanged<T?> close) builder) {
+    final completer = Completer<T?>();
+    void close(T? result) {
+      if (completer.isCompleted) return;
+      if (mounted) {
+        setState(() {
+          _panel = null;
+          _cancelPanel = null;
+          _backgroundPreview = null;
+        });
+      }
+      completer.complete(result);
+    }
+
+    setState(() {
+      _panel = builder(close);
+      _cancelPanel = () => close(null);
+      _element = null;
+    });
+    return completer.future;
+  }
+
   PhotocardAlbum get _album => _controller.album!;
   List<AlbumJson> get _resources =>
       ref.read(albumResourcesProvider).value ?? <AlbumJson>[];
@@ -48,15 +80,27 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
     });
   }
 
-  void _editCanvas(void Function(AlbumJson canvas) change, {String? group}) =>
-      _controller.edit((d) {
-        final canvas = _page == 0
-            ? d['cover'] as AlbumJson
-            : ((d['pages'] as List)[_page - 1] as AlbumJson)['config']
-                  as AlbumJson;
-        change(canvas);
-      }, group: group);
+  void _editCanvas(
+    void Function(AlbumJson canvas) change, {
+    String? group,
+  }) => _controller.edit((d) {
+    final canvas = _page == 0
+        ? d['cover'] as AlbumJson
+        : ((d['pages'] as List)[_page - 1] as AlbumJson)['config'] as AlbumJson;
+    change(canvas);
+    if (_page == 0) {
+      final view = d['card_view'] as AlbumJson;
+      view['background'] = cloneAlbumJson(canvas['background'] as AlbumJson);
+      if ((canvas['elements'] as List).isNotEmpty) {
+        view['cover_style'] = 'CUSTOM';
+      }
+    }
+  }, group: group);
   Future<void> _back() async {
+    if (_panel != null) {
+      _cancelPanel?.call();
+      return;
+    }
     if (_leaving) return;
     _leaving = true;
     await _controller.retainDraft();
@@ -307,184 +351,74 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
     },
   };
   Future<void> _text({AlbumJson? element}) async {
-    final style = cloneAlbumJson(
-      (element?['style'] as AlbumJson?) ??
-          {
-            'color': '#342A56',
-            'font_size': 24.0,
-            'font_family': 'system',
-            'bold': true,
-          },
+    if (_page != 0) return;
+    final result = await _openPanel<AlbumJson>(
+      (close) => AlbumTextPanel(element: element, onClose: close),
     );
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => AlbumInputScope(
-        initialValues: {'text': element?['content'] as String? ?? ''},
-        builder: (context, inputs) {
-          final controller = inputs['text']!;
-          return StatefulBuilder(
-            builder: (context, setDialogState) => AlertDialog(
-              title: Text(element == null ? '添加文字' : '编辑文字'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    TextField(
-                      controller: controller,
-                      maxLength: 500,
-                      maxLines: 3,
-                      decoration: const InputDecoration(
-                        hintText: '写下属于这本相册的心情',
-                      ),
-                    ),
-                    Slider(
-                      min: 8,
-                      max: 96,
-                      value: (style['font_size'] as num).toDouble(),
-                      label: '${style['font_size']}',
-                      onChanged: (v) =>
-                          setDialogState(() => style['font_size'] = v),
-                    ),
-                    DropdownButton<String>(
-                      value: style['font_family'] as String,
-                      items: const [
-                        DropdownMenuItem(value: 'system', child: Text('系统字体')),
-                        DropdownMenuItem(value: 'serif', child: Text('衬线字体')),
-                        DropdownMenuItem(
-                          value: 'monospace',
-                          child: Text('等宽字体'),
-                        ),
-                      ],
-                      onChanged: (v) =>
-                          setDialogState(() => style['font_family'] = v),
-                    ),
-                    Wrap(
-                      spacing: 10,
-                      children: [
-                        for (final hex in [
-                          '#342A56',
-                          '#FFFFFF',
-                          '#8B7CFF',
-                          '#FF7897',
-                          '#161825',
-                        ])
-                          InkWell(
-                            onTap: () =>
-                                setDialogState(() => style['color'] = hex),
-                            child: CircleAvatar(
-                              radius: 16,
-                              backgroundColor: albumColor(hex),
-                              child: style['color'] == hex
-                                  ? const Icon(
-                                      Icons.check,
-                                      size: 16,
-                                      color: Colors.grey,
-                                    )
-                                  : null,
-                            ),
-                          ),
-                      ],
-                    ),
-                    SwitchListTile(
-                      title: const Text('加粗'),
-                      value: style['bold'] == true,
-                      onChanged: (v) => setDialogState(() => style['bold'] = v),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('取消'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(context, controller.text),
-                  child: const Text('确定'),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-    if (value == null || value.trim().isEmpty || !mounted) return;
+    if (mounted && element != null) setState(() => _element = element['id']);
+    if (result == null || (result['content'] as String).isEmpty || !mounted) {
+      return;
+    }
     _editCanvas((canvas) {
       final elements = (canvas['elements'] as List).cast<AlbumJson>();
       if (element == null) {
-        elements.add(_newElement('TEXT', value)..['style'] = style);
+        elements.add(
+          _newElement('TEXT', result['content'])..['style'] = result['style'],
+        );
       } else {
-        final current = elements.firstWhere((e) => e['id'] == element['id']);
-        current['content'] = value;
-        current['style'] = style;
+        elements.firstWhere((e) => e['id'] == element['id']).addAll(result);
       }
     });
   }
 
   Future<void> _stickers({bool emoji = false}) async {
-    final choices = emoji
-        ? [
-            for (final s in [
-              '🎀',
-              '💜',
-              '✨',
-              '🌸',
-              '🫶',
-              '🦋',
-              '⭐',
-              '🌙',
-              '🍒',
-              '☁️',
-              '💎',
-              '🌈',
-            ])
-              {'id': s, 'name': s, 'symbol': s},
-          ]
-        : [
-            for (final r in _resources.where((r) => r['kind'] == 'STICKER'))
-              {
-                'id': r['id'],
-                'name': r['name'],
-                'symbol': (r['config'] as AlbumJson)['symbol'],
-              },
-          ];
-    final choice = await showModalBottomSheet<AlbumJson>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Wrap(
-            spacing: 14,
-            runSpacing: 14,
-            children: [
-              for (final c in choices)
-                InkWell(
-                  onTap: () => Navigator.pop(context, c),
-                  child: Container(
-                    width: 70,
-                    height: 70,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: FanColors.lavenderSoft,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Text(
-                      c['symbol'] as String? ?? '✦',
-                      style: const TextStyle(fontSize: 27),
-                    ),
-                  ),
+    if (_page != 0) return;
+    final choices = _resources.where((r) => r['kind'] == 'STICKER').toList();
+    final choice = await _openPanel<AlbumJson>(
+      (close) => AlbumToolPanel(
+        title: '官方贴纸',
+        onCancel: () => close(null),
+        onDone: () => close(null),
+        child: choices.isEmpty
+            ? const Padding(padding: EdgeInsets.all(24), child: Text('暂无可用贴纸'))
+            : LayoutBuilder(
+                builder: (context, bounds) => Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    for (final r in choices)
+                      SizedBox(
+                        width: (bounds.maxWidth - 36) / 4,
+                        height: 64,
+                        child: InkWell(
+                          onTap: () => close(r),
+                          borderRadius: BorderRadius.circular(12),
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: FanColors.canvas,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Center(
+                              child: Text(
+                                (r['config'] as AlbumJson)['symbol']
+                                        as String? ??
+                                    '◇',
+                                style: const TextStyle(fontSize: 27),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-            ],
-          ),
-        ),
+              ),
       ),
     );
     if (choice != null && mounted) {
       _editCanvas(
         (canvas) => (canvas['elements'] as List).add(
           _newElement(
-            emoji ? 'EMOJI' : 'STICKER',
+            'STICKER',
             choice['id'] as String,
             width: .25,
             height: .16,
@@ -498,7 +432,15 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
     final original = cardView
         ? _album.cardView['background'] as AlbumJson
         : _canvas['background'] as AlbumJson;
-    final result = await editAlbumBackground(context, original, _resources);
+    final result = cardView
+        ? await editAlbumBackground(context, original, _resources)
+        : await _openPanel<AlbumJson>(
+            (close) => AlbumBackgroundPanel(
+              original: original,
+              onClose: close,
+              onPreview: (bg) => setState(() => _backgroundPreview = bg),
+            ),
+          );
     if (result == null || !mounted) return;
     if (cardView) {
       _controller.edit(
@@ -508,6 +450,168 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
       _editCanvas((canvas) => canvas['background'] = result);
     }
   }
+
+  Future<void> _brush() async {
+    if (_page != 0) return;
+    setState(() {
+      _drawing = true;
+      _strokes.clear();
+    });
+    final save = await _openPanel<bool>(
+      (close) => StatefulBuilder(
+        builder: (context, update) => AlbumToolPanel(
+          title: '封面画笔',
+          onCancel: () => close(false),
+          onDone: () => close(true),
+          child: Column(
+            children: [
+              const Text(
+                '在上方画布绘制，取消不会保留本次笔迹',
+                style: TextStyle(fontSize: 14, color: FanColors.textSecondary),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Text('粗细'),
+                  Expanded(
+                    child: Slider(
+                      value: _penWidth,
+                      min: 1,
+                      max: 12,
+                      onChanged: (v) => update(() => _penWidth = v),
+                    ),
+                  ),
+                  Text('${_penWidth.round()}'),
+                ],
+              ),
+              Wrap(
+                spacing: 12,
+                children: [
+                  for (final color in [
+                    '#6D5DD3',
+                    '#151C32',
+                    '#AD7782',
+                    '#698776',
+                  ])
+                    IconButton(
+                      tooltip: color,
+                      onPressed: () => update(() => _penColor = color),
+                      icon: Icon(
+                        _penColor == color ? Icons.check_circle : Icons.circle,
+                        color: albumColor(color),
+                      ),
+                    ),
+                ],
+              ),
+              TextButton.icon(
+                onPressed: () {
+                  if (_strokes.isNotEmpty) {
+                    setState(() => _strokes.removeLast());
+                  }
+                },
+                icon: const Icon(Icons.undo),
+                label: const Text('撤回一笔'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (save == true && _strokes.isNotEmpty) {
+      _editCanvas((canvas) => (canvas['elements'] as List).addAll(_strokes));
+    }
+    setState(() {
+      _drawing = false;
+      _strokes.clear();
+      _stroke = null;
+    });
+  }
+
+  void _strokePoint(Offset point, Size size) {
+    final points = _stroke?['points'] as List?;
+    if (points == null || points.length >= 512) return;
+    setState(
+      () => points.add([
+        (point.dx / size.width).clamp(0.0, 1.0),
+        (point.dy / size.height).clamp(0.0, 1.0),
+      ]),
+    );
+  }
+
+  Widget _coverCanvas(
+    PhotocardAlbum album,
+    List<AlbumJson> resources,
+  ) => LayoutBuilder(
+    builder: (context, bounds) => Stack(
+      fit: StackFit.expand,
+      children: [
+        AlbumCanvasWidget(
+          config: {
+            ...album.cover,
+            if (_backgroundPreview != null) 'background': _backgroundPreview,
+            'elements': [
+              ...(album.cover['elements'] as List),
+              ..._strokes,
+              ?_stroke,
+            ],
+          },
+          album: album,
+          showName: true,
+          resources: resources,
+          selectedId: _element,
+          onSelect: _drawing
+              ? null
+              : (id) => setState(() {
+                  _element = id;
+                  _slot = null;
+                }),
+          onTransform: _drawing
+              ? null
+              : (id, transform) => _editCanvas(
+                  (canvas) => (canvas['elements'] as List)
+                      .cast<AlbumJson>()
+                      .firstWhere((e) => e['id'] == id)
+                      .addAll(transform),
+                  group: 'transform-$id',
+                ),
+        ),
+        if (_drawing)
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanStart: (d) {
+              if ((album.cover['elements'] as List).length + _strokes.length >=
+                  100) {
+                showFanToast(context, '封面元素已达上限');
+                return;
+              }
+              _stroke = {
+                'id': albumId('stroke'),
+                'type': 'STROKE',
+                'content': '',
+                'x': 0.0,
+                'y': 0.0,
+                'width': 1.0,
+                'height': 1.0,
+                'rotation': 0.0,
+                'z_index': 100 + _strokes.length,
+                'points': <List<double>>[],
+                'style': {'color': _penColor, 'stroke_width': _penWidth},
+              };
+              _strokePoint(d.localPosition, bounds.biggest);
+            },
+            onPanUpdate: (d) => _strokePoint(d.localPosition, bounds.biggest),
+            onPanEnd: (_) => setState(() {
+              if (_stroke != null && (_stroke!['points'] as List).length >= 2) {
+                _strokes.add(_stroke!);
+              }
+              _stroke = null;
+            }),
+            onPanCancel: () => setState(() => _stroke = null),
+          ),
+      ],
+    ),
+  );
 
   Future<void> _layout() async {
     if (_page == 0) {
@@ -850,7 +954,9 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
                         controller: description,
                         maxLength: 200,
                         maxLines: 2,
-                        decoration: const InputDecoration(labelText: '简介'),
+                        decoration: const InputDecoration(
+                          labelText: '收藏故事（选填）',
+                        ),
                         onChanged: (v) => _controller.edit(
                           (d) => d['description'] = v,
                           group: 'description',
@@ -863,6 +969,78 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
                         value: _album.isPublic,
                         onChanged: (v) => _controller.edit(
                           (d) => d['visibility'] = v ? 'PUBLIC' : 'PRIVATE',
+                        ),
+                      ),
+                      const Text('默认打开方式'),
+                      const SizedBox(height: 8),
+                      SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment(value: 'BOOK', label: Text('卡册模式')),
+                          ButtonSegment(value: 'CARDS', label: Text('卡片模式')),
+                        ],
+                        selected: {_album.opensAsCards ? 'CARDS' : 'BOOK'},
+                        onSelectionChanged: (s) => _controller.edit(
+                          (d) => (d['card_view'] as AlbumJson)['default_mode'] =
+                              s.first,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text('列表封面'),
+                      const SizedBox(height: 8),
+                      SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment(value: 'STACK_V1', label: Text('小卡叠放')),
+                          ButtonSegment(value: 'CUSTOM', label: Text('自定义封面')),
+                        ],
+                        selected: {
+                          _album.usesStackCover ? 'STACK_V1' : 'CUSTOM',
+                        },
+                        onSelectionChanged: (s) => _controller.edit(
+                          (d) => (d['card_view'] as AlbumJson)['cover_style'] =
+                              s.first,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text('卡片展示字段'),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          for (final field in const {
+                            'idol': '艺人',
+                            'group': '组合',
+                            'source': '来源',
+                            'type': '类型',
+                            'version': '版本',
+                            'release': '发行日期',
+                            'region': '地区',
+                          }.entries)
+                            FilterChip(
+                              label: Text(field.value),
+                              selected: _album.displayFields.contains(
+                                field.key,
+                              ),
+                              onSelected: (selected) => _controller.edit((d) {
+                                final fields = _album.displayFields.toList();
+                                selected
+                                    ? fields.add(field.key)
+                                    : fields.remove(field.key);
+                                (d['card_view']
+                                        as AlbumJson)['display_fields'] =
+                                    fields;
+                              }),
+                            ),
+                        ],
+                      ),
+                      const Padding(
+                        padding: EdgeInsets.only(top: 6, bottom: 16),
+                        child: Text(
+                          '仅控制展示，未收录的字段不显示。',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: FanColors.textSecondary,
+                          ),
                         ),
                       ),
                       const Text('展示方式'),
@@ -984,10 +1162,16 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
                   const Padding(
                     padding: EdgeInsets.all(16),
                     child: Text(
-                      '轮播顺序 · 长按拖动，点击皇冠设置关键卡面',
+                      '主图与顺序 · 长按拖动，点击星星设置主图',
                       textAlign: TextAlign.center,
                     ),
                   ),
+                  SizedBox(
+                    height: 132,
+                    width: 108,
+                    child: AlbumCoverWidget(_album),
+                  ),
+                  const SizedBox(height: 12),
                   Expanded(
                     child: ReorderableListView(
                       onReorderItem: (from, to) {
@@ -1018,21 +1202,16 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
                                   '小卡暂不可用',
                             ),
                             trailing: IconButton(
-                              tooltip: '设为关键卡面',
+                              tooltip: '设为主图',
                               onPressed: () => _controller.edit(
                                 (d) =>
                                     (d['card_view']
                                             as AlbumJson)['featured_slot_id'] =
-                                        _album.cardView['featured_slot_id'] ==
-                                            s['id']
-                                        ? null
-                                        : s['id'],
+                                        s['id'],
                               ),
-                              icon: AlbumIcon(
-                                'Crown',
-                                color:
-                                    _album.cardView['featured_slot_id'] ==
-                                        s['id']
+                              icon: Icon(
+                                Icons.star_rounded,
+                                color: _album.featuredSlotId == s['id']
                                     ? FanColors.lavender
                                     : FanColors.textSecondary,
                               ),
@@ -1051,7 +1230,7 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
                   TextButton.icon(
                     onPressed: () => _background(cardView: true),
                     icon: const AlbumIcon('LayoutGrid'),
-                    label: const Text('设置独立轮播背景'),
+                    label: const Text('设置卡片与叠放封面背景'),
                   ),
                   Padding(
                     padding: const EdgeInsets.all(16),
@@ -1098,6 +1277,7 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
                     ),
             );
           }
+          if (album.opensAsCards) return _cardEditor(album);
           _page = _page.clamp(0, album.pages.length);
           final elements = ((_canvas['elements'] as List?) ?? [])
               .cast<AlbumJson>();
@@ -1116,6 +1296,22 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
               ),
               title: Text(_page == 0 ? '封面编辑' : '内页编辑'),
               actions: [
+                PopupMenuButton<String>(
+                  tooltip: '相册操作',
+                  onSelected: (value) {
+                    if (value == 'pages') _pages();
+                    if (value == 'layers') _layers();
+                    if (value == 'settings') _settings();
+                    if (value == 'order') _cardOrder();
+                  },
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(value: 'pages', child: Text('页面管理')),
+                    if (_page == 0)
+                      const PopupMenuItem(value: 'layers', child: Text('图层管理')),
+                    const PopupMenuItem(value: 'settings', child: Text('相册设置')),
+                    const PopupMenuItem(value: 'order', child: Text('主图与顺序')),
+                  ],
+                ),
                 TextButton(
                   onPressed: _finishing ? null : _finish,
                   child: Text(_finishing ? '保存中' : '完成'),
@@ -1223,30 +1419,17 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
                       child: LayoutBuilder(
                         builder: (context, c) => Center(
                           child: SizedBox(
-                            width: math.min(_page == 0 ? 292 : 340, c.maxWidth),
+                            width: math.min(
+                              c.maxWidth,
+                              c.maxHeight *
+                                  (_page == 0 ? 128 / 166 : 340 / 420),
+                            ),
                             height: math.min(
                               c.maxHeight,
-                              _page == 0 ? 449 : 420,
+                              c.maxWidth / (_page == 0 ? 128 / 166 : 340 / 420),
                             ),
                             child: _page == 0
-                                ? AlbumCanvasWidget(
-                                    config: album.cover,
-                                    album: album,
-                                    showName: true,
-                                    resources: resources,
-                                    selectedId: _element,
-                                    onSelect: (id) => setState(() {
-                                      _element = id;
-                                      _slot = null;
-                                    }),
-                                    onTransform: (id, transform) =>
-                                        _editCanvas((c) {
-                                          (c['elements'] as List)
-                                              .cast<AlbumJson>()
-                                              .firstWhere((e) => e['id'] == id)
-                                              .addAll(transform);
-                                        }, group: 'transform-$id'),
-                                  )
+                                ? _coverCanvas(album, resources)
                                 : AlbumBinderWidget(
                                     album: album,
                                     page: album.pages[_page - 1],
@@ -1281,11 +1464,11 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
                       ),
                     ),
                   ),
-                  if (selected != null)
+                  if (_panel == null && selected != null)
                     _elementTools(selected)
-                  else if (_slot != null && _page > 0)
+                  else if (_panel == null && _slot != null && _page > 0)
                     _slotTools()
-                  else
+                  else if (_panel == null)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       child: Row(
@@ -1321,37 +1504,31 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
                         ],
                       ),
                     ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
+                  if (_panel != null)
+                    Expanded(child: _panel!)
+                  else
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                      child: Container(
+                        height: 68,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
                         child: Row(
                           children: [
                             _tool('小卡', 'RectangleVertical', () => _pick()),
-                            _tool('布局', 'BookOpen', _layout),
-                            _tool('文字', 'Type', () => _text()),
-                            _tool('贴纸', 'Sticker', _stickers),
-                            _tool(
-                              'Emoji',
-                              'Smile',
-                              () => _stickers(emoji: true),
-                            ),
+                            if (_page == 0) ...[
+                              _tool('画笔', 'Brush', _brush),
+                              _tool('文字', 'Type', () => _text()),
+                              _tool('贴纸', 'Sticker', _stickers),
+                            ] else
+                              _tool('布局', 'BookOpen', _layout),
                             _tool('背景', 'LayoutGrid', _background),
-                            _tool('页面', 'BookCopy', _pages),
-                            _tool('图层', 'List', _layers),
-                            _tool('设置', 'Ellipsis', _settings),
-                            _tool('轮播', 'Move', _cardOrder),
                           ],
                         ),
                       ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -1361,20 +1538,297 @@ class _AlbumEditorPageState extends ConsumerState<AlbumEditorPage> {
     );
   }
 
-  Widget _tool(String label, String icon, VoidCallback action) => SizedBox(
-    width: 62,
+  Widget _tool(String label, String icon, VoidCallback action) => Expanded(
     child: InkWell(
       onTap: action,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          AlbumIcon(icon, color: FanColors.ink),
-          const SizedBox(height: 8),
+          if (icon == 'Brush')
+            const Icon(Icons.brush_outlined, size: 22)
+          else
+            AlbumIcon(icon, color: FanColors.ink),
+          const SizedBox(height: 4),
           Text(label, style: const TextStyle(fontSize: 12)),
         ],
       ),
     ),
   );
+  Future<void> _addSceneCards() async {
+    final remaining = 15 - _album.cardCount;
+    if (remaining <= 0) {
+      showFanToast(context, '卡片模式最多选择 15 张；已有小卡不会被移除');
+      return;
+    }
+    final quota = _controller.quota;
+    if (quota == null) {
+      showFanToast(context, '请联网获取相册额度后再添加');
+      return;
+    }
+    final selected = await pickAlbumCards(context, maxSelected: remaining);
+    if (!mounted || selected == null || selected.isEmpty) return;
+    final free = _album.pages.fold<int>(
+      0,
+      (n, p) =>
+          n + (p['slots'] as List).where((s) => s['card_id'] == null).length,
+    );
+    if (_album.pages.length +
+            (math.max(0, selected.length - free) / quota.maxSlots).ceil() >
+        quota.maxPages) {
+      await showAlbumQuotaDialog(context, quota, pages: true);
+      return;
+    }
+    if (selected.any(
+          (c) => _album.occupiedSlots.any((s) => s['card_id'] == c.id),
+        ) &&
+        !await confirmAlbumAction(
+          context,
+          '包含已添加的小卡',
+          '重复放置会保留独立卡位，不会改变收藏数量。',
+          action: '继续添加',
+        )) {
+      return;
+    }
+    if (!mounted) return;
+    _controller.edit((d) {
+      final pages = (d['pages'] as List).cast<AlbumJson>();
+      final empty = [
+        for (final p in pages)
+          for (final s in (p['slots'] as List).cast<AlbumJson>())
+            if (s['card_id'] == null) s,
+      ];
+      var at = 0;
+      for (final c in selected) {
+        if (at >= empty.length) {
+          final page = blankAlbumPage(quota.maxSlots);
+          pages.add(page);
+          empty.addAll((page['slots'] as List).cast<AlbumJson>());
+        }
+        empty[at++]['card_id'] = c.id;
+        (d['cards'] as AlbumJson)[c.id] = albumCardJson(c);
+      }
+      d['pages'] = pages;
+    });
+  }
+
+  Widget _cardEditor(PhotocardAlbum album) => Scaffold(
+    appBar: AppBar(
+      leading: IconButton(
+        tooltip: '返回书架',
+        onPressed: _back,
+        icon: const Icon(Icons.arrow_back),
+      ),
+      title: const Text('编辑卡片相册'),
+      actions: [
+        TextButton(
+          onPressed: _finishing ? null : _finish,
+          child: Text(_finishing ? '保存中' : '保存'),
+        ),
+      ],
+    ),
+    body: SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _controller.status,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: FanColors.textSecondary,
+                  ),
+                ),
+              ),
+              if (_controller.error != null)
+                TextButton(
+                  onPressed: _controller.conflict
+                      ? () async {
+                          if (await confirmAlbumAction(
+                            context,
+                            '加载服务器版本？',
+                            '本地未同步版本会保留为备份，不会覆盖服务器版本。',
+                          )) {
+                            await _controller.load(discardLocal: true);
+                          }
+                        }
+                      : _controller.save,
+                  child: const Text('重试'),
+                ),
+              IconButton(
+                tooltip: '撤销',
+                onPressed: _controller.canUndo ? _controller.undo : null,
+                icon: const Icon(Icons.undo, size: 20),
+              ),
+              IconButton(
+                tooltip: '重做',
+                onPressed: _controller.canRedo ? _controller.redo : null,
+                icon: const Icon(Icons.redo, size: 20),
+              ),
+            ],
+          ),
+          Center(
+            child: SizedBox(
+              width: 192,
+              height: 248,
+              child: AlbumCoverWidget(album),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            album.name,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            '主图用于封面前景与默认预览；拖动可调整浏览顺序。',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: FanColors.textSecondary),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '已选 ${album.cardCount} 张',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              TextButton(onPressed: _cardOrder, child: const Text('主图与顺序')),
+            ],
+          ),
+          SizedBox(
+            height: 140,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: album.orderedSlots.length + 1,
+              separatorBuilder: (_, _) => const SizedBox(width: 10),
+              itemBuilder: (context, index) {
+                if (index == album.orderedSlots.length) {
+                  return SizedBox(
+                    width: 86,
+                    child: OutlinedButton(
+                      onPressed: _addSceneCards,
+                      child: const Icon(Icons.add),
+                    ),
+                  );
+                }
+                final slot = album.orderedSlots[index];
+                return SizedBox(
+                  width: 86,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            GestureDetector(
+                              onTap: () => _controller.edit(
+                                (d) =>
+                                    (d['card_view']
+                                            as AlbumJson)['featured_slot_id'] =
+                                        slot['id'],
+                              ),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: slot['id'] == album.featuredSlotId
+                                        ? FanColors.lavender
+                                        : FanColors.line,
+                                    width: 2,
+                                  ),
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: AlbumCardImage(
+                                    album.card(slot['card_id'] as String),
+                                    thumbnail: true,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (slot['id'] == album.featuredSlotId)
+                              const Positioned(
+                                left: 4,
+                                bottom: 4,
+                                child: Chip(
+                                  label: Text(
+                                    '主图',
+                                    style: TextStyle(fontSize: 10),
+                                  ),
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      SizedBox(
+                        height: 32,
+                        child: IconButton(
+                          tooltip: '移除第 ${index + 1} 张',
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(
+                            Icons.remove_circle_outline,
+                            size: 18,
+                          ),
+                          onPressed: () => _controller.edit((d) {
+                            for (final p in d['pages'] as List) {
+                              for (final s in p['slots'] as List) {
+                                if (s['id'] == slot['id']) s['card_id'] = null;
+                              }
+                            }
+                          }),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 16),
+          OutlinedButton.icon(
+            onPressed: _addSceneCards,
+            icon: const Icon(Icons.add_photo_alternate_outlined),
+            label: const Text('选择小卡'),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: _settings,
+            icon: const Icon(Icons.tune),
+            label: const Text('名称、展示字段与收藏故事'),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: () => _background(cardView: true),
+            icon: const Icon(Icons.palette_outlined),
+            label: const Text('背景颜色'),
+          ),
+          const SizedBox(height: 20),
+          FilledButton(
+            onPressed: () async {
+              final save = await Navigator.push<bool>(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => AlbumViewerPage(
+                    albumId: album.id,
+                    previewAlbum: album,
+                    allowSave: true,
+                  ),
+                ),
+              );
+              if (save == true && mounted) await _finish();
+            },
+            child: const Text('预览相册'),
+          ),
+        ],
+      ),
+    ),
+  );
+
   Widget _elementTools(AlbumJson selected) => SingleChildScrollView(
     scrollDirection: Axis.horizontal,
     child: Row(
@@ -1479,165 +1933,25 @@ Future<AlbumJson?> editAlbumBackground(
   BuildContext context,
   AlbumJson original,
   List<AlbumJson> resources,
-) async {
-  final current = cloneAlbumJson(original);
-  final colors = (current['colors'] as List).cast<String>();
-  final result = await showModalBottomSheet<AlbumJson>(
-    context: context,
-    isScrollControlled: true,
-    showDragHandle: true,
-    builder: (context) => AlbumInputScope(
-      initialValues: {
-        'first': colors.first,
-        'second': colors.length > 1 ? colors[1] : colors.first,
-      },
-      builder: (context, inputs) {
-        final first = inputs['first']!, second = inputs['second']!;
-        return StatefulBuilder(
-          builder: (context, setSheetState) => SafeArea(
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(
-                20,
-                8,
-                20,
-                MediaQuery.viewInsetsOf(context).bottom + 20,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text(
-                      '背景设置',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Container(
-                      height: 130,
-                      decoration: albumDecoration(current),
-                    ),
-                    const SizedBox(height: 16),
-                    SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(value: 'SOLID', label: Text('纯色')),
-                        ButtonSegment(value: 'GRADIENT', label: Text('渐变')),
-                      ],
-                      selected: {current['type'] as String},
-                      onSelectionChanged: (s) =>
-                          setSheetState(() => current['type'] = s.first),
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 10,
-                      children: [
-                        for (final r in resources.where(
-                          (r) => r['kind'] == 'BACKGROUND',
-                        ))
-                          InkWell(
-                            onTap: () => setSheetState(() {
-                              current.clear();
-                              current.addAll(
-                                cloneAlbumJson(r['config'] as AlbumJson),
-                              );
-                              first.text =
-                                  (current['colors'] as List).first as String;
-                              second.text =
-                                  (current['colors'] as List).last as String;
-                            }),
-                            child: Container(
-                              width: 55,
-                              height: 45,
-                              decoration: albumDecoration(
-                                r['config'] as AlbumJson,
-                              ),
-                            ),
-                          ),
-                        for (final hex in [
-                          '#AECDF4',
-                          '#FFE7AC',
-                          '#FF7897',
-                          '#FFDEA8',
-                          '#92DBEB',
-                          '#C996FF',
-                        ])
-                          InkWell(
-                            onTap: () => setSheetState(() {
-                              current['type'] = 'SOLID';
-                              current['colors'] = [hex];
-                              first.text = hex;
-                            }),
-                            child: Container(
-                              width: 45,
-                              height: 45,
-                              decoration: BoxDecoration(
-                                color: albumColor(hex),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: first,
-                            decoration: const InputDecoration(
-                              labelText: '颜色 1 · #RRGGBB',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: TextField(
-                            controller: second,
-                            decoration: const InputDecoration(
-                              labelText: '颜色 2 · #RRGGBB',
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    Slider(
-                      min: -180,
-                      max: 180,
-                      divisions: 36,
-                      value: ((current['angle'] as num?)?.toDouble() ?? 45)
-                          .clamp(-180, 180),
-                      label: '${current['angle']}°',
-                      onChanged: (v) =>
-                          setSheetState(() => current['angle'] = v),
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton(
-                      onPressed: () {
-                        final pattern = RegExp(r'^#[0-9A-Fa-f]{6}$');
-                        if (!pattern.hasMatch(first.text) ||
-                            current['type'] == 'GRADIENT' &&
-                                !pattern.hasMatch(second.text)) {
-                          showFanToast(context, '请输入有效的 #RRGGBB 颜色');
-                          return;
-                        }
-                        current['colors'] = [
-                          first.text,
-                          if (current['type'] == 'GRADIENT') second.text,
-                        ];
-                        Navigator.pop(context, current);
-                      },
-                      child: const Text('完成'),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    ),
-  );
-  return result;
-}
+) => showModalBottomSheet<AlbumJson>(
+  context: context,
+  isScrollControlled: true,
+  useSafeArea: true,
+  builder: (context) {
+    final keyboard = MediaQuery.viewInsetsOf(context).bottom;
+    final available =
+        MediaQuery.sizeOf(context).height -
+        keyboard -
+        MediaQuery.paddingOf(context).top;
+    return Padding(
+      padding: EdgeInsets.only(bottom: keyboard),
+      child: SizedBox(
+        height: math.min(MediaQuery.sizeOf(context).height * .6, available),
+        child: AlbumBackgroundPanel(
+          original: original,
+          onClose: (result) => Navigator.pop(context, result),
+        ),
+      ),
+    );
+  },
+);

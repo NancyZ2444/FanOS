@@ -105,9 +105,9 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('完成（已选 0）'), findsOneWidget);
-      await tester.tap(find.text('Aria'));
+      await tester.tap(find.text('艾莉娅'));
       await tester.pump();
-      await tester.tap(find.text('Lin'));
+      await tester.tap(find.text('琳'));
       await tester.pump();
       expect(find.text('完成（已选 2）'), findsOneWidget);
       expect(container.read(favoritesProvider).selectedIds, {
@@ -179,6 +179,7 @@ void main() {
     await tester.pumpWidget(
       app(container, const GroupDetailPage(groupId: 'group-lumina')),
     );
+    await tester.pump(const Duration(milliseconds: 250));
     await tester.pumpAndSettle();
     final grid = tester.widget<GridView>(find.byType(GridView).first);
     expect(
@@ -211,7 +212,7 @@ void main() {
       find.byWidgetPredicate(
         (widget) => widget is FanImage && widget.imageUrl == '/cover.jpg',
       ),
-      findsOneWidget,
+      findsNWidgets(3),
     );
     await tester.pumpWidget(app(container, const EditProfilePage()));
     await tester.pumpAndSettle();
@@ -260,9 +261,9 @@ void main() {
       await tester.ensureVisible(idol);
       await tester.tap(idol);
       await tester.pumpAndSettle();
-      expect(find.text('Aria · LUMINA'), findsOneWidget);
-      expect(find.text('Yuna · ASTER'), findsNothing);
-      await tester.tap(find.text('Aria · LUMINA'));
+      expect(find.text('艾莉娅 · LUMINA'), findsOneWidget);
+      expect(find.text('尤娜 · ASTER'), findsNothing);
+      await tester.tap(find.text('艾莉娅 · LUMINA'));
       await tester.pumpAndSettle();
       await tester.enterText(group, 'ASTER');
       await tester.pumpAndSettle();
@@ -272,8 +273,8 @@ void main() {
       expect(tester.widget<TextField>(nextIdol).controller!.text, isEmpty);
       await tester.tap(nextIdol);
       await tester.pumpAndSettle();
-      expect(find.text('Yuna · ASTER'), findsOneWidget);
-      expect(find.text('Aria · LUMINA'), findsNothing);
+      expect(find.text('尤娜 · ASTER'), findsOneWidget);
+      expect(find.text('艾莉娅 · LUMINA'), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );

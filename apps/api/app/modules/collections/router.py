@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from typing import Literal
+
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -24,6 +26,20 @@ from app.modules.albums.schemas import AlbumPatch
 from app.modules.collections.schemas import AlbumCardsUpdate, AlbumCreate, QuantityUpdate
 
 router = APIRouter(tags=["Collection"])
+
+
+@router.get("/me/library/search")
+def search_library(
+    q: str = Query(default="", max_length=100),
+    scope: Literal["all", "owned", "wishlist", "albums"] = "all",
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=50),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    from app.modules.collections.search import library_search
+
+    return success(library_search(db, user, q, scope, offset, limit))
 
 
 def _ensure_card(db: Session, card_id: str) -> None:

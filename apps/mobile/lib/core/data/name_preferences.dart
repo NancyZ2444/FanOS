@@ -49,7 +49,12 @@ class NamePreferences {
         )
         .toList(),
     groups: data.groups.map((g) => _NamedGroup(g, this)).toList(),
-    cards: data.cards,
+    cards: data.cards.map((c) {
+      final idol = data.idols.where((i) => i.id == c.idolId).firstOrNull;
+      return idol == null || !c.hasIndividualIdol
+          ? c
+          : c.withIdolName(display('idols', idol.id, idol.officialDisplayName));
+    }).toList(),
     albums: data.albums,
     events: data.events,
     others: data.others,
@@ -75,8 +80,10 @@ class _NamedIdol extends IdolProfile {
         nameEn: original.nameEn,
         nameKo: original.nameKo,
         nameTranslated: original.nameTranslated,
+        realName: original.realName,
         imageUrl: original.imageUrl,
         thumbnailUrl: original.thumbnailUrl,
+        coverImageUrl: original.coverImageUrl,
         groupIds: original.groupIds,
       );
   final IdolProfile original;
@@ -112,6 +119,8 @@ class _NamedGroup extends FanGroup {
         region: original.region,
         formerMemberIds: original.formerMemberIds,
         imageUrl: original.imageUrl,
+        coverImageUrl: original.coverImageUrl,
+        thumbnailUrl: original.thumbnailUrl,
         nameEn: original.nameEn,
         nameKo: original.nameKo,
         nameTranslated: original.nameTranslated,

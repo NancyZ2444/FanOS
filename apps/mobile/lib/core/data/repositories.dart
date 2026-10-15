@@ -200,15 +200,53 @@ class ApiCatalogRepository implements CatalogRepository {
   Future<CatalogBundle> fetchCatalog() async {
     final data =
         await _client.getData('/catalog/bootstrap') as Map<String, dynamic>;
+    final idols = (data['idols'] as List<dynamic>).cast<Map<String, dynamic>>();
+    final groups = (data['groups'] as List<dynamic>)
+        .cast<Map<String, dynamic>>()
+        .map((group) {
+          final current = {...?group['member_ids'] as List?}
+              .whereType<String>()
+              .toSet();
+          final former = {...?group['former_member_ids'] as List?}
+              .whereType<String>()
+              .toSet();
+          for (final idol in idols) {
+            final id = idol['id'] as String;
+            final history = (idol['membership_history'] as List? ?? [])
+                .whereType<Map>()
+                .where((m) => m['group_id'] == group['id'])
+                .toList();
+            // Explicit relationship history wins over legacy identity fields.
+            if (history.isNotEmpty) {
+              if (history.any(
+                (m) => const {'active', 'inactive'}.contains(m['status']),
+              )) {
+                current.add(id);
+                former.remove(id);
+              } else if (history.any((m) => m['status'] == 'former')) {
+                current.remove(id);
+                former.add(id);
+              }
+            } else if (!former.contains(id) &&
+                ((idol['group_ids'] as List? ?? []).contains(group['id']) ||
+                    idol['group_id'] == group['id'])) {
+              current.add(id);
+            }
+          }
+          final visibleIds = idols.map((i) => i['id']).toSet();
+          return FanGroup.fromJson({
+            ...group,
+            'member_ids': current.where(visibleIds.contains).toList(),
+            'former_member_ids': former
+                .difference(current)
+                .where(visibleIds.contains)
+                .toList(),
+          });
+        })
+        .toList();
     return CatalogBundle(
-      idols: (data['idols'] as List<dynamic>)
-          .cast<Map<String, dynamic>>()
-          .map(IdolProfile.fromJson)
-          .toList(),
-      groups: (data['groups'] as List<dynamic>)
-          .cast<Map<String, dynamic>>()
-          .map(FanGroup.fromJson)
-          .toList(),
+      idols: idols.map(IdolProfile.fromJson).toList(),
+      groups: groups,
       cards: (data['cards'] as List<dynamic>)
           .cast<Map<String, dynamic>>()
           .map(CollectibleCard.fromJson)
@@ -268,7 +306,8 @@ class ApiAuthRepository implements AuthRepository {
     if (accessToken == null || accessToken.isEmpty) {
       throw const ApiException('INVALID_AUTH_RESPONSE', '登录服务返回格式异常');
     }
-    _client.setAccessToken(accessToken);
+    await _client.saveAuthTokens(data);
+    _client.isNewAccount = data['is_new_user'] == true;
   }
 }
 

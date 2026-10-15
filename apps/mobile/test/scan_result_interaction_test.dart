@@ -4,6 +4,7 @@ import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/data/demo_catalog.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/data/repositories.dart';
+import 'package:fan_os/core/data/user_data_repository.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/features/catalog/presentation/card_detail_page.dart';
 import 'package:fan_os/features/scan/presentation/scan_result_page.dart';
@@ -20,7 +21,7 @@ void main() {
       await _selectRecommended(tester);
       expect(repository.calls, isEmpty);
       expect(find.text('标记拥有（2）'), findsOneWidget);
-      expect(find.text('收藏/喜欢（2）'), findsOneWidget);
+      expect(find.text('喜欢（2）'), findsOneWidget);
 
       repository.pending = Completer<Map<String, int>?>();
       await tester.tap(find.byKey(const Key('scan-batch-wishlist')));
@@ -46,7 +47,7 @@ void main() {
         DemoCatalog.cards[1].id,
       });
       expect(container.read(collectionProvider).owned, isEmpty);
-      expect(find.text('收藏/喜欢（0）'), findsOneWidget);
+      expect(find.text('喜欢（0）'), findsOneWidget);
       expect(find.text('标记拥有（2）'), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('scan-batch-confirm')));
@@ -82,8 +83,8 @@ void main() {
     await tester.pump();
     expect(container.read(collectionProvider).wishlist, isEmpty);
     expect(container.read(collectionProvider).owned, isEmpty);
-    expect(find.text('批量收藏/喜欢失败，请稍后重试'), findsOneWidget);
-    expect(find.text('收藏/喜欢（2）'), findsOneWidget);
+    expect(find.text('批量喜欢失败，请稍后重试'), findsOneWidget);
+    expect(find.text('喜欢（2）'), findsOneWidget);
     expect(find.text('标记拥有（2）'), findsOneWidget);
     repository.fail = false;
     await tester.tap(find.byKey(const Key('scan-batch-wishlist')));
@@ -101,18 +102,11 @@ void main() {
     final container = await _mount(tester, repository);
     await tester.tap(find.byKey(const Key('scan-select-all')));
     await tester.pumpAndSettle();
-    expect(find.byType(AlertDialog), findsOneWidget);
-    expect(find.text('标记拥有（0）'), findsOneWidget);
-    expect(repository.calls, isEmpty);
-    await tester.tap(
-      find.descendant(
-        of: find.byType(AlertDialog),
-        matching: find.widgetWithText(FilledButton, '确认推荐并全选'),
-      ),
-    );
-    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
     expect(find.text('标记拥有（2）'), findsOneWidget);
-    expect(find.text('收藏/喜欢（2）'), findsOneWidget);
+    expect(repository.calls, isEmpty);
+    expect(find.text('标记拥有（2）'), findsOneWidget);
+    expect(find.text('喜欢（2）'), findsOneWidget);
     expect(container.read(collectionProvider).owned, isEmpty);
     expect(container.read(collectionProvider).wishlist, isEmpty);
     expect(_selected(tester, 'recommended-1'), isTrue);
@@ -123,7 +117,7 @@ void main() {
     await tester.tap(find.byKey(const Key('scan-clear-selection')));
     await tester.pump();
     expect(find.text('标记拥有（0）'), findsOneWidget);
-    expect(find.text('收藏/喜欢（0）'), findsOneWidget);
+    expect(find.text('喜欢（0）'), findsOneWidget);
     for (final id in ['recommended-1', 'recommended-2', 'medium', 'unknown']) {
       expect(find.byKey(Key('scan-region-$id')), findsOneWidget);
       expect(_selected(tester, id), isFalse);
@@ -147,7 +141,7 @@ void main() {
     );
     await _selectRecommended(tester);
     expect(find.text('标记拥有（2）'), findsOneWidget);
-    expect(find.text('收藏/喜欢（1）'), findsOneWidget);
+    expect(find.text('喜欢（1）'), findsOneWidget);
     await tester.tap(find.byKey(const Key('scan-batch-wishlist')));
     await tester.pumpAndSettle();
     expect(container.read(collectionProvider).wishlist, {
@@ -200,7 +194,7 @@ void main() {
     container.read(collectionProvider.notifier).hydrate({card.id: 3}, {});
     await tester.pump();
     expect(find.text('标记拥有（0）'), findsOneWidget);
-    expect(find.text('收藏/喜欢（1）'), findsOneWidget);
+    expect(find.text('喜欢（1）'), findsOneWidget);
     await tester.tap(find.byKey(const Key('scan-batch-wishlist')));
     await tester.pumpAndSettle();
     expect(container.read(collectionProvider).quantity(card.id), 3);
@@ -341,10 +335,77 @@ void main() {
       find.descendant(of: picker, matching: find.byType(ListTile)).first,
     );
     await tester.pumpAndSettle();
-    expect(find.text('手动选择 · 请核对卡面'), findsOneWidget);
+    expect(find.text('手动选择'), findsOneWidget);
     expect(find.text('标记拥有（1）'), findsOneWidget);
     expect(repository.calls, isEmpty);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'cancel likes and owned independently, restore without replaying scan',
+    (tester) async {
+      final scans = _RecordingRepository();
+      final edits = _CollectionEdits();
+      final container = await _mount(tester, scans, userData: edits);
+      await _selectRecommended(tester);
+      await tester.tap(find.byKey(const Key('scan-batch-wishlist')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('scan-batch-confirm')));
+      await tester.pumpAndSettle();
+      final id = DemoCatalog.cards[0].id;
+      container.read(collectionProvider.notifier).hydrate({id: 3}, {id});
+      await tester.pump();
+      final owned = find.byKey(const Key('scan-owned-recommended-1'));
+      await tester.ensureVisible(owned);
+      await tester.tap(owned);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('当前拥有 3 张'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, '取消拥有'));
+      await tester.pumpAndSettle();
+      expect(edits.quantities, [(id, 0)]);
+      expect(container.read(collectionProvider).quantity(id), 0);
+      expect(container.read(collectionProvider).isWished(id), isTrue);
+      await tester.ensureVisible(owned);
+      await tester.tap(owned);
+      await tester.pumpAndSettle();
+      expect(container.read(collectionProvider).quantity(id), 1);
+      expect(edits.quantities, [(id, 0), (id, 1)]);
+      expect(scans.calls, hasLength(2));
+      final likes = find.byKey(const Key('scan-like-recommended-1'));
+      await Scrollable.ensureVisible(tester.element(likes), alignment: .5);
+      await tester.pumpAndSettle();
+      await tester.tap(likes);
+      await tester.pumpAndSettle();
+      expect(edits.likes, [(id, false)]);
+      expect(container.read(collectionProvider).isWished(id), isFalse);
+      expect(container.read(collectionProvider).quantity(id), 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('failed cancellation retains quantity and retry selection', (
+    tester,
+  ) async {
+    final edits = _CollectionEdits()..fail = true;
+    final container = await _mount(
+      tester,
+      _RecordingRepository(),
+      userData: edits,
+    );
+    await _selectRecommended(tester);
+    final id = DemoCatalog.cards[0].id;
+    container.read(collectionProvider.notifier).hydrate({id: 2}, {id});
+    await tester.pump();
+    final action = find.byKey(const Key('scan-owned-recommended-1'));
+    await tester.ensureVisible(action);
+    await tester.tap(action);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '取消拥有'));
+    await tester.pumpAndSettle();
+    expect(container.read(collectionProvider).quantity(id), 2);
+    expect(container.read(collectionProvider).isWished(id), isTrue);
+    expect(_selected(tester, 'recommended-1'), isTrue);
+    expect(find.text('保存失败，原状态已保留，请重试'), findsOneWidget);
   });
 
   for (final state in ['missing', 'error', 'loading']) {
@@ -393,6 +454,7 @@ Future<ProviderContainer> _mount(
   WidgetTester tester,
   _RecordingRepository repository, {
   ScanSession? session,
+  UserDataRepository? userData,
   Future<CatalogBundle> Function()? loadCatalog,
 }) async {
   tester.view.physicalSize = const Size(375, 812);
@@ -403,6 +465,8 @@ Future<ProviderContainer> _mount(
     overrides: [
       authRepositoryProvider.overrideWithValue(_InstantAuthRepository()),
       scanRepositoryProvider.overrideWithValue(repository),
+      if (userData != null)
+        userDataRepositoryProvider.overrideWithValue(userData),
       if (loadCatalog != null)
         catalogProvider.overrideWith((ref) => loadCatalog()),
     ],
@@ -425,13 +489,6 @@ Future<ProviderContainer> _mount(
 
 Future<void> _selectRecommended(WidgetTester tester) async {
   await tester.tap(find.byKey(const Key('scan-select-all')));
-  await tester.pumpAndSettle();
-  await tester.tap(
-    find.descendant(
-      of: find.byType(AlertDialog),
-      matching: find.widgetWithText(FilledButton, '确认推荐并全选'),
-    ),
-  );
   await tester.pumpAndSettle();
 }
 
@@ -489,4 +546,21 @@ class _RecordingRepository extends MockScanRepository {
 class _InstantAuthRepository implements AuthRepository {
   @override
   Future<void> login(LoginMethod method, {String? phone, String? code}) async {}
+}
+
+class _CollectionEdits extends MockUserDataRepository {
+  bool fail = false;
+  final quantities = <(String, int)>[];
+  final likes = <(String, bool)>[];
+  @override
+  Future<void> setOwnedQuantity(String id, int value) async {
+    if (fail) throw StateError('offline');
+    quantities.add((id, value));
+  }
+
+  @override
+  Future<void> setWishlist(String id, bool value) async {
+    if (fail) throw StateError('offline');
+    likes.add((id, value));
+  }
 }

@@ -1,157 +1,155 @@
 import 'package:fan_os/app/theme.dart';
-import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/features/albums/presentation/album_shelf_page.dart';
+import 'package:fan_os/features/collection/presentation/collection_cards.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 class CollectionPage extends ConsumerStatefulWidget {
   const CollectionPage({super.key});
-
   @override
   ConsumerState<CollectionPage> createState() => _CollectionPageState();
 }
 
 class _CollectionPageState extends ConsumerState<CollectionPage> {
-  String _tab = 'Owned';
+  int _tab = 0, _refresh = 0;
+  final _lists = [false, false];
+  String? _albumView;
+  final _visited = <int>{0};
+  bool get _list => _tab == 2 ? _albumView == 'LIST' : _lists[_tab];
 
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(sessionProvider);
     if (!session.isLoggedIn) {
       return Scaffold(
-        appBar: AppBar(title: const Text('我的收藏')),
-        body: FanEmptyState(
-          icon: Icons.lock_outline_rounded,
-          title: '登录后建立你的收藏',
-          message: 'Owned、Wishlist 与数字卡册会安全同步到你的账号。',
-          actionLabel: '去登录',
-          onAction: () => context.push('/login'),
+        body: SafeArea(
+          child: FanEmptyState(
+            icon: Icons.lock_outline_rounded,
+            title: '登录后建立你的收藏',
+            message: '已拥有、心愿单与卡册会同步到你的账号。',
+            actionLabel: '去登录',
+            onAction: () => context.push('/login'),
+          ),
         ),
       );
     }
-
-    final catalog = ref.watch(catalogProvider);
-    final relation = ref.watch(collectionProvider);
-    final favorites = ref.watch(favoritesProvider);
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('我的收藏'),
-        actions: [
-          IconButton(
-            onPressed: () => context.push('/search?type=小卡'),
-            icon: const Icon(Icons.search_rounded),
-          ),
-        ],
-      ),
-      body: catalog.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, _) => const FanEmptyState(
-          icon: Icons.cloud_off_rounded,
-          title: '收藏加载失败',
-          message: '请稍后重试',
-        ),
-        data: (data) {
-          final cards = _tab == 'Owned'
-              ? data.cards.where((card) => relation.isOwned(card.id)).toList()
-              : data.cards.where((card) => relation.isWished(card.id)).toList();
-          return Column(
-            children: [
-              FanContent(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-                child: FavoriteIdolsShowcase(
-                  idols: data.idols
-                      .where((idol) => favorites.selectedIds.contains(idol.id))
-                      .toList(),
-                  primaryId: favorites.primaryId,
-                  onManage: () => context.push('/onboarding/favorites'),
-                  onOpen: (idol) => context.push('/idol/${idol.id}'),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 14),
-                child: Row(
-                  children: ['Owned', 'Wishlist', '卡册'].map((label) {
-                    final selected = _tab == label;
-                    return Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 3),
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                children: [
+                  IconButton(
+                    key: const Key('collection-layout'),
+                    tooltip: _list ? (_tab == 2 ? '切换书架' : '切换网格') : '切换列表',
+                    onPressed: () => setState(() {
+                      if (_tab == 2) {
+                        _albumView = _list ? 'SHELF' : 'LIST';
+                      } else {
+                        _lists[_tab] = !_list;
+                      }
+                    }),
+                    icon: Icon(
+                      _list
+                          ? Icons.view_list_outlined
+                          : Icons.grid_view_rounded,
+                      color: FanColors.lavender,
+                    ),
+                  ),
+                  for (var i = 0; i < 3; i++)
+                    Expanded(
+                      child: Semantics(
+                        selected: _tab == i,
                         child: InkWell(
-                          onTap: () => setState(() => _tab = label),
-                          borderRadius: BorderRadius.circular(12),
+                          key: Key('collection-tab-$i'),
+                          onTap: () => setState(() {
+                            _tab = i;
+                            _visited.add(i);
+                          }),
                           child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            constraints: const BoxConstraints(minHeight: 48),
                             alignment: Alignment.center,
                             decoration: BoxDecoration(
-                              color: selected
-                                  ? FanColors.ink
-                                  : const Color(0xFFEDF0F5),
-                              borderRadius: BorderRadius.circular(12),
+                              border: Border(
+                                bottom: BorderSide(
+                                  width: 2,
+                                  color: _tab == i
+                                      ? FanColors.lavender
+                                      : Colors.transparent,
+                                ),
+                              ),
                             ),
                             child: Text(
-                              label,
+                              ['已拥有', '心愿单', '卡册'][i],
+                              maxLines: 1,
                               style: TextStyle(
-                                color: selected
-                                    ? Colors.white
+                                fontSize: 14,
+                                fontWeight: _tab == i
+                                    ? FontWeight.w600
+                                    : FontWeight.w400,
+                                color: _tab == i
+                                    ? FanColors.lavender
                                     : FanColors.textSecondary,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
                               ),
                             ),
                           ),
                         ),
                       ),
-                    );
-                  }).toList(),
-                ),
-              ),
-              if (_tab == '卡册')
-                const Expanded(child: AlbumShelfBody())
-              else if (cards.isEmpty)
-                Expanded(
-                  child: FanEmptyState(
-                    icon: _tab == 'Owned'
-                        ? Icons.style_outlined
-                        : Icons.favorite_border_rounded,
-                    title: _tab == 'Owned' ? '还没有收藏小卡' : 'Wishlist 还是空的',
-                    message: _tab == 'Owned'
-                        ? '去逛图鉴或使用 AI Scan 找到第一张卡。'
-                        : '看到喜欢的小卡，可以先加入 Wishlist。',
-                    actionLabel: '去逛图鉴',
-                    onAction: () => context.go('/catalog'),
-                  ),
-                )
-              else
-                Expanded(
-                  child: GridView.builder(
-                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 30),
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 3,
-                          crossAxisSpacing: 10,
-                          mainAxisSpacing: 18,
-                          childAspectRatio: .52,
-                        ),
-                    itemCount: cards.length,
-                    itemBuilder: (context, index) => CollectibleCardTile(
-                      card: cards[index],
-                      compact: true,
-                      badge: _buildBadge(cards[index], relation),
-                      onTap: () => context.push('/card/${cards[index].id}'),
                     ),
+                  IconButton(
+                    key: const Key('collection-search'),
+                    tooltip: '搜索我的收藏',
+                    icon: const Icon(Icons.search_rounded),
+                    onPressed: () async {
+                      await context.push('/collection/search');
+                      if (mounted) setState(() => _refresh++);
+                    },
                   ),
-                ),
-            ],
-          );
-        },
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: IndexedStack(
+                index: _tab,
+                children: [
+                  CollectionCards(
+                    key: ValueKey('owned-${session.userId}'),
+                    wished: false,
+                    list: _lists[0],
+                  ),
+                  _visited.contains(1)
+                      ? CollectionCards(
+                          key: ValueKey('wishlist-${session.userId}'),
+                          wished: true,
+                          list: _lists[1],
+                        )
+                      : const SizedBox(),
+                  _visited.contains(2)
+                      ? AlbumShelfBody(
+                          key: ValueKey('albums-${session.userId}'),
+                          embedded: true,
+                          viewMode: _albumView,
+                          refreshTick: _refresh,
+                          onViewModeChanged: (view) {
+                            if (mounted && _albumView != view) {
+                              setState(() => _albumView = view);
+                            }
+                          },
+                        )
+                      : const SizedBox(),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
-  }
-
-  Widget _buildBadge(CollectibleCard card, CollectionState state) {
-    if (_tab == 'Wishlist') return const StatusBadge(label: 'Wish');
-    return StatusBadge(label: '×${state.quantity(card.id)}', dark: true);
   }
 }

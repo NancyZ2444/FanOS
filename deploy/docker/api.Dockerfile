@@ -12,5 +12,6 @@ COPY apps/api/app ./app
 RUN pip install --no-cache-dir --index-url https://mirrors.cloud.tencent.com/pypi/simple --timeout 60 --retries 3 ".[ai]"
 COPY apps/api/migrations ./migrations
 COPY apps/api/alembic.ini ./alembic.ini
+COPY apps/api/scripts ./scripts
 
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

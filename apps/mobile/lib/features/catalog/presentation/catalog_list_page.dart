@@ -1,4 +1,6 @@
+import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/data/models.dart';
+import 'package:fan_os/core/data/name_sort.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/core/widgets/catalog_tags.dart';
@@ -14,7 +16,7 @@ extension on CatalogListType {
     CatalogListType.idols => '全部艺人',
     CatalogListType.albums => '全部专辑',
     CatalogListType.events => '全部活动',
-    CatalogListType.others => 'Other 来源',
+    CatalogListType.others => '其他来源',
   };
 }
 
@@ -193,14 +195,17 @@ class _CatalogListPageState extends ConsumerState<CatalogListPage> {
     return _listOrEmpty(
       items,
       (group) => _EntityRow(
-        imageUrl: group.imageUrl,
+        imageUrl: group.thumbnailUrl ?? group.imageUrl,
         title: group.displayName,
         subtitle: [
           if (group.secondaryName.isNotEmpty) group.secondaryName,
-          group.company,
           group.status,
         ].join(' · '),
-        detail: '${group.memberIds.length} 位当前成员',
+        detail:
+            '${group.memberIds.length} 位成员 · '
+            '${data.albums.where((a) => a.belongsToGroup(group.id)).length} 张专辑 · '
+            '${data.cards.where((c) => c.groupId == group.id).length} 张小卡',
+        detailMaxLines: null,
         colors: [Color(group.colorStart), Color(group.colorEnd)],
         icon: Icons.groups_2_outlined,
         onTap: () => context.push('/group/${group.id}'),
@@ -214,20 +219,24 @@ class _CatalogListPageState extends ConsumerState<CatalogListPage> {
           return (_group == '全部组合' || item.groupName == _group) &&
               (_region == '全部地区' || item.region == _region);
         }).toList()..sort(
-          (a, b) =>
-              _ascending ? a.name.compareTo(b.name) : b.name.compareTo(a.name),
+          (a, b) => _ascending
+              ? compareDisplayNames(a.displayName, b.displayName)
+              : compareDisplayNames(b.displayName, a.displayName),
         );
     return _listOrEmpty(
       items,
       (idol) => _EntityRow(
-        imageUrl: idol.imageUrl,
+        imageUrl: idol.thumbnailUrl ?? idol.imageUrl,
         title: idol.displayName,
         subtitle: [
           if (idol.secondaryName.isNotEmpty) idol.secondaryName,
           idol.displayGroupName,
           idol.role,
-        ].join(' · '),
-        detail: '${idol.company} · ${idol.region}',
+        ].where((s) => s.trim().isNotEmpty).join(' · '),
+        detail: [
+          idol.company,
+          idol.region,
+        ].where((s) => s.trim().isNotEmpty).join(' · '),
         colors: [Color(idol.colorStart), Color(idol.colorEnd)],
         icon: Icons.person_outline_rounded,
         onTap: () => context.push('/idol/${idol.id}'),
@@ -289,7 +298,7 @@ class _CatalogListPageState extends ConsumerState<CatalogListPage> {
       padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
       child: Row(
         children: [
-          const Text('Tags  '),
+          const Text('标签  '),
           if (available.isEmpty)
             const Text(
               '当前结果暂无标签',
@@ -309,7 +318,7 @@ class _CatalogListPageState extends ConsumerState<CatalogListPage> {
           if (_tagIds.isNotEmpty)
             TextButton(
               onPressed: () => setState(_tagIds.clear),
-              child: const Text('清空 Tag'),
+              child: const Text('清空标签'),
             ),
         ],
       ),
@@ -329,11 +338,11 @@ class _CatalogListPageState extends ConsumerState<CatalogListPage> {
     return _listOrEmpty(
       items,
       (i) => _EntityRow(
-        imageUrl: i.frontImageUrl,
+        imageUrl: i.thumbnailUrl ?? i.frontImageUrl,
         title: i.displayName,
         subtitle: [
           i.secondaryName,
-          i.artistName,
+          data.artistLabel(i.artists, i.artistName),
           i.albumType,
         ].where((s) => s.isNotEmpty).join(' · '),
         detail: '${i.releaseDate} · ${i.versions.length} 个版本',
@@ -358,11 +367,11 @@ class _CatalogListPageState extends ConsumerState<CatalogListPage> {
     return _listOrEmpty(
       items,
       (i) => _EntityRow(
-        imageUrl: i.imageUrl,
+        imageUrl: i.thumbnailUrl ?? i.imageUrl,
         title: i.displayName,
         subtitle: [
           i.secondaryName,
-          i.artistName,
+          data.artistLabel(i.artists, i.artistName),
           i.eventType,
         ].where((s) => s.isNotEmpty).join(' · '),
         detail: '${i.startDate} · ${i.locationLabel}',
@@ -387,7 +396,7 @@ class _CatalogListPageState extends ConsumerState<CatalogListPage> {
     return _listOrEmpty(
       items,
       (i) => _EntityRow(
-        imageUrl: i.imageUrl,
+        imageUrl: i.thumbnailUrl ?? i.imageUrl,
         title: i.name,
         subtitle: i.originalName,
         detail: [i.startDate, i.endDate].where((s) => s.isNotEmpty).join(' — '),
@@ -481,12 +490,14 @@ class _EntityRow extends StatelessWidget {
     required this.icon,
     required this.onTap,
     this.tags = const [],
+    this.detailMaxLines = 1,
   });
   final List<CatalogTag> tags;
   final String title;
   final String? imageUrl;
   final String subtitle;
   final String detail;
+  final int? detailMaxLines;
   final List<Color> colors;
   final IconData icon;
   final VoidCallback onTap;
@@ -502,12 +513,12 @@ class _EntityRow extends StatelessWidget {
           height: 64,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(15),
-            gradient: LinearGradient(colors: colors),
+            color: FanColors.lavenderSoft,
           ),
           clipBehavior: Clip.antiAlias,
           child: FanImage(
             imageUrl: imageUrl,
-            fallback: Icon(icon, color: Colors.white),
+            fallback: Icon(icon, color: FanColors.lavender),
           ),
         ),
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
@@ -519,7 +530,7 @@ class _EntityRow extends StatelessWidget {
             Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
             Text(
               detail,
-              maxLines: 1,
+              maxLines: detailMaxLines,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodySmall,
             ),

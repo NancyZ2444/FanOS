@@ -1,4 +1,6 @@
+import 'package:fan_os/core/widgets/entity_header.dart';
 import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/config/feature_flags.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
@@ -16,12 +18,15 @@ class GroupDetailPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final catalog = ref.watch(catalogProvider);
     return Scaffold(
+      appBar: !catalog.hasValue ? AppBar(title: const Text('组合详情')) : null,
       body: catalog.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, _) => const FanEmptyState(
+        loading: () => const FanPageSkeleton(),
+        error: (_, _) => FanEmptyState(
           icon: Icons.cloud_off_rounded,
           title: '加载失败',
-          message: '请稍后重试',
+          message: '请检查网络后重试',
+          actionLabel: '重新加载',
+          onAction: () => ref.invalidate(catalogProvider),
         ),
         data: (data) {
           final group = data.groups
@@ -64,7 +69,7 @@ class _GroupBody extends ConsumerWidget {
     final others = data.others
         .where(
           (item) =>
-              item.groupId == group.id ||
+              item.belongsToGroup(group.id) ||
               cards.any(
                 (c) =>
                     c.sourceEntityType == 'OTHER' &&
@@ -72,15 +77,14 @@ class _GroupBody extends ConsumerWidget {
               ),
         )
         .toList();
+    final showFeed = ref.watch(idolFeedEnabledProvider);
     return DefaultTabController(
-      length: 6,
+      length: showFeed ? 6 : 5,
       child: NestedScrollView(
         headerSliverBuilder: (context, _) => [
-          SliverAppBar(
-            pinned: true,
-            expandedHeight: 354,
-            foregroundColor: Colors.white,
-            backgroundColor: Color(group.colorStart),
+          EntityProfileSliver(
+            imageUrl:
+                group.coverImageUrl ?? group.imageUrl ?? group.thumbnailUrl,
             actions: [
               IconButton(
                 tooltip: '设置备注',
@@ -95,34 +99,24 @@ class _GroupBody extends ConsumerWidget {
               ),
               IconButton(
                 tooltip: '反馈问题',
-                onPressed: () => showFanToast(context, '图鉴问题反馈入口已记录'),
+                onPressed: () => context.push(
+                  '/catalog-correction?type=groups&id=${group.id}',
+                ),
                 icon: const Icon(Icons.more_horiz_rounded),
               ),
             ],
-            flexibleSpace: FlexibleSpaceBar(
-              background: _GroupHero(group: group, cardCount: cards.length),
-            ),
-            bottom: const PreferredSize(
-              preferredSize: Size.fromHeight(48),
-              child: ColoredBox(
-                color: FanColors.canvas,
-                child: TabBar(
-                  isScrollable: true,
-                  tabAlignment: TabAlignment.start,
-                  indicatorColor: FanColors.lavender,
-                  labelColor: FanColors.ink,
-                  unselectedLabelColor: FanColors.textSecondary,
-                  tabs: [
-                    Tab(text: '成员'),
-                    Tab(text: '动态'),
-                    Tab(text: '专辑'),
-                    Tab(text: '活动'),
-                    Tab(text: '小卡'),
-                    Tab(text: '其他来源'),
-                  ],
-                ),
-              ),
-            ),
+            hero: _GroupHero(group: group, cardCount: cards.length),
+          ),
+          SliverPersistentHeader(
+            pinned: true,
+            delegate: EntityTabs([
+              '成员',
+              if (showFeed) '动态',
+              '专辑',
+              '活动',
+              '小卡',
+              '其他',
+            ], textScale: MediaQuery.textScalerOf(context).scale(14) / 14),
           ),
         ],
         body: TabBarView(
@@ -132,10 +126,11 @@ class _GroupBody extends ConsumerWidget {
               members: members,
               formerMembers: formerMembers,
             ),
-            EntitySocialFeed.group(group: group, members: members),
+            if (showFeed)
+              EntitySocialFeed.group(group: group, members: members),
             _AlbumTab(albums: albums),
             _EventTab(events: events),
-            _CardTab(group: group, cards: cards),
+            _CardTab(group: group, cards: cards, catalog: data),
             _MerchandiseTab(items: others),
           ],
         ),
@@ -150,143 +145,38 @@ class _GroupHero extends StatelessWidget {
   final int cardCount;
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(group.colorStart), Color(group.colorEnd)],
+  Widget build(BuildContext context) => EntityIdentity(
+    name: group.displayName,
+    avatar: ClipOval(
+      child: SizedBox(
+        width: 56,
+        height: 56,
+        child: FanImage(
+          imageUrl: group.thumbnailUrl ?? group.imageUrl,
+          fallbackImageUrl: group.imageUrl,
+          fallback: ColoredBox(
+            color: FanColors.lavenderSoft,
+            child: Center(
+              child: Text(
+                group.displayName.characters.take(2).toString(),
+                style: const TextStyle(color: FanColors.lavender, fontSize: 18),
+              ),
+            ),
+          ),
         ),
       ),
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: FanImage(
-              imageUrl: group.imageUrl,
-              fallback: const SizedBox.shrink(),
-            ),
-          ),
-          if (group.imageUrl?.isNotEmpty == true)
-            const Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Colors.transparent, Color(0xDD141829)],
-                  ),
-                ),
-              ),
-            ),
-          const Positioned(
-            right: -30,
-            top: 70,
-            child: Icon(
-              Icons.auto_awesome_rounded,
-              size: 180,
-              color: Color(0x18FFFFFF),
-            ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(22, 58, 22, 56),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      CircleAvatar(
-                        radius: 36,
-                        backgroundColor: Colors.white.withValues(alpha: .15),
-                        child: ClipOval(
-                          child: FanImage(
-                            imageUrl: group.imageUrl,
-                            fallback: Text(
-                              group.displayName.characters.first,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 27,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              group.displayName,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 30,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            Text(
-                              [
-                                if (group.secondaryName.isNotEmpty)
-                                  group.secondaryName,
-                                group.company,
-                              ].join(' · '),
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: .78),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      FilledButton.tonalIcon(
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size(0, 42),
-                          padding: const EdgeInsets.symmetric(horizontal: 14),
-                        ),
-                        onPressed: () =>
-                            showFanToast(context, '已关注 ${group.displayName}'),
-                        icon: const Icon(
-                          Icons.person_add_alt_1_rounded,
-                          size: 17,
-                        ),
-                        label: const Text('关注'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    '${group.debutDate} 出道  ·  ${group.status}',
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: .82),
-                      fontSize: 12,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    group.description,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, height: 1.45),
-                  ),
-                  const SizedBox(height: 7),
-                  Text(
-                    '${group.memberIds.length} 位当前成员  ·  $cardCount 张小卡',
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: .7),
-                      fontSize: 11,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+    ),
+    subtitle: [
+      group.secondaryName,
+      group.company,
+    ].where((s) => s.trim().isNotEmpty).join(' · '),
+    details: [
+      if (group.debutDate.isNotEmpty) '${group.debutDate} 出道',
+      '${group.memberIds.length} 位当前成员',
+      '$cardCount 张小卡',
+    ],
+    description: group.description,
+  );
 }
 
 class _MembersTab extends StatelessWidget {
@@ -304,16 +194,30 @@ class _MembersTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
       children: [
-        SectionHeader(title: '当前成员 (${members.length})'),
+        SectionHeader(
+          title: '当前成员 (${members.length})',
+          titleStyle: const TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
         const SizedBox(height: 10),
         GridView.builder(
+          padding: EdgeInsets.zero,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount:
+                MediaQuery.sizeOf(context).width < 360 ||
+                    MediaQuery.textScalerOf(context).scale(14) > 18
+                ? 1
+                : 2,
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
-            mainAxisExtent: 82,
+            mainAxisExtent:
+                82 +
+                (MediaQuery.textScalerOf(context).scale(14) - 14).clamp(0, 28) *
+                    3,
           ),
           itemCount: members.length,
           itemBuilder: (context, index) {
@@ -338,15 +242,12 @@ class _MembersTab extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
+                                fontSize: 13,
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
                             Text(
-                              [
-                                if (idol.secondaryName.isNotEmpty)
-                                  idol.secondaryName,
-                                idol.role,
-                              ].join(' · '),
+                              idol.secondaryName,
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                               style: Theme.of(context).textTheme.bodySmall,
@@ -361,38 +262,24 @@ class _MembersTab extends StatelessWidget {
             );
           },
         ),
-        const SizedBox(height: 24),
-        SectionHeader(title: '过往成员 (${formerMembers.length})'),
-        const SizedBox(height: 9),
-        if (formerMembers.isEmpty)
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.history_rounded,
-                    color: FanColors.textSecondary,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      '暂无过往成员；历史关系会永久保留。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ),
-                ],
-              ),
+        if (formerMembers.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          SectionHeader(
+            title: '过往成员 (${formerMembers.length})',
+            titleStyle: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
             ),
-          )
-        else
+          ),
+          const SizedBox(height: 9),
           for (final idol in formerMembers)
             ListTile(
               onTap: () => context.push('/idol/${idol.id}'),
               leading: IdolAvatar(idol: idol, size: 46),
               title: Text(idol.displayName),
-              subtitle: const Text('Former Member'),
+              subtitle: Text(idol.secondaryName),
             ),
+        ],
       ],
     );
   }
@@ -411,7 +298,7 @@ class _AlbumTab extends StatelessWidget {
       children: sorted
           .map(
             (album) => _EntityListCard(
-              imageUrl: album.frontImageUrl,
+              imageUrl: album.thumbnailUrl ?? album.frontImageUrl,
               title: album.displayName,
               subtitle: '${album.albumType} · ${album.releaseDate}',
               detail: [
@@ -439,7 +326,7 @@ class _EventTab extends StatelessWidget {
       children: events
           .map(
             (event) => _EntityListCard(
-              imageUrl: event.imageUrl,
+              imageUrl: event.thumbnailUrl ?? event.imageUrl,
               title: event.displayName,
               subtitle: '${event.eventType} · ${event.startDate}',
               detail: [
@@ -458,12 +345,24 @@ class _EventTab extends StatelessWidget {
 }
 
 class _CardTab extends StatelessWidget {
-  const _CardTab({required this.group, required this.cards});
+  const _CardTab({
+    required this.group,
+    required this.cards,
+    required this.catalog,
+  });
   final FanGroup group;
   final List<CollectibleCard> cards;
+  final CatalogBundle catalog;
 
   @override
   Widget build(BuildContext context) {
+    if (cards.isEmpty) {
+      return const FanEmptyState(
+        icon: Icons.style_outlined,
+        title: '暂未收录小卡',
+        message: '这个组合的小卡发布后会展示在这里。',
+      );
+    }
     return Column(
       children: [
         Padding(
@@ -480,15 +379,12 @@ class _CardTab extends StatelessWidget {
         Expanded(
           child: GridView.builder(
             padding: const EdgeInsets.fromLTRB(20, 10, 20, 30),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: 9,
-              mainAxisSpacing: 16,
-              childAspectRatio: .52,
-            ),
+            gridDelegate: fanCardGrid(context),
             itemCount: cards.length,
             itemBuilder: (context, index) => CollectibleCardTile(
               card: cards[index],
+              caption: CardTileCaption.group,
+              sourceLabel: catalog.cardSourceLabel(cards[index]),
               compact: true,
               onTap: () => context.push('/card/${cards[index].id}'),
             ),
@@ -510,7 +406,7 @@ class _MerchandiseTab extends StatelessWidget {
       children: items
           .map(
             (item) => _EntityListCard(
-              imageUrl: item.imageUrl,
+              imageUrl: item.thumbnailUrl ?? item.imageUrl,
               title: item.displayName,
               subtitle: [
                 item.startDate,
@@ -582,12 +478,13 @@ class _EntityListCard extends StatelessWidget {
           height: 62,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
-            gradient: LinearGradient(colors: colors),
+            color: FanColors.lavenderSoft,
           ),
           clipBehavior: Clip.antiAlias,
           child: FanImage(
             imageUrl: imageUrl,
-            fallback: Icon(icon, color: Colors.white),
+            fit: BoxFit.contain,
+            fallback: Icon(icon, color: FanColors.lavender),
           ),
         ),
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),

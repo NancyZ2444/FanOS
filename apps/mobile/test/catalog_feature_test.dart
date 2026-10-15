@@ -27,7 +27,7 @@ void main() {
     await tester.pumpWidget(app(const CatalogPage()));
     await tester.pumpAndSettle();
 
-    for (final category in ['组合', '艺人', '专辑', '活动', '小卡', '其他来源']) {
+    for (final category in ['组合', '艺人', '专辑', '活动', '小卡', '其他']) {
       expect(
         find.byKey(ValueKey('catalog-category-$category')),
         findsOneWidget,
@@ -41,9 +41,9 @@ void main() {
         tester.getRect(find.byKey(const ValueKey('catalog-category-组合'))).top,
       );
     }
-    expect(find.text('✦  最近更新'), findsOneWidget);
-    expect(find.text('✦  热门组合'), findsOneWidget);
-    expect(find.text('✦  全部组合'), findsOneWidget);
+    expect(find.text('最近更新'), findsOneWidget);
+    expect(find.text('热门组合'), findsOneWidget);
+    expect(find.text('全部组合'), findsOneWidget);
     expect(find.text('✦  我的本命'), findsNothing);
     expect(find.byTooltip('搜索'), findsNothing);
     expect(tester.takeException(), isNull);
@@ -93,6 +93,7 @@ void main() {
   ) async {
     setPhoneSize(tester);
     await tester.pumpWidget(app(const IdolDetailPage(idolId: 'idol-aria')));
+    await tester.pump(const Duration(milliseconds: 250));
     await tester.pumpAndSettle();
 
     expect(find.widgetWithText(Tab, '小卡'), findsOneWidget);

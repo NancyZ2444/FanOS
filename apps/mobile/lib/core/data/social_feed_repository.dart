@@ -165,7 +165,7 @@ class MockSocialFeedRepository implements SocialFeedRepository {
       2 => FeedRelation(
         type: FeedRelationType.card,
         targetId: card.id,
-        title: card.title,
+        title: card.displayTitle,
         route: '/card/${card.id}',
       ),
       _ => const FeedRelation(

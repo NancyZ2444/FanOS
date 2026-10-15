@@ -559,6 +559,12 @@ def review_action(
     permit(actor, "catalog", "publish")
     if payload.action not in {"accept", "reject", "ignore", "match", "edit_accept"}:
         raise DomainError("INVALID_ACTION", "审核操作无效", 422)
+    if (
+        queue in {"scan", "contribution"}
+        and payload.action in {"reject", "ignore"}
+        and not payload.reason.strip()
+    ):
+        raise DomainError("REASON_REQUIRED", "请填写面向用户的未采纳原因", 422)
     if queue == "scan":
         row = db.get(ScanFeedback, item_id)
         if not row:
@@ -1276,6 +1282,10 @@ def save_record(
         from .album_versions import sync_after_record
 
         sync_after_record(db, row.entity_id, before["data"]["name"] if before else None)
+    if kind == "versions":
+        from app.modules.catalog.media_import import queue_images
+
+        queue_images(db, "versions", row.id, row.data)
     db.commit()
     return success(row_data(row))
 

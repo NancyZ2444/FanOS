@@ -1,4 +1,6 @@
+import 'package:fan_os/core/widgets/entity_header.dart';
 import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/config/feature_flags.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
@@ -16,12 +18,15 @@ class IdolDetailPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final catalog = ref.watch(catalogProvider);
     return Scaffold(
+      appBar: !catalog.hasValue ? AppBar(title: const Text('艺人详情')) : null,
       body: catalog.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, _) => const FanEmptyState(
+        loading: () => const FanPageSkeleton(),
+        error: (_, _) => FanEmptyState(
           icon: Icons.cloud_off_rounded,
           title: '加载失败',
-          message: '请稍后重试',
+          message: '请检查网络后重试',
+          actionLabel: '重新加载',
+          onAction: () => ref.invalidate(catalogProvider),
         ),
         data: (data) {
           final idol = data.idols
@@ -80,21 +85,24 @@ class _IdolBody extends ConsumerWidget {
         .toList();
     final others = data.others
         .where(
-          (item) => cards.any(
-            (c) => c.sourceEntityType == 'OTHER' && c.sourceEntityId == item.id,
-          ),
+          (item) =>
+              item.belongsToIdol(idol.id) ||
+              (group != null && item.belongsToGroup(group.id)) ||
+              cards.any(
+                (c) =>
+                    c.sourceEntityType == 'OTHER' &&
+                    c.sourceEntityId == item.id,
+              ),
         )
         .toList();
+    final showFeed = ref.watch(idolFeedEnabledProvider);
     return DefaultTabController(
-      length: 5,
-      initialIndex: 1,
+      length: showFeed ? 5 : 4,
+      initialIndex: showFeed ? 1 : 0,
       child: NestedScrollView(
         headerSliverBuilder: (context, _) => [
-          SliverAppBar(
-            pinned: true,
-            expandedHeight: 354,
-            foregroundColor: Colors.white,
-            backgroundColor: Color(idol.colorStart),
+          EntityProfileSliver(
+            imageUrl: idol.coverImageUrl ?? idol.imageUrl ?? idol.thumbnailUrl,
             actions: [
               if (selected)
                 IconButton(
@@ -128,59 +136,49 @@ class _IdolBody extends ConsumerWidget {
                   ref,
                   'idols',
                   idol.id,
-                  idol.nameEn.isNotEmpty ? idol.nameEn : idol.name,
+                  idol.officialDisplayName,
                 ),
               ),
               IconButton(
                 tooltip: '反馈问题',
-                onPressed: () => showFanToast(context, '图鉴问题反馈入口已记录'),
+                onPressed: () => context.push(
+                  '/catalog-correction?type=idols&id=${idol.id}',
+                ),
                 icon: const Icon(Icons.more_horiz_rounded),
               ),
             ],
-            flexibleSpace: FlexibleSpaceBar(
-              background: _IdolHero(
-                idol: idol,
-                selected: selected,
-                isPrimary: favorites.primaryId == idol.id,
-                onFavorite: () {
-                  ref.read(favoritesProvider.notifier).toggle(idol.id);
-                  showFanToast(
-                    context,
-                    selected ? '已取消本命' : '已将 ${idol.displayName} 设为本命',
-                  );
-                },
-                onGroup: group == null
-                    ? null
-                    : () => context.push('/group/${group.id}'),
-                onCareer: () => _showCareer(context, idol),
-              ),
+            hero: _IdolHero(
+              idol: idol,
+              selected: selected,
+              isPrimary: favorites.primaryId == idol.id,
+              onFavorite: () {
+                if (!ref.read(sessionProvider).isLoggedIn) {
+                  context.push('/login');
+                  return;
+                }
+                ref.read(favoritesProvider.notifier).toggle(idol.id);
+              },
+              onGroup: group == null
+                  ? null
+                  : () => context.push('/group/${group.id}'),
+              onCareer: () => _showCareer(context, idol),
             ),
-            bottom: const PreferredSize(
-              preferredSize: Size.fromHeight(48),
-              child: ColoredBox(
-                color: FanColors.canvas,
-                child: TabBar(
-                  isScrollable: true,
-                  tabAlignment: TabAlignment.start,
-                  indicatorColor: FanColors.lavender,
-                  labelColor: FanColors.ink,
-                  unselectedLabelColor: FanColors.textSecondary,
-                  tabs: [
-                    Tab(text: '动态'),
-                    Tab(text: '小卡'),
-                    Tab(text: '专辑'),
-                    Tab(text: '活动'),
-                    Tab(text: '其他来源'),
-                  ],
-                ),
-              ),
-            ),
+          ),
+          SliverPersistentHeader(
+            pinned: true,
+            delegate: EntityTabs([
+              if (showFeed) '动态',
+              '小卡',
+              '专辑',
+              '活动',
+              '其他',
+            ], textScale: MediaQuery.textScalerOf(context).scale(14) / 14),
           ),
         ],
         body: TabBarView(
           children: [
-            EntitySocialFeed.idol(idol: idol),
-            _IdolCards(idol: idol, cards: cards),
+            if (showFeed) EntitySocialFeed.idol(idol: idol),
+            _IdolCards(idol: idol, cards: cards, catalog: data),
             _IdolEntityList(
               emptyTitle: '暂时没有专辑资料',
               children: albums
@@ -194,7 +192,7 @@ class _IdolBody extends ConsumerWidget {
                       ].join(' · '),
                       colors: [Color(item.colorStart), Color(item.colorEnd)],
                       icon: Icons.album_outlined,
-                      imageUrl: item.frontImageUrl,
+                      imageUrl: item.thumbnailUrl ?? item.frontImageUrl,
                       onTap: () => context.push('/album/${item.id}'),
                     ),
                   )
@@ -213,7 +211,7 @@ class _IdolBody extends ConsumerWidget {
                       ].join(' · '),
                       colors: [Color(item.colorStart), Color(item.colorEnd)],
                       icon: Icons.event_outlined,
-                      imageUrl: item.imageUrl,
+                      imageUrl: item.thumbnailUrl ?? item.imageUrl,
                       onTap: () => context.push('/event/${item.id}'),
                     ),
                   )
@@ -232,7 +230,7 @@ class _IdolBody extends ConsumerWidget {
                       ].join(' · '),
                       colors: [Color(item.colorStart), Color(item.colorEnd)],
                       icon: Icons.shopping_bag_outlined,
-                      imageUrl: item.imageUrl,
+                      imageUrl: item.thumbnailUrl ?? item.imageUrl,
                       onTap: () => context.push('/other/${item.id}'),
                     ),
                   )
@@ -248,8 +246,13 @@ class _IdolBody extends ConsumerWidget {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
+      useSafeArea: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * .8,
+      ),
       builder: (context) => SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -325,153 +328,44 @@ class _IdolHero extends StatelessWidget {
   final VoidCallback onCareer;
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(idol.colorStart), Color(idol.colorEnd)],
+  Widget build(BuildContext context) => EntityIdentity(
+    name: idol.displayName,
+    avatar: IdolAvatar(idol: idol, size: 56, selected: isPrimary),
+    subtitle: [
+      idol.secondaryName,
+      idol.displayGroupName,
+    ].where((s) => s.trim().isNotEmpty).join(' · '),
+    details: [idol.role, idol.birthDate, idol.company],
+    description: idol.bio,
+    actions: [
+      OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(minimumSize: const Size(0, 40)),
+        onPressed: onFavorite,
+        icon: Icon(selected ? Icons.favorite : Icons.favorite_border, size: 18),
+        label: Text(
+          isPrimary
+              ? '★ 已是本命'
+              : selected
+              ? '已是本命'
+              : '设为本命',
         ),
       ),
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: FanImage(
-              imageUrl: idol.imageUrl,
-              fallback: const SizedBox.shrink(),
-            ),
-          ),
-          if (idol.imageUrl?.isNotEmpty == true)
-            const Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Colors.transparent, Color(0xDD141829)],
-                  ),
-                ),
-              ),
-            ),
-          const Positioned(
-            right: -28,
-            top: 68,
-            child: Icon(
-              Icons.auto_awesome_rounded,
-              size: 180,
-              color: Color(0x18FFFFFF),
-            ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(22, 62, 22, 55),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.end,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      IdolAvatar(idol: idol, size: 82, selected: isPrimary),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              idol.displayName.toUpperCase(),
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 29,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            InkWell(
-                              onTap: onGroup,
-                              child: Text(
-                                [
-                                  if (idol.secondaryName.isNotEmpty)
-                                    idol.secondaryName,
-                                  idol.displayGroupName,
-                                  idol.company,
-                                ].join('  ·  '),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: Colors.white.withValues(alpha: .8),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      FilledButton.tonalIcon(
-                        style: FilledButton.styleFrom(
-                          minimumSize: const Size(0, 42),
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                        ),
-                        onPressed: onFavorite,
-                        icon: Icon(
-                          selected
-                              ? Icons.favorite_rounded
-                              : Icons.favorite_border_rounded,
-                          size: 17,
-                        ),
-                        label: Text(
-                          isPrimary
-                              ? '★ 已是本命'
-                              : selected
-                              ? '已是本命'
-                              : '设为本命',
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    '${idol.role}  ·  ${idol.birthDate}  ·  ${idol.region}',
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: .78),
-                      fontSize: 11,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    idol.bio,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, height: 1.45),
-                  ),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton.icon(
-                      onPressed: onCareer,
-                      icon: const Icon(
-                        Icons.timeline_rounded,
-                        color: Colors.white,
-                        size: 17,
-                      ),
-                      label: const Text(
-                        '个人经历',
-                        style: TextStyle(color: Colors.white),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+      if (onGroup != null)
+        TextButton(onPressed: onGroup, child: const Text('查看组合')),
+      TextButton(onPressed: onCareer, child: const Text('个人经历')),
+    ],
+  );
 }
 
 class _IdolCards extends ConsumerStatefulWidget {
-  const _IdolCards({required this.idol, required this.cards});
+  const _IdolCards({
+    required this.idol,
+    required this.cards,
+    required this.catalog,
+  });
   final IdolProfile idol;
   final List<CollectibleCard> cards;
+  final CatalogBundle catalog;
 
   @override
   ConsumerState<_IdolCards> createState() => _IdolCardsState();
@@ -489,6 +383,13 @@ class _IdolCardsState extends ConsumerState<_IdolCards> {
             .where((card) => _type == '全部' || card.cardType == _type)
             .toList()
           ..sort((a, b) => b.releaseDate.compareTo(a.releaseDate));
+    if (widget.cards.isEmpty) {
+      return const FanEmptyState(
+        icon: Icons.style_outlined,
+        title: '暂未收录小卡',
+        message: '这位艺人的小卡发布后会展示在这里。',
+      );
+    }
     return Column(
       children: [
         SizedBox(
@@ -522,29 +423,35 @@ class _IdolCardsState extends ConsumerState<_IdolCards> {
           ),
         ),
         Expanded(
-          child: GridView.builder(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: 9,
-              mainAxisSpacing: 16,
-              childAspectRatio: .52,
-            ),
-            itemCount: cards.length,
-            itemBuilder: (context, index) {
-              final card = cards[index];
-              return CollectibleCardTile(
-                card: card,
-                compact: true,
-                badge: relation.isOwned(card.id)
-                    ? const StatusBadge(label: '✓', dark: true)
-                    : relation.isWished(card.id)
-                    ? const StatusBadge(label: '♥')
-                    : null,
-                onTap: () => context.push('/card/${card.id}'),
-              );
-            },
-          ),
+          child: cards.isEmpty
+              ? FanEmptyState(
+                  icon: Icons.filter_alt_off_outlined,
+                  title: '没有符合条件的小卡',
+                  message: '试试其他类型。',
+                  actionLabel: '清空筛选',
+                  onAction: () => setState(() => _type = '全部'),
+                )
+              : GridView.builder(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
+                  gridDelegate: fanCardGrid(context),
+                  itemCount: cards.length,
+                  itemBuilder: (context, index) {
+                    final card = cards[index];
+                    return CollectibleCardTile(
+                      card: card,
+                      caption: CardTileCaption.idol,
+                      sourceLabel: widget.catalog.cardSourceLabel(card),
+                      versionLabel: widget.catalog.cardVersionLabel(card),
+                      compact: true,
+                      badge: relation.isOwned(card.id)
+                          ? const StatusBadge(label: '✓', dark: true)
+                          : relation.isWished(card.id)
+                          ? const StatusBadge(label: '♥')
+                          : null,
+                      onTap: () => context.push('/card/${card.id}'),
+                    );
+                  },
+                ),
         ),
       ],
     );
@@ -601,12 +508,13 @@ class _IdolEntityRow extends StatelessWidget {
           height: 60,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
-            gradient: LinearGradient(colors: colors),
+            color: FanColors.lavenderSoft,
           ),
           clipBehavior: Clip.antiAlias,
           child: FanImage(
             imageUrl: imageUrl,
-            fallback: Icon(icon, color: Colors.white),
+            fit: BoxFit.contain,
+            fallback: Icon(icon, color: FanColors.lavender),
           ),
         ),
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),

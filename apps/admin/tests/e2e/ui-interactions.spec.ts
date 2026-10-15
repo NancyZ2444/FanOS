@@ -121,6 +121,8 @@ test("entity unsaved changes, save lock, detail edit and archived relationship b
   expect(writes).toBe(1);
   const row = page.locator(".ant-table-tbody tr").filter({ hasText: name });
   await row.getByRole("button", { name: "查看", exact: true }).click();
+  await expect(page).toHaveURL(`/catalog/groups/${entity.id}/detail`);
+  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await expect(
     dialog.getByLabel("组合名称 / 官方名称", { exact: true }),

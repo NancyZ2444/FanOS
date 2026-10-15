@@ -18,6 +18,7 @@ from app.models import (
     Idol,
 )
 from app.modules.catalog.images import portrait_source, thumbnail_url
+from app.modules.catalog.media_import import FIELDS, managed_thumbnail, public_image
 from app.modules.catalog.tags import TAG_TYPES, entity_tags
 from app.modules.catalog.taxonomy_models import CatalogOther
 
@@ -66,8 +67,8 @@ def group_payload(
         "color_start": group.color_start,
         "color_end": group.color_end,
         "description": group.description,
-        "image_url": image_url,
-        "thumbnail_url": thumbnail_url("groups", group.id, image_url),
+        "image_url": public_image(image_url),
+        "thumbnail_url": thumbnail_url("groups", group.id, public_image(image_url)),
     }
 
 
@@ -93,8 +94,8 @@ def idol_payload(
         "region": idol.region,
         "role": idol.role,
         "careers": idol.careers,
-        "image_url": image_url,
-        "thumbnail_url": thumbnail_url("idols", idol.id, image_url),
+        "image_url": public_image(image_url),
+        "thumbnail_url": thumbnail_url("idols", idol.id, public_image(image_url)),
         "group_ids": group_ids or [],
     }
 
@@ -298,4 +299,12 @@ def bootstrap(db: Session) -> dict[str, list[dict[str, object]]]:
                 ]
                 if current:
                     item["company"] = " / ".join(current)
+            source = item.get("image_url") or item.get("cover_image")
+            item["thumbnail_url"] = managed_thumbnail(data, source) or item.get("thumbnail_url")
+            for field in FIELDS:
+                if field in item:
+                    item[field] = public_image(item[field])
+            for version in item.get("entity_versions", []):
+                if "cover" in version:
+                    version["cover"] = public_image(version["cover"])
     return result

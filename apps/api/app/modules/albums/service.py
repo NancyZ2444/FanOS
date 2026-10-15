@@ -239,7 +239,7 @@ def sync_card_view(doc: dict) -> None:
     if view.get("featured_slot_id") not in slot_ids:
         view["featured_slot_id"] = None
     view.setdefault(
-        "background", {"type": "GRADIENT", "colors": ["#D7CEFF", "#7862DB"], "angle": 90}
+        "background", {"type": "GRADIENT", "colors": ["#F4F1FF", "#E5DEFA"], "angle": 90}
     )
     view.setdefault("order_customized", False)
     view.setdefault("animation_style", "STACK")
@@ -265,8 +265,16 @@ def payload(
         else document(db, album)
     )
     sync_card_view(doc)
-    # Shelf responses need cover images, not every inner-page asset in a 450-slot book.
+    # Featured front, then ordered fronts. Preserve slot identity and availability.
+    slots_by_id = {s["id"]: s for s in occupied(doc)}
+    ordered = [slots_by_id[s] for s in doc["card_view"]["card_order"]]
+    featured = doc["card_view"].get("featured_slot_id")
+    cover_slots = (
+        [s for s in ordered if s["id"] == featured] + [s for s in ordered if s["id"] != featured]
+    )[:5]
+    # Shelf responses need at most five cover cards, not all 450 inner-page assets.
     card_ids = set() if summary else {s["card_id"] for s in occupied(doc)}
+    card_ids.update(s["card_id"] for s in cover_slots)
     card_ids.update(e["content"] for e in doc["cover"].get("elements", []) if e["type"] == "CARD")
     cards = {}
     for card in db.scalars(select(Card).where(Card.id.in_(card_ids))).all():
@@ -327,6 +335,12 @@ def payload(
         "page_count": len(doc["pages"]),
         "card_count": len(occupied(doc)),
         "cover": doc["cover"],
+        "cover_slots": cover_slots,
+        "card_view": (
+            {k: v for k, v in doc["card_view"].items() if k != "card_order"}
+            if summary
+            else doc["card_view"]
+        ),
         "cards": cards,
         "color_start": album.color_start,
         "color_end": album.color_end,

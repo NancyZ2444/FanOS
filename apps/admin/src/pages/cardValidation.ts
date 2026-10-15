@@ -29,7 +29,7 @@ export function validateCard(
       add("ar_resource", "请填写 AR 资源地址");
     for (const side of ["front_source", "back_source"] as const) {
       if (side === "back_source" && !card.back_image_url) continue;
-      if (!/^https?:\/\//.test(card[side]?.source_url || ""))
+      if (card[side]?.source_type !== "USER_SUBMITTED" && !/^https?:\/\//.test(card[side]?.source_url || ""))
         add(`${side}.source_url`, "请填写有效的图片来源链接");
       if (
         !["AUTHORIZED", "OFFICIAL_SOURCE"].includes(

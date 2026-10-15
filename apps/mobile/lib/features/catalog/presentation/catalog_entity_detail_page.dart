@@ -20,13 +20,18 @@ class CatalogEntityDetailPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final catalog = ref.watch(catalogProvider);
     return catalog.when(
-      loading: () =>
-          const Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (_, _) => const Scaffold(
+      loading: () => Scaffold(
+        appBar: AppBar(title: const Text('图鉴资料')),
+        body: const FanPageSkeleton(),
+      ),
+      error: (_, _) => Scaffold(
+        appBar: AppBar(title: const Text('图鉴资料')),
         body: FanEmptyState(
           icon: Icons.cloud_off_rounded,
           title: '内容加载失败',
-          message: '请稍后重试。',
+          message: '请检查网络后重试。',
+          actionLabel: '重新加载',
+          onAction: () => ref.invalidate(catalogProvider),
         ),
       ),
       data: (data) => _buildDetail(context, data),
@@ -44,6 +49,7 @@ class CatalogEntityDetailPage extends ConsumerWidget {
   Widget _album(BuildContext context, CatalogBundle data) {
     final album = data.albums.where((item) => item.id == entityId).firstOrNull;
     if (album == null) return _missing('没有找到该专辑');
+    final artistName = data.artistLabel(album.artists, album.artistName);
     final cards = data.cards
         .where(
           (card) =>
@@ -51,21 +57,22 @@ class CatalogEntityDetailPage extends ConsumerWidget {
                   card.sourceEntityId == album.id) ||
               (card.sourceEntityId == null &&
                   card.groupId == album.groupId &&
-                  card.source.contains(album.name)),
+                  card.source.toLowerCase() == album.name.toLowerCase()),
         )
         .toList();
     return _EntityScaffold(
       title: album.displayName,
+      onFeedback: () =>
+          context.push('/catalog-correction?type=albums&id=${album.id}'),
       secondaryTitle: album.secondaryName,
       typeLabel: album.albumType,
-      artistName: album.artistName,
+      artistName: artistName,
       date: album.releaseDate,
       description: album.description,
       colors: [Color(album.colorStart), Color(album.colorEnd)],
       frontImageUrl: album.frontImageUrl,
-      backImageUrl: album.backImageUrl,
       info: [
-        ('艺人', album.artistName),
+        ('组合/艺人', artistName),
         ('发行类型', album.albumType),
         ('发行日期', album.releaseDate),
         ('版本', album.versions.join(' · ')),
@@ -79,6 +86,7 @@ class CatalogEntityDetailPage extends ConsumerWidget {
   Widget _event(BuildContext context, CatalogBundle data) {
     final event = data.events.where((item) => item.id == entityId).firstOrNull;
     if (event == null) return _missing('没有找到该活动');
+    final artistName = data.artistLabel(event.artists, event.artistName);
     final children = data.events
         .where((item) => item.parentEventId == event.id)
         .toList();
@@ -89,33 +97,30 @@ class CatalogEntityDetailPage extends ConsumerWidget {
                   card.sourceEntityId == event.id) ||
               (card.sourceEntityId == null &&
                   card.groupId == event.groupId &&
-                  (card.source.toLowerCase().contains(
-                        event.name.split(' ').first.toLowerCase(),
-                      ) ||
-                      card.region == event.region)),
+                  card.source.toLowerCase() == event.name.toLowerCase()),
         )
         .toList();
     return _EntityScaffold(
       title: event.displayName,
+      onFeedback: () =>
+          context.push('/catalog-correction?type=events&id=${event.id}'),
       frontImageUrl: event.imageUrl,
       secondaryTitle: event.secondaryName,
-      typeLabel: event.eventType,
-      artistName: event.artistName,
+      typeLabel: '',
+      artistName: artistName,
       date: event.startDate,
       description: event.description,
       colors: [Color(event.colorStart), Color(event.colorEnd)],
       info: [
-        ('艺人', event.artistName),
-        ('活动类型', event.eventType),
+        ('组合/艺人', artistName),
         ('日期', event.startDate),
         if (event.isOnline) ('平台', event.locationLabel) else ('城市', event.city),
         if (!event.isOnline) ('场馆', event.venue),
-        if (event.isOnline) ('形式', 'Online'),
+        if (event.isOnline) ('形式', '线上'),
       ],
       chips: [
-        event.eventType,
         event.region,
-        if (event.isOnline) 'Online',
+        if (event.isOnline) '线上',
         ...event.tags.map((t) => t.name),
       ],
       cards: cards,
@@ -129,11 +134,14 @@ class CatalogEntityDetailPage extends ConsumerWidget {
         .where((others) => others.id == entityId)
         .firstOrNull;
     if (item == null) return _missing('没有找到该其他来源');
+    final artistName = data.artistLabel(item.artists, item.artistName);
     return _EntityScaffold(
       title: item.name,
+      onFeedback: () =>
+          context.push('/catalog-correction?type=others&id=${item.id}'),
       secondaryTitle: item.originalName,
-      typeLabel: 'Other',
-      artistName: '',
+      typeLabel: '其他',
+      artistName: artistName,
       date: [
         item.startDate,
         item.endDate,
@@ -142,6 +150,7 @@ class CatalogEntityDetailPage extends ConsumerWidget {
       colors: [Color(item.colorStart), Color(item.colorEnd)],
       frontImageUrl: item.imageUrl,
       info: [
+        if (artistName.isNotEmpty) ('组合/艺人', artistName),
         ('原始名称', item.originalName),
         ('开始日期', item.startDate),
         ('结束日期', item.endDate),
@@ -152,7 +161,13 @@ class CatalogEntityDetailPage extends ConsumerWidget {
             (c) => c.sourceEntityType == 'OTHER' && c.sourceEntityId == item.id,
           )
           .toList(),
-      onArtist: () {},
+      onArtist: () {
+        if (item.groupId.isNotEmpty) {
+          context.push('/group/${item.groupId}');
+        } else if (item.artists.isNotEmpty) {
+          context.push('/idol/${item.artists.first.id}');
+        }
+      },
     );
   }
 
@@ -178,10 +193,10 @@ class _EntityScaffold extends StatelessWidget {
     required this.chips,
     required this.cards,
     required this.onArtist,
+    required this.onFeedback,
     this.children = const [],
     this.secondaryTitle = '',
     this.frontImageUrl,
-    this.backImageUrl,
   });
   final String title;
   final String secondaryTitle;
@@ -195,18 +210,20 @@ class _EntityScaffold extends StatelessWidget {
   final List<CollectibleCard> cards;
   final List<CatalogEvent> children;
   final VoidCallback onArtist;
+  final VoidCallback onFeedback;
   final String? frontImageUrl;
-  final String? backImageUrl;
 
   @override
   Widget build(BuildContext context) {
+    final visibleInfo = info.where((row) => row.$2.trim().isNotEmpty).toList();
+    final visibleChips = chips.where((chip) => chip.trim().isNotEmpty).toSet();
     return Scaffold(
       appBar: AppBar(
         leading: const BackButton(),
         actions: [
           IconButton(
             tooltip: '反馈问题',
-            onPressed: () => showFanToast(context, '问题反馈入口已记录'),
+            onPressed: onFeedback,
             icon: const Icon(Icons.more_horiz_rounded),
           ),
         ],
@@ -219,17 +236,21 @@ class _EntityScaffold extends StatelessWidget {
               Center(
                 child: SizedBox(
                   width: 220,
-                  child: _TwoSidedArtwork(
-                    title: title,
-                    colors: colors,
-                    frontImageUrl: frontImageUrl,
-                    backImageUrl: backImageUrl,
+                  child: FanArtwork(
+                    imageUrl: frontImageUrl,
+                    startColor: colors.first,
+                    endColor: colors.last,
+                    label: title.characters.take(2).toString().toUpperCase(),
+                    aspectRatio: 1,
+                    fit: BoxFit.contain,
                   ),
                 ),
               ),
               const SizedBox(height: 20),
-              StatusBadge(label: typeLabel),
-              const SizedBox(height: 9),
+              if (typeLabel.isNotEmpty) ...[
+                StatusBadge(label: typeLabel),
+                const SizedBox(height: 9),
+              ],
               Text(title, style: Theme.of(context).textTheme.headlineMedium),
               if (secondaryTitle.isNotEmpty) ...[
                 const SizedBox(height: 3),
@@ -245,9 +266,11 @@ class _EntityScaffold extends StatelessWidget {
                   onTap: onArtist,
                   child: Row(
                     children: [
-                      Text(
-                        artistName,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      Flexible(
+                        child: Text(
+                          artistName,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
                       ),
                       const Icon(Icons.chevron_right_rounded, size: 18),
                       const SizedBox(width: 8),
@@ -255,26 +278,40 @@ class _EntityScaffold extends StatelessWidget {
                     ],
                   ),
                 ),
-              const SizedBox(height: 14),
-              Text(description, style: Theme.of(context).textTheme.bodyMedium),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 7,
-                runSpacing: 7,
-                children: chips.map((chip) => Chip(label: Text(chip))).toList(),
-              ),
-              const SizedBox(height: 22),
+              if (description.trim().isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(
+                  description,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ],
+              if (visibleChips.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 7,
+                  runSpacing: 7,
+                  children: visibleChips
+                      .map((chip) => Chip(label: Text(chip)))
+                      .toList(),
+                ),
+              ],
+              const SizedBox(height: 16),
               Card(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Column(
                     children: [
-                      for (var index = 0; index < info.length; index++) ...[
+                      for (
+                        var index = 0;
+                        index < visibleInfo.length;
+                        index++
+                      ) ...[
                         _DetailInfoRow(
-                          label: info[index].$1,
-                          value: info[index].$2,
+                          label: visibleInfo[index].$1,
+                          value: visibleInfo[index].$2,
                         ),
-                        if (index != info.length - 1) const Divider(height: 1),
+                        if (index != visibleInfo.length - 1)
+                          const Divider(height: 1),
                       ],
                     ],
                   ),
@@ -297,14 +334,20 @@ class _EntityScaffold extends StatelessWidget {
                     ),
                   ),
               ],
-              if (cards.isNotEmpty) ...[
-                const SizedBox(height: 26),
-                SectionHeader(
-                  title: '相关小卡',
-                  actionLabel: '查看全部',
-                  onAction: () => context.push('/cards'),
-                ),
-                const SizedBox(height: 10),
+              const SizedBox(height: 26),
+              SectionHeader(
+                title: '相关小卡',
+                actionLabel: cards.isEmpty ? null : '查看全部',
+                onAction: () => context.push('/cards'),
+              ),
+              const SizedBox(height: 10),
+              if (cards.isEmpty)
+                const FanEmptyState(
+                  icon: Icons.style_outlined,
+                  title: '暂无相关小卡',
+                  message: '官方收录后会在这里展示。',
+                )
+              else
                 SizedBox(
                   height: 224,
                   child: ListView.separated(
@@ -321,98 +364,10 @@ class _EntityScaffold extends StatelessWidget {
                     ),
                   ),
                 ),
-              ],
             ],
           ),
         ),
       ),
-    );
-  }
-}
-
-class _TwoSidedArtwork extends StatefulWidget {
-  const _TwoSidedArtwork({
-    required this.title,
-    required this.colors,
-    this.frontImageUrl,
-    this.backImageUrl,
-  });
-
-  final String title;
-  final List<Color> colors;
-  final String? frontImageUrl;
-  final String? backImageUrl;
-
-  @override
-  State<_TwoSidedArtwork> createState() => _TwoSidedArtworkState();
-}
-
-class _TwoSidedArtworkState extends State<_TwoSidedArtwork> {
-  bool _showBack = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final front = widget.frontImageUrl?.isNotEmpty == true
-        ? widget.frontImageUrl
-        : null;
-    final back = widget.backImageUrl?.isNotEmpty == true
-        ? widget.backImageUrl
-        : null;
-    final selectedUrl = _showBack ? back : front;
-    return Column(
-      children: [
-        AspectRatio(
-          aspectRatio: 1,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(18),
-            child: selectedUrl == null
-                ? FanArtwork(
-                    startColor: widget.colors.first,
-                    endColor: widget.colors.last,
-                    label: widget.title.characters
-                        .take(2)
-                        .toString()
-                        .toUpperCase(),
-                    aspectRatio: 1,
-                  )
-                : Image.network(
-                    selectedUrl,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => FanArtwork(
-                      startColor: widget.colors.first,
-                      endColor: widget.colors.last,
-                      label: widget.title.characters
-                          .take(2)
-                          .toString()
-                          .toUpperCase(),
-                      aspectRatio: 1,
-                    ),
-                  ),
-          ),
-        ),
-        if (back != null || front != null) ...[
-          const SizedBox(height: 10),
-          SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(value: false, label: Text('正面')),
-              ButtonSegment(value: true, label: Text('背面')),
-            ],
-            selected: {_showBack},
-            onSelectionChanged: (value) {
-              final showBack = value.first;
-              if (showBack && back == null) {
-                showFanToast(context, '该专辑暂未录入背面素材');
-                return;
-              }
-              if (!showBack && front == null) {
-                showFanToast(context, '该专辑暂未录入正面素材');
-                return;
-              }
-              setState(() => _showBack = showBack);
-            },
-          ),
-        ],
-      ],
     );
   }
 }
@@ -425,7 +380,7 @@ class _DetailInfoRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 13),
+      padding: const EdgeInsets.symmetric(vertical: 10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

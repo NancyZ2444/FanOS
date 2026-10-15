@@ -1,16 +1,23 @@
 import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/config/feature_flags.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:fan_os/features/feedback/feedback_center.dart';
 
 class NotificationsPage extends ConsumerWidget {
   const NotificationsPage({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final feed = ref.watch(socialFeedProvider);
-    final settings = ref.watch(idolFeedNotificationProvider);
+    final showFeed = ref.watch(idolFeedEnabledProvider);
+    final feed = showFeed
+        ? ref.watch(socialFeedProvider)
+        : const SocialFeedState();
+    final settings = showFeed
+        ? ref.watch(idolFeedNotificationProvider)
+        : const IdolFeedNotificationSettings();
     final primaryId = ref.watch(favoritesProvider).primaryId;
     final catalog = ref.watch(catalogProvider).value;
     final primaryName = catalog?.idols
@@ -43,7 +50,8 @@ class NotificationsPage extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 30),
         children: [
-          if (settings.enabled && feed.newCount > 0) ...[
+          const FeedbackInbox(),
+          if (showFeed && settings.enabled && feed.newCount > 0) ...[
             Material(
               key: const Key('compact-feed-notice'),
               color: FanColors.lavenderSoft,
@@ -88,58 +96,60 @@ class NotificationsPage extends ConsumerWidget {
             ),
             const SizedBox(height: 14),
           ],
-          const Text('本命动态通知', style: TextStyle(fontWeight: FontWeight.w800)),
-          const SizedBox(height: 10),
-          Card(
-            child: Column(
-              children: [
-                SwitchListTile(
-                  secondary: const Icon(Icons.dynamic_feed_outlined),
-                  title: const Text('本命有新动态'),
-                  subtitle: const Text('按天聚合公开内容更新'),
-                  value: settings.enabled,
-                  onChanged: ref
-                      .read(idolFeedNotificationProvider.notifier)
-                      .setEnabled,
-                ),
-                const Divider(height: 1, indent: 58),
-                SwitchListTile(
-                  secondary: const Icon(Icons.star_outline_rounded),
-                  title: const Text('星标优先'),
-                  value: settings.primaryIdolFirst,
-                  onChanged: settings.enabled
-                      ? ref
-                            .read(idolFeedNotificationProvider.notifier)
-                            .setPrimaryIdolFirst
-                      : null,
-                ),
-                const Divider(height: 1, indent: 58),
-                SwitchListTile(
-                  secondary: const Icon(Icons.notifications_active_outlined),
-                  title: const Text('接收 Push'),
-                  subtitle: const Text('正式服务接入后生效'),
-                  value: settings.pushEnabled,
-                  onChanged: settings.enabled
-                      ? ref
-                            .read(idolFeedNotificationProvider.notifier)
-                            .setPushEnabled
-                      : null,
-                ),
-              ],
+          if (showFeed) ...[
+            const Text('本命动态通知', style: TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 10),
+            Card(
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    secondary: const Icon(Icons.dynamic_feed_outlined),
+                    title: const Text('本命有新动态'),
+                    subtitle: const Text('按天聚合公开内容更新'),
+                    value: settings.enabled,
+                    onChanged: ref
+                        .read(idolFeedNotificationProvider.notifier)
+                        .setEnabled,
+                  ),
+                  const Divider(height: 1, indent: 58),
+                  SwitchListTile(
+                    secondary: const Icon(Icons.star_outline_rounded),
+                    title: const Text('星标优先'),
+                    value: settings.primaryIdolFirst,
+                    onChanged: settings.enabled
+                        ? ref
+                              .read(idolFeedNotificationProvider.notifier)
+                              .setPrimaryIdolFirst
+                        : null,
+                  ),
+                  const Divider(height: 1, indent: 58),
+                  SwitchListTile(
+                    secondary: const Icon(Icons.notifications_active_outlined),
+                    title: const Text('接收 Push'),
+                    subtitle: const Text('正式服务接入后生效'),
+                    value: settings.pushEnabled,
+                    onChanged: settings.enabled
+                        ? ref
+                              .read(idolFeedNotificationProvider.notifier)
+                              .setPushEnabled
+                        : null,
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 4),
-            child: Text(
-              '本命内容通知与关注其他用户的社交通知相互独立。',
-              style: TextStyle(fontSize: 11, color: FanColors.textSecondary),
+            const SizedBox(height: 8),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 4),
+              child: Text(
+                '本命内容通知与关注其他用户的社交通知相互独立。',
+                style: TextStyle(fontSize: 11, color: FanColors.textSecondary),
+              ),
             ),
-          ),
-          const SizedBox(height: 24),
+            const SizedBox(height: 24),
+          ],
           const Text('最近通知', style: TextStyle(fontWeight: FontWeight.w800)),
           const SizedBox(height: 10),
-          for (var index = 0; index < items.length; index++) ...[
+          for (var index = 0; useMockApi && index < items.length; index++) ...[
             Card(
               child: ListTile(
                 contentPadding: const EdgeInsets.all(14),

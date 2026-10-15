@@ -594,24 +594,15 @@ class _FeedbackContextCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const StatusBadge(label: '待运营补录'),
+                  const Text(
+                    '扫描图片已附带',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
                   const SizedBox(height: 8),
                   Text(
-                    'Session ${args.session.id}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
                     topCandidate == null
-                        ? 'AI 暂无候选'
-                        : 'Top Candidate ${(topCandidate.similarity * 100).round()}%',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    '检测区域 ${args.detectedCard.id}',
+                        ? '可补充已知资料，帮助完善图鉴。'
+                        : '已附上相似结果（${(topCandidate.similarity * 100).round()}%）',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -650,7 +641,11 @@ class _SearchAutocomplete<T extends Object> extends StatelessWidget {
         final query = value.text.trim().toLowerCase();
         if (query.isEmpty) return options;
         return options.where(
-          (option) => displayString(option).toLowerCase().contains(query),
+          (option) => [
+            displayString(option),
+            if (option is IdolProfile)
+              '${option.name} ${option.nameTranslated} ${option.nameKo} ${option.nameEn} ${option.realName}',
+          ].join(' ').toLowerCase().contains(query),
         );
       },
       onSelected: onSelected,

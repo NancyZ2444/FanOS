@@ -43,7 +43,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.byType(ListTile).first);
     await tester.pumpAndSettle();
-    expect(find.text('手动选择 · 请核对卡面'), findsOneWidget);
+    expect(find.text('手动选择'), findsOneWidget);
     expect(find.text('标记拥有（1）'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -79,10 +79,11 @@ void main() {
       ),
     );
     final confirm = find.text('确认是这张');
+    await tester.pump(const Duration(milliseconds: 200));
     await tester.ensureVisible(confirm);
     await tester.tap(confirm);
     await tester.pump();
-    final wishlist = find.byTooltip('加入我的喜欢');
+    final wishlist = find.widgetWithText(TextButton, '喜欢');
     await tester.ensureVisible(wishlist);
     await tester.tap(wishlist);
     await tester.pump();
@@ -127,6 +128,7 @@ void main() {
         ),
       );
       final first = find.text('确认是这张').first;
+      await tester.pump(const Duration(milliseconds: 200));
       await tester.ensureVisible(first);
       await tester.tap(first);
       await tester.pump();
@@ -171,6 +173,7 @@ void main() {
         ),
       );
       final first = find.text('确认是这张').first;
+      await tester.pump(const Duration(milliseconds: 200));
       await tester.ensureVisible(first);
       await tester.tap(first);
       await tester.pump();
@@ -433,6 +436,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('扫描结果 · 识别到 4 张'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 200));
     expect(find.text('暂未找到匹配的小卡'), findsOneWidget);
     expect(find.text('标记拥有（0）'), findsOneWidget);
 

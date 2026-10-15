@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.album_models import (
     AlbumEntitlement,
+    AlbumFavoritePlacement,
     AlbumPreferences,
     AlbumReaction,
     AlbumResource,
@@ -20,6 +22,7 @@ from app.core.security import current_admin, current_user, optional_user
 from app.models import Card, CardAlbum, Report, User, new_id
 from app.modules.admin.catalog_service import audit, permit
 from app.modules.albums import service
+from app.modules.albums.favorites import FavoriteInput, assign_group, owned_group
 from app.modules.albums.schemas import (
     AlbumCreate,
     AlbumLimits,
@@ -109,6 +112,7 @@ def set_preferences(
 @router.get("/albums")
 def albums(
     q: str = Query(default="", max_length=50),
+    status: Literal["ALL", "PUBLISHED", "DRAFT"] = "ALL",
     sort: str = "updated",
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=50),
@@ -116,6 +120,8 @@ def albums(
     db: Session = Depends(get_db),
 ):
     query = select(CardAlbum).where(CardAlbum.user_id == user.id, CardAlbum.status != "DELETED")
+    if status != "ALL":
+        query = query.where(CardAlbum.status == status)
     if q:
         query = query.where(CardAlbum.name.ilike(f"%{q}%"))
     order = {
@@ -533,11 +539,13 @@ def visibility(
     return patch(album_id, AlbumPatch(**data.model_dump()), user, db)
 
 
-def react(db: Session, album_id: str, user: User, kind: str, active: bool):
+def react(db: Session, album_id: str, user: User, kind: str, active: bool, group_input=None):
     # Check visibility after the write lock, not before a concurrent private/delete.
     service.lock_quota(db, user)
     db.expire_all()
     if active:
+        if group_input and group_input.group_id:
+            owned_group(db, user, group_input.group_id)
         album = service.get_album(db, album_id, user)
         if album.user_id == user.id:
             raise DomainError("ALBUM_SELF_REACTION", "自己的作品无需点赞或收藏", 422)
@@ -550,9 +558,16 @@ def react(db: Session, album_id: str, user: User, kind: str, active: bool):
         )
     )
     if active and not existing:
-        db.add(AlbumReaction(album_id=album_id, user_id=user.id, kind=kind))
+        existing = AlbumReaction(album_id=album_id, user_id=user.id, kind=kind)
+        db.add(existing)
+        db.flush()
     elif not active and existing:
+        placement = db.get(AlbumFavoritePlacement, existing.id)
+        if placement:
+            db.delete(placement)
         db.delete(existing)
+    if active and kind == "FAVORITE" and group_input is not None:
+        assign_group(db, existing, user, group_input.group_id)
     db.commit()
     return success({"active": active})
 
@@ -568,8 +583,13 @@ def unlike(album_id: str, user: User = Depends(current_user), db: Session = Depe
 
 
 @router.post("/albums/{album_id}/favorite")
-def favorite(album_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return react(db, album_id, user, "FAVORITE", True)
+def favorite(
+    album_id: str,
+    data: FavoriteInput | None = None,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    return react(db, album_id, user, "FAVORITE", True, data)
 
 
 @router.delete("/albums/{album_id}/favorite")

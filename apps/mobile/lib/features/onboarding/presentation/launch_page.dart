@@ -5,11 +5,39 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-class LaunchPage extends ConsumerWidget {
+class LaunchPage extends ConsumerStatefulWidget {
   const LaunchPage({super.key});
+  @override
+  ConsumerState<LaunchPage> createState() => _LaunchPageState();
+}
+
+class _LaunchPageState extends ConsumerState<LaunchPage> {
+  bool _restoring = true;
+  bool _restoreFailed = false;
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(_restore);
+  }
+
+  Future<void> _restore() async {
+    if (!mounted) return;
+    setState(() {
+      _restoring = true;
+      _restoreFailed = false;
+    });
+    try {
+      final restored = await ref.read(sessionProvider.notifier).restore();
+      if (restored && mounted) context.go('/home');
+    } catch (_) {
+      if (mounted) setState(() => _restoreFailed = true);
+    } finally {
+      if (mounted) setState(() => _restoring = false);
+    }
+  }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF0D1220),
       body: Stack(
@@ -59,20 +87,43 @@ class LaunchPage extends ConsumerWidget {
                     ),
                   ),
                   const Spacer(flex: 3),
+                  if (_restoreFailed)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        '暂时无法恢复登录，请检查网络后重试。登录凭证已保留。',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                    ),
                   FilledButton(
                     style: FilledButton.styleFrom(
                       backgroundColor: Colors.white,
                       foregroundColor: FanColors.ink,
                     ),
-                    onPressed: () => context.push('/privacy'),
-                    child: const Text('开启旅程'),
+                    onPressed: _restoring
+                        ? null
+                        : _restoreFailed
+                        ? _restore
+                        : () => context.push('/privacy'),
+                    child: Text(
+                      _restoring
+                          ? '正在恢复登录…'
+                          : _restoreFailed
+                          ? '重新连接'
+                          : '开启旅程',
+                    ),
                   ),
                   const SizedBox(height: 10),
                   TextButton(
-                    onPressed: () {
-                      ref.read(sessionProvider.notifier).continueAsGuest();
-                      context.go('/home');
-                    },
+                    onPressed: _restoring
+                        ? null
+                        : () async {
+                            await ref
+                                .read(sessionProvider.notifier)
+                                .continueAsGuest();
+                            if (context.mounted) context.go('/home');
+                          },
                     child: Text(
                       '游客体验',
                       style: TextStyle(

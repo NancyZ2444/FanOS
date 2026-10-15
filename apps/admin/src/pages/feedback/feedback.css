@@ -1,0 +1,226 @@
+/* Feedback-specific compositions reuse the shared admin dimensions and components. */
+.feedback-list-error,
+.feedback-submit-error {
+  margin-bottom: var(--space-4);
+}
+.feedback-back {
+  margin: 0 0 var(--space-3);
+}
+.feedback-back .ant-btn {
+  padding-inline: 0;
+}
+.feedback-retry-back {
+  margin-top: var(--space-4);
+}
+.feedback-record-cell {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+.feedback-record-cell .table-title {
+  width: 100%;
+  text-align: left;
+}
+.feedback-detail-panel {
+  padding-bottom: 0;
+}
+.feedback-review-form {
+  min-width: 0;
+}
+.feedback-record-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.feedback-record-heading h3 {
+  margin: 0;
+  font-size: var(--font-section);
+  overflow-wrap: anywhere;
+}
+.feedback-record-heading .ant-tag {
+  margin: 0;
+}
+.feedback-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.feedback-muted {
+  color: var(--muted);
+  font-size: var(--font-caption);
+  overflow-wrap: anywhere;
+}
+.feedback-read-value {
+  min-height: var(--control-height);
+  padding-block: var(--space-1);
+  overflow-wrap: anywhere;
+}
+.feedback-images {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.feedback-images figure {
+  margin: 0;
+  min-width: 0;
+}
+.feedback-images figcaption {
+  margin-bottom: var(--space-2);
+  color: var(--muted);
+}
+.feedback-images .ant-image {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  height: 192px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+.feedback-images .ant-image-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.feedback-field-image,
+.feedback-evidence-images .ant-image-img {
+  width: 96px;
+  height: 128px;
+  object-fit: contain;
+}
+.feedback-evidence-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.feedback-evidence {
+  margin-top: var(--space-4);
+}
+.feedback-reference-link {
+  display: block;
+  overflow-wrap: anywhere;
+  margin-top: var(--space-2);
+}
+.feedback-scan {
+  margin-top: var(--space-4);
+}
+.feedback-scan > .ant-descriptions {
+  margin-top: var(--space-4);
+}
+.feedback-candidates {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.feedback-candidates li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+.feedback-candidates li + li {
+  margin-top: var(--space-2);
+}
+.feedback-match {
+  margin-top: var(--space-6);
+}
+.feedback-match-controls {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.feedback-match-controls > .ant-select {
+  min-width: 0;
+  flex: 1;
+}
+.feedback-select {
+  width: 100%;
+}
+.feedback-field-error {
+  color: var(--danger);
+  font-size: var(--font-caption);
+}
+.feedback-review .ant-alert {
+  margin-bottom: var(--space-4);
+}
+.feedback-review .detail-section .form-grid {
+  margin-top: var(--space-2);
+}
+.feedback-comparison {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+.feedback-comparison .ant-table-cell {
+  vertical-align: top;
+}
+.feedback-decision {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.feedback-decision .ant-select {
+  width: 100%;
+}
+.feedback-decision .ant-form-item {
+  margin-bottom: 0;
+}
+.feedback-decision .ant-tag {
+  align-self: flex-start;
+}
+.feedback-footer {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  z-index: 10;
+  margin-top: var(--space-6);
+}
+.feedback-review .ant-timeline {
+  padding-top: var(--space-2);
+}
+.feedback-review .ant-timeline p {
+  margin: var(--space-1) 0 0;
+}
+@media (max-width: 1000px) {
+  .feedback-images {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* These two workbenches share a short status strip; it fits alongside refresh. */
+.feedback-list .toolbar-context {
+  flex: 1 1 360px;
+}
+.feedback-review--readonly .feedback-read-value {
+  min-height: 0;
+  padding: 0;
+}
+.feedback-review--readonly .form-grid {
+  gap: 0 var(--field-gap);
+}
+.feedback-review--readonly .feedback-footer {
+  position: static;
+}
+.feedback-review--readonly .ant-form-item-row {
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.feedback-review--readonly .ant-form-item-label {
+  flex: 0 0 calc(var(--space-8) * 4);
+  padding-bottom: 0;
+  text-align: left;
+}
+.feedback-review--readonly .ant-form-item-label > label {
+  color: var(--muted);
+}
+.feedback-review--readonly .ant-form-item-control {
+  flex: 1;
+  min-width: 0;
+}
+.feedback-review--readonly .ant-form-item-control-input {
+  min-height: 0;
+}

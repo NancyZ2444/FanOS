@@ -4,6 +4,8 @@ import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:flutter/material.dart';
+import 'package:fan_os/features/feedback/feedback_center.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -63,9 +65,18 @@ class _CardDetailPageState extends ConsumerState<CardDetailPage> {
     CatalogBundle data,
   ) {
     final collection = ref.watch(collectionProvider);
-    final names = ref.watch(namePreferencesProvider);
-    final idolName = names.display('idols', card.idolId, card.idolName);
-    final groupName = names.display('groups', card.groupId, card.groupName);
+    final idolName = entityDisplayName(
+      ref,
+      'idols',
+      card.idolId,
+      card.idolName,
+    );
+    final groupName = entityDisplayName(
+      ref,
+      'groups',
+      card.groupId,
+      card.groupName,
+    );
     final quantity = collection.quantity(card.id);
     final isWished = collection.isWished(card.id);
     final related = _relatedCards(card, data.cards);
@@ -135,7 +146,7 @@ class _CardDetailPageState extends ConsumerState<CardDetailPage> {
                         : Icons.favorite_border_rounded,
                     color: isWished ? FanColors.lavender : null,
                   ),
-                  label: Text(isWished ? '已想要' : '想要'),
+                  label: Text(isWished ? '已喜欢' : '喜欢'),
                 ),
               ),
             ],
@@ -155,12 +166,13 @@ class _CardDetailPageState extends ConsumerState<CardDetailPage> {
                 }),
                 onOpen: () => _showImagePreview(card),
               ),
-              const SizedBox(height: 22),
-              Text(idolName, style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 16),
+              CardContributors(cardId: card.id),
+              Text(idolName, style: Theme.of(context).textTheme.headlineMedium),
               const SizedBox(height: 2),
               Text(
-                card.displayTitle,
-                style: Theme.of(context).textTheme.headlineMedium,
+                data.cardSourceLabel(card),
+                style: Theme.of(context).textTheme.titleMedium,
               ),
               if (card.tags.isNotEmpty) ...[
                 const SizedBox(height: 8),
@@ -179,13 +191,17 @@ class _CardDetailPageState extends ConsumerState<CardDetailPage> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  Chip(label: Text(card.cardType)),
-                  Chip(label: Text(card.version)),
-                  Chip(label: Text(card.region)),
-                  Chip(label: Text(card.releaseDate)),
+                  if (card.cardType.trim().isNotEmpty)
+                    Chip(label: Text(card.cardType)),
+                  if (card.version.trim().isNotEmpty)
+                    Chip(label: Text(card.version)),
+                  if (card.region.trim().isNotEmpty)
+                    Chip(label: Text(card.region)),
+                  if (card.releaseDate.trim().isNotEmpty)
+                    Chip(label: Text(card.releaseDate)),
                 ],
               ),
-              const SizedBox(height: 26),
+              const SizedBox(height: 24),
               const SectionHeader(title: '小卡信息'),
               const SizedBox(height: 10),
               Card(
@@ -225,19 +241,27 @@ class _CardDetailPageState extends ConsumerState<CardDetailPage> {
                       const Divider(height: 1),
                       _InfoRow(label: '地区', value: card.region),
                       const Divider(height: 1),
-                      const _InfoRow(label: '尺寸', value: '55 × 85 mm'),
-                      const Divider(height: 1),
                       _InfoRow(
+                        onTap: card.cardNumber.isEmpty
+                            ? null
+                            : () async {
+                                await Clipboard.setData(
+                                  ClipboardData(text: card.cardNumber),
+                                );
+                                if (context.mounted) {
+                                  showFanToast(context, '编号已复制');
+                                }
+                              },
                         label: '编号',
                         value: card.cardNumber.isEmpty
-                            ? card.id.toUpperCase()
+                            ? '暂未收录'
                             : card.cardNumber,
                       ),
                     ],
                   ),
                 ),
               ),
-              const SizedBox(height: 26),
+              const SizedBox(height: 24),
               const SectionHeader(title: '来源链路'),
               const SizedBox(height: 10),
               Card(
@@ -536,7 +560,7 @@ class _CardDetailPageState extends ConsumerState<CardDetailPage> {
                 ),
                 onTap: () {
                   Navigator.of(sheetContext).pop();
-                  showFanToast(context, '已记录反馈入口');
+                  context.push('/catalog-correction?type=cards&id=${card.id}');
                 },
               ),
             ],
@@ -562,105 +586,33 @@ class _CardPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Expanded(
+    final hasBack = card.backImageUrl?.trim().isNotEmpty == true;
+    return Center(
+      child: SizedBox(
+        width: (MediaQuery.sizeOf(context).height * .36).clamp(200.0, 268.0),
+        child: Semantics(
+          label: showBack ? '小卡背面，轻点翻回正面' : '小卡正面，轻点查看背面',
+          button: true,
           child: GestureDetector(
             key: const ValueKey('card-large-preview'),
-            onTap: onOpen,
+            onTap: () {
+              if (hasBack) {
+                onSelectSide(!showBack);
+              } else {
+                showFanToast(context, '暂无卡背信息');
+              }
+            },
+            onLongPress: onOpen,
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 260),
               child: _CardFace(
                 key: ValueKey(showBack),
                 card: card,
-                showBack: showBack,
+                showBack: showBack && hasBack,
               ),
             ),
           ),
         ),
-        const SizedBox(width: 16),
-        SizedBox(
-          width: 58,
-          child: Column(
-            children: [
-              _SideSelector(
-                card: card,
-                label: '正面',
-                selected: !showBack,
-                showBack: false,
-                onTap: () => onSelectSide(false),
-              ),
-              const SizedBox(height: 14),
-              _SideSelector(
-                card: card,
-                label: '背面',
-                selected: showBack,
-                showBack: true,
-                onTap: () => onSelectSide(true),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                showBack ? '2 / 2' : '1 / 2',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _SideSelector extends StatelessWidget {
-  const _SideSelector({
-    required this.card,
-    required this.label,
-    required this.selected,
-    required this.showBack,
-    required this.onTap,
-  });
-
-  final CollectibleCard card;
-  final String label;
-  final bool selected;
-  final bool showBack;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Column(
-        children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            padding: const EdgeInsets.all(2),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: selected ? FanColors.lavender : FanColors.line,
-                width: selected ? 2 : 1,
-              ),
-            ),
-            child: SizedBox(
-              width: 48,
-              child: IgnorePointer(
-                child: _CardFace(card: card, showBack: showBack),
-              ),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-              color: selected ? FanColors.lavender : FanColors.textSecondary,
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -676,6 +628,7 @@ class _CardFace extends StatelessWidget {
   Widget build(BuildContext context) {
     return FanArtwork(
       imageUrl: showBack ? card.backImageUrl : card.imageUrl,
+      fit: BoxFit.contain,
       startColor: showBack ? Color(card.colorEnd) : Color(card.colorStart),
       endColor: showBack ? FanColors.ink : Color(card.colorEnd),
       label: showBack
@@ -706,7 +659,9 @@ class _InfoRow extends StatelessWidget {
             ),
             Expanded(
               child: Text(
-                value,
+                value.isEmpty ? '暂未收录' : value,
+                maxLines: label == '编号' ? 1 : null,
+                overflow: label == '编号' ? TextOverflow.ellipsis : null,
                 textAlign: TextAlign.right,
                 style: const TextStyle(fontWeight: FontWeight.w600),
               ),

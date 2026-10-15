@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/api/api_client.dart';
 import 'package:fan_os/core/data/repositories.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
@@ -16,9 +17,14 @@ class LoginPage extends ConsumerStatefulWidget {
 }
 
 class _LoginPageState extends ConsumerState<LoginPage> {
-  final _phoneController = TextEditingController(text: '13800000000');
-  final _codeController = TextEditingController(text: '123456');
+  final _phoneController = TextEditingController(
+    text: useMockApi ? '13800000000' : '',
+  );
+  final _codeController = TextEditingController(
+    text: useMockApi ? '666666' : '',
+  );
   bool _codeSent = false;
+  String? _codeError;
   bool _busy = false;
   int _countdown = 0;
   Timer? _timer;
@@ -36,6 +42,11 @@ class _LoginPageState extends ConsumerState<LoginPage> {
       showFanToast(context, '请输入正确的手机号');
       return;
     }
+    if (!useMockApi) {
+      setState(() => _codeSent = true);
+      showFanToast(context, '测试环境验证码：666666');
+      return;
+    }
     setState(() {
       _codeSent = true;
       _countdown = 60;
@@ -50,29 +61,54 @@ class _LoginPageState extends ConsumerState<LoginPage> {
         setState(() => _countdown--);
       }
     });
-    showFanToast(context, '演示验证码已填写：123456');
+    showFanToast(context, '演示验证码已填写：666666');
   }
 
   Future<void> _login(LoginMethod method) async {
     if (_busy) return;
+    if (!useMockApi && method != LoginMethod.phone) {
+      showFanToast(context, '暂未开通此登录方式，请使用手机号');
+      return;
+    }
     if (method == LoginMethod.phone && !_codeSent) {
       _sendCode();
       return;
     }
     if (method == LoginMethod.phone && _codeController.text.length != 6) {
-      showFanToast(context, '请输入 6 位验证码');
+      setState(() => _codeError = '请输入 6 位验证码');
       return;
     }
-    setState(() => _busy = true);
-    await ref
-        .read(sessionProvider.notifier)
-        .login(
-          method,
-          phone: _phoneController.text,
-          code: _codeController.text,
-        );
-    if (!mounted) return;
-    context.go('/onboarding/favorites');
+    setState(() {
+      _busy = true;
+      _codeError = null;
+    });
+    try {
+      await ref
+          .read(sessionProvider.notifier)
+          .login(
+            method,
+            phone: _phoneController.text.trim(),
+            code: _codeController.text.trim(),
+          );
+      if (!mounted) return;
+      context.go(
+        useMockApi || ref.read(apiClientProvider).isNewAccount
+            ? '/onboarding/favorites?welcome=1'
+            : '/home',
+      );
+    } on ApiException catch (error) {
+      if (mounted) {
+        if (error.code == 'INVALID_VERIFICATION_CODE') {
+          setState(() => _codeError = error.message);
+        } else {
+          showFanToast(context, error.message);
+        }
+      }
+    } catch (_) {
+      if (mounted) showFanToast(context, '登录失败，请稍后重试');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override
@@ -101,6 +137,8 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                   controller: _phoneController,
                   keyboardType: TextInputType.phone,
                   decoration: const InputDecoration(
+                    labelText: '手机号',
+                    floatingLabelBehavior: FloatingLabelBehavior.always,
                     prefixText: '+86  ',
                     hintText: '请输入手机号',
                   ),
@@ -113,11 +151,15 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                     maxLength: 6,
                     decoration: InputDecoration(
                       counterText: '',
+                      labelText: '验证码',
+                      errorText: _codeError,
                       hintText: '请输入验证码',
                       suffixIcon: TextButton(
                         onPressed: _countdown == 0 ? _sendCode : null,
                         child: Text(
-                          _countdown == 0 ? '重新发送' : '${_countdown}s',
+                          !useMockApi
+                              ? '查看提示'
+                              : (_countdown == 0 ? '重新发送' : '${_countdown}s'),
                         ),
                       ),
                     ),

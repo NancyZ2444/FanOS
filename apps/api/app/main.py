@@ -16,15 +16,23 @@ from app.modules.admin.admin_users import router as admin_users_router
 from app.modules.admin.catalog_extensions import contribution_router
 from app.modules.admin.catalog_extensions import router as catalog_extensions_router
 from app.modules.admin.console_router import router as console_router
+from app.modules.admin.media_router import router as media_router
 from app.modules.admin.operations import router as operations_router
 from app.modules.admin.public_operations import router as public_operations_router
 from app.modules.admin.router import router as admin_router
+from app.modules.albums.favorites import router as album_favorites_router
 from app.modules.albums.router import router as albums_router
 from app.modules.auth.router import router as auth_router
 from app.modules.catalog.router import router as catalog_router
 from app.modules.catalog.tag_router import router as tag_router
 from app.modules.collections.router import router as collections_router
 from app.modules.daily_cards.router import router as daily_cards_router
+from app.modules.feedback.router import (
+    admin_router as feedback_admin_router,
+)
+from app.modules.feedback.router import (
+    router as feedback_router,
+)
 from app.modules.home.router import router as home_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.scan.router import router as scan_router
@@ -68,15 +76,19 @@ for router in (
     home_router,
     users_router,
     albums_router,
+    album_favorites_router,
     collections_router,
     daily_cards_router,
     scan_router,
     social_feed_router,
     notifications_router,
     admin_router,
+    media_router,
     console_router,
     catalog_extensions_router,
     contribution_router,
+    feedback_router,
+    feedback_admin_router,
     admin_users_router,
     operations_router,
     public_operations_router,

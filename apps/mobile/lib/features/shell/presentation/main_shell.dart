@@ -18,42 +18,44 @@ class MainShell extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       body: navigationShell,
-      bottomNavigationBar: DecoratedBox(
-        decoration: const BoxDecoration(
-          border: Border(top: BorderSide(color: FanColors.line)),
-        ),
-        child: NavigationBar(
-          selectedIndex: navigationShell.currentIndex,
-          onDestinationSelected: _goBranch,
-          destinations: const [
-            NavigationDestination(
-              icon: Icon(Icons.home_outlined),
-              selectedIcon: Icon(Icons.home_rounded),
-              label: '首页',
+      bottomNavigationBar: navigationShell.currentIndex == 2
+          ? null
+          : DecoratedBox(
+              decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: FanColors.line)),
+              ),
+              child: NavigationBar(
+                selectedIndex: navigationShell.currentIndex,
+                onDestinationSelected: _goBranch,
+                destinations: const [
+                  NavigationDestination(
+                    icon: Icon(Icons.home_outlined),
+                    selectedIcon: Icon(Icons.home_rounded),
+                    label: '首页',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.auto_stories_outlined),
+                    selectedIcon: Icon(Icons.auto_stories_rounded),
+                    label: '图鉴',
+                  ),
+                  NavigationDestination(
+                    icon: _ScanNavIcon(selected: false),
+                    selectedIcon: _ScanNavIcon(selected: true),
+                    label: '扫描',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.favorite_border_rounded),
+                    selectedIcon: Icon(Icons.favorite_rounded),
+                    label: '收藏',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.person_outline_rounded),
+                    selectedIcon: Icon(Icons.person_rounded),
+                    label: '我的',
+                  ),
+                ],
+              ),
             ),
-            NavigationDestination(
-              icon: Icon(Icons.auto_stories_outlined),
-              selectedIcon: Icon(Icons.auto_stories_rounded),
-              label: '图鉴',
-            ),
-            NavigationDestination(
-              icon: _ScanNavIcon(selected: false),
-              selectedIcon: _ScanNavIcon(selected: true),
-              label: '扫描',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.favorite_border_rounded),
-              selectedIcon: Icon(Icons.favorite_rounded),
-              label: '收藏',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.person_outline_rounded),
-              selectedIcon: Icon(Icons.person_rounded),
-              label: '我的',
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

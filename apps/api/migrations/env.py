@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.database import Base
 from app.modules.admin.catalog_extensions import CatalogRecord  # noqa: F401
 from app.modules.catalog import taxonomy_models  # noqa: F401
+from app.modules.feedback import models as feedback_models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)

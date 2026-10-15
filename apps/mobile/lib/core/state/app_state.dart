@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:fan_os/core/api/api_client.dart';
+import 'package:fan_os/core/api/token_store.dart';
 import 'package:fan_os/core/data/demo_catalog.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/data/name_preferences.dart';
@@ -13,7 +14,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 const useMockApi = bool.fromEnvironment('USE_MOCK_API', defaultValue: true);
 
-final apiClientProvider = Provider<ApiClient>((ref) => ApiClient());
+final apiClientProvider = Provider<ApiClient>(
+  (ref) => ApiClient(tokenStore: SecureTokenStore(ApiClient.baseUrl)),
+);
 
 final authRepositoryProvider = Provider<AuthRepository>((ref) {
   if (useMockApi) return MockAuthRepository();
@@ -167,21 +170,49 @@ class SessionState {
 }
 
 class SessionController extends Notifier<SessionState> {
+  int _generation = 0;
   @override
   SessionState build() => const SessionState();
 
   Future<void> login(LoginMethod method, {String? phone, String? code}) async {
+    final generation = ++_generation;
     await ref
         .read(authRepositoryProvider)
         .login(method, phone: phone, code: code);
+    if (generation != _generation) return;
     if (useMockApi) {
       state = state.copyWith(isLoggedIn: true, isGuest: false);
       return;
     }
+    await _loadAccount();
+  }
+
+  Future<bool> restore() async {
+    if (useMockApi) return false;
+    final client = ref.read(apiClientProvider);
+    if (!await client.restoreAuthTokens()) return false;
+    try {
+      await _loadAccount();
+      return state.isLoggedIn;
+    } on ApiException catch (e) {
+      if (e.statusCode == 401 ||
+          e.code == 'AUTH_REQUIRED' ||
+          e.code == 'INVALID_TOKEN') {
+        await logout();
+        return false;
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _loadAccount() async {
+    final generation = _generation;
     final snapshot = await ref
         .read(userDataRepositoryProvider)
         .fetchAccountSnapshot();
+    if (generation != _generation) return;
     await ref.read(namePreferencesProvider.notifier).load();
+    if (generation != _generation) return;
     state = SessionState(
       userId: snapshot.userId,
       isLoggedIn: true,
@@ -209,8 +240,8 @@ class SessionController extends Notifier<SessionState> {
         .hydrateCounts(snapshot.followingCount, snapshot.followersCount);
   }
 
-  void continueAsGuest() {
-    ref.invalidate(namePreferencesProvider);
+  Future<void> continueAsGuest() async {
+    await logout();
     state = state.copyWith(isLoggedIn: false, isGuest: true);
   }
 
@@ -262,7 +293,21 @@ class SessionController extends Notifier<SessionState> {
 
   void reset() {
     ref.invalidate(namePreferencesProvider);
+    ref.invalidate(favoritesProvider);
+    ref.invalidate(collectionProvider);
+    ref.invalidate(profileAssetProvider);
+    ref.invalidate(profileRelationshipProvider);
     state = const SessionState();
+  }
+
+  Future<void> logout() async {
+    _generation++;
+    if (useMockApi) {
+      ref.read(apiClientProvider).clearAccessToken();
+    } else {
+      await ref.read(apiClientProvider).logout();
+    }
+    reset();
   }
 }
 

@@ -255,6 +255,8 @@ def all_entities(db: Session) -> dict:
 def admin_card(db: Session, card: Card) -> dict:
     result = card_payload(db, card)
     result.update(card.admin_data or {})
+    # Admins retain the external original while the public payload hides pending images.
+    result["image_url"] = card.image_url
     result.update(entity_tags(db, "cards", card.id))
     result["card_number"] = card.card_number
     result.update(
@@ -387,7 +389,7 @@ def validate_relations(
             if side == "back_source" and not payload.back_image_url:
                 continue
             info = getattr(payload, side)
-            if not info.source_url:
+            if info.source_type != "USER_SUBMITTED" and not info.source_url:
                 error(f"{side}.source_url", "请填写图片来源链接")
             if info.copyright_status not in {"AUTHORIZED", "OFFICIAL_SOURCE"}:
                 error(f"{side}.copyright_status", "发布前请确认图片版权为已授权或官方来源")
@@ -484,6 +486,15 @@ def save_card(
             .where(CardImageVersion.card_id == card.id, CardImageVersion.side == side)
             .order_by(CardImageVersion.version.desc())
         )
+        if previous and previous.data.get("image_url") == snapshot["image_url"]:
+            for provenance_key in (
+                "version_identity",
+                "submissions",
+                "converted_by",
+                "converted_at",
+            ):
+                if provenance_key in previous.data:
+                    snapshot[provenance_key] = previous.data[provenance_key]
         version = previous.version if previous else 0
         if not previous and before and before.get(field):
             original = {"image_url": before[field], **before.get(source_key, {})}
@@ -510,7 +521,13 @@ def save_card(
                     operator_id=actor.id,
                 )
             )
-    if payload.image_url and (not before or before.get("image_url") != payload.image_url):
+    from app.modules.catalog.media_import import owned_image
+
+    if (
+        payload.image_url
+        and owned_image(payload.image_url)
+        and (not before or before.get("image_url") != payload.image_url)
+    ):
         enqueue_outbox(
             db,
             event_type="catalog.card.image.updated",
@@ -519,6 +536,9 @@ def save_card(
             payload={"card_id": card.id, "image_url": payload.image_url},
         )
     audit(db, actor, "catalog.card.save", "card", card.id, before, admin_card(db, card))
+    from app.modules.catalog.media_import import queue_images
+
+    queue_images(db, "cards", card.id, {**card.admin_data, "image_url": card.image_url})
     db.flush()
     return card
 
@@ -542,6 +562,9 @@ def transition_card(db: Session, actor: User, card_id: str, action: str, reason:
     card.admin_data = {**card.admin_data, "review_note": reason, "operator": actor.display_name}
     if action == "publish":
         card.admin_data = {**card.admin_data, "ever_published": True}
+        from app.modules.feedback.service import catalog_card_published
+
+        catalog_card_published(db, card, actor)
     db.flush()
     result = admin_card(db, card)
     audit(db, actor, f"catalog.card.{action}", "card", card.id, before, result)
@@ -723,6 +746,9 @@ def save_entity(
         replace_versions(db, actor, row, values["versions"])
     db.flush()
     result = entity_payload(db, kind, row)
+    from app.modules.catalog.media_import import queue_images
+
+    queue_images(db, kind, row.id, result)
     audit(db, actor, "catalog.entity.save", kind, row.id, before, result)
     return result
 

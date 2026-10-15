@@ -116,7 +116,7 @@ class DailyCardPage extends ConsumerWidget {
               if (state.drawnCards.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 Text(
-                  state.drawnCards.last.title,
+                  state.drawnCards.last.displayTitle,
                   style: Theme.of(context).textTheme.titleMedium,
                   textAlign: TextAlign.center,
                 ),

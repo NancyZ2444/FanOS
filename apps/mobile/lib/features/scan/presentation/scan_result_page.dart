@@ -88,26 +88,6 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
       showFanToast(context, '请先为未识别或待确认的小卡选择正确图鉴');
       return;
     }
-    final approved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('确认推荐并全选'),
-        content: Text(
-          '将选择 ${eligible.length} 个已确认或高置信度推荐结果。请核对卡面；待确认和未匹配对象需要单独选卡。此操作不会写入喜欢或拥有。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('确认推荐并全选'),
-          ),
-        ],
-      ),
-    );
-    if (approved != true || !mounted) return;
     setState(() {
       for (final card in eligible) {
         final selection = _selections[card.id]!;
@@ -162,7 +142,7 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
       return;
     }
     var searchRequested = false;
-    final selected = await showModalBottomSheet<ScanCandidate>(
+    final selected = await showModalBottomSheet<Object>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
@@ -180,6 +160,18 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
       return;
     }
     if (selected == null || !mounted) return;
+    if (selected == false) {
+      setState(() {
+        _manualCandidates.remove(detected.id);
+        _selections[detected.id] = const _DetectedSelection(
+          cardId: null,
+          confirmed: false,
+          included: false,
+        );
+      });
+      return;
+    }
+    if (selected is! ScanCandidate) return;
     setState(() {
       _manualCandidates.remove(detected.id);
       _selections[detected.id] = _selections[detected.id]!.copyWith(
@@ -268,7 +260,7 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
                                         ),
                                       ),
                                     ),
-                                    title: Text(result.title),
+                                    title: Text(result.displayTitle),
                                     subtitle: FanEntityName(
                                       kind: 'idols',
                                       id: result.idolId,
@@ -353,6 +345,58 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
       showFanToast(context, wished ? '已加入我的喜欢' : '已从我的喜欢移除');
     } catch (_) {
       if (mounted) showFanToast(context, '保存喜欢失败，请稍后重试');
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  Future<void> _setOwned(DetectedScanCard detected) async {
+    final selection = _selections[detected.id]!;
+    if (_isSubmitting || !selection.confirmed || selection.cardId == null) {
+      return;
+    }
+    if (!ref.read(sessionProvider).isLoggedIn) {
+      context.push('/login');
+      return;
+    }
+    final id = selection.cardId!;
+    final quantity = ref.read(collectionProvider).quantity(id);
+    if (quantity > 0) {
+      final approved = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('取消拥有这款小卡？'),
+          content: Text('当前拥有 $quantity 张，取消后数量变为 0；喜欢状态不受影响。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('保留'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('取消拥有'),
+            ),
+          ],
+        ),
+      );
+      if (approved != true || !mounted) return;
+    }
+    setState(() => _isSubmitting = true);
+    try {
+      // A scan's original +1 remains idempotent. Reinstating a cancelled mark is
+      // an explicit collection edit, not a replay of that original confirmation.
+      await ref
+          .read(userDataRepositoryProvider)
+          .setOwnedQuantity(id, quantity > 0 ? 0 : 1);
+      if (!mounted) return;
+      final current = ref.read(collectionProvider);
+      final owned = {...current.owned};
+      quantity > 0 ? owned.remove(id) : owned[id] = 1;
+      ref.read(collectionProvider.notifier).hydrate(owned, current.wishlist);
+      showFanToast(context, quantity > 0 ? '已取消拥有，喜欢状态不变' : '已标记拥有 1 张');
+    } catch (_) {
+      if (mounted) showFanToast(context, '保存失败，原状态已保留，请重试');
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -473,9 +517,9 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
         ...current.wishlist,
         ...ids,
       });
-      showFanToast(context, '已将 ${ids.length} 种小卡加入收藏/喜欢');
+      showFanToast(context, '已将 ${ids.length} 种小卡加入喜欢');
     } catch (_) {
-      if (mounted) showFanToast(context, '批量收藏/喜欢失败，请稍后重试');
+      if (mounted) showFanToast(context, '批量喜欢失败，请稍后重试');
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -531,16 +575,14 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
                       key: const Key('scan-batch-wishlist'),
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 10),
-                        textStyle: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
+                        textStyle: Theme.of(context).textTheme.labelLarge
+                            ?.copyWith(fontSize: 13),
                       ),
                       onPressed: _wishlistCount == 0 || _isSubmitting
                           ? null
                           : _addSelectedToWishlist,
                       icon: const Icon(Icons.favorite_border_rounded, size: 18),
-                      label: Text('收藏/喜欢（$_wishlistCount）'),
+                      label: Text('喜欢（$_wishlistCount）'),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -549,10 +591,8 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
                       key: const Key('scan-batch-confirm'),
                       style: FilledButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 10),
-                        textStyle: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
+                        textStyle: Theme.of(context).textTheme.labelLarge
+                            ?.copyWith(fontSize: 13),
                       ),
                       onPressed: _batchCount == 0 || _isSubmitting
                           ? null
@@ -651,6 +691,14 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
                             onIncludedChanged: (value) =>
                                 _toggleIncluded(entry.value, value),
                             onWishlist: () => _toggleWishlist(entry.value),
+                            onOwned: () => _setOwned(entry.value),
+                            sameCardCount: session.detectedCards
+                                .where(
+                                  (d) =>
+                                      _selectedCandidate(d)?.card.id ==
+                                      _selectedCandidate(entry.value)?.card.id,
+                                )
+                                .length,
                             onSearch: () => _searchCatalog(entry.value),
                             onFeedback: () => context.push(
                               '/scan-feedback',
@@ -755,6 +803,8 @@ class _DetectedResultCard extends StatelessWidget {
     required this.onCandidates,
     required this.onIncludedChanged,
     required this.onWishlist,
+    required this.onOwned,
+    required this.sameCardCount,
     required this.onSearch,
     required this.onFeedback,
     required this.onDetail,
@@ -766,10 +816,12 @@ class _DetectedResultCard extends StatelessWidget {
   final ScanCandidate? candidate;
   final _DetectedSelection selection;
   final int ownedQuantity;
+  final int sameCardCount;
   final bool wished;
   final VoidCallback onConfirm,
       onCandidates,
       onWishlist,
+      onOwned,
       onSearch,
       onFeedback,
       onDetail;
@@ -785,13 +837,14 @@ class _DetectedResultCard extends StatelessWidget {
         .take(3)
         .toList();
     final compactStyle = ButtonStyle(
-      minimumSize: const WidgetStatePropertyAll(Size(0, 34)),
+      minimumSize: const WidgetStatePropertyAll(Size(0, 40)),
       padding: const WidgetStatePropertyAll(
         EdgeInsets.symmetric(horizontal: 10),
       ),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      textStyle: const WidgetStatePropertyAll(
-        TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+      textStyle: WidgetStatePropertyAll(
+        Theme.of(context).textTheme.labelLarge
+            ?.copyWith(fontSize: 12, fontWeight: FontWeight.w500),
       ),
     );
     return Card(
@@ -828,7 +881,7 @@ class _DetectedResultCard extends StatelessWidget {
                 _RecognitionBadge(
                   status: detected.status,
                   confirmed: selection.confirmed,
-                  added: selection.added,
+                  added: selection.added && ownedQuantity > 0,
                 ),
               ],
             ),
@@ -836,151 +889,128 @@ class _DetectedResultCard extends StatelessWidget {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SizedBox(
-                  width: 64,
-                  child: Column(
-                    children: [
-                      _CardThumbnail(
-                        path:
-                            detected.cropImagePath ?? session.originalImagePath,
-                        width: 64,
-                        height: 92,
-                      ),
-                      const SizedBox(height: 4),
-                      Text('扫描图', style: Theme.of(context).textTheme.bodySmall),
-                    ],
+                if (candidate != null)
+                  InkWell(
+                    key: Key('scan-official-${detected.id}'),
+                    onTap: onDetail,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Column(
+                      children: [
+                        _CardThumbnail(
+                          path: candidate!.card.imageUrl,
+                          card: candidate!.card,
+                          width: 84,
+                          height: 120,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '官方图鉴 ↗',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  _CardThumbnail(
+                    path: detected.cropImagePath ?? session.originalImagePath,
+                    width: 72,
+                    height: 102,
                   ),
-                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (candidate != null) ...[
+                        FanEntityName(
+                          kind: 'idols',
+                          id: candidate!.card.idolId,
+                          officialName: candidate!.card.idolName.isEmpty
+                              ? candidate!.card.groupName
+                              : candidate!.card.idolName,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (candidate!.card.source.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            candidate!.card.source,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ],
+                        if (candidate!.card.version.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            candidate!.card.version,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        Text(
+                          candidate!.similarity > 0
+                              ? '相似度 ${(candidate!.similarity * 100).round()}%'
+                              : '手动选择',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: FanColors.textSecondary,
+                          ),
+                        ),
+                        if (ownedQuantity > 0)
+                          Text(
+                            '已拥有 ×$ownedQuantity',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        if (sameCardCount > 1)
+                          Text(
+                            '本次有 $sameCardCount 张匹配同款，请核对',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        const SizedBox(height: 8),
                         Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    candidate!.card.displayTitle,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  FanEntityName(
-                                    kind: 'idols',
-                                    id: candidate!.card.idolId,
-                                    officialName: candidate!.card.idolName,
-                                    suffix:
-                                        ' · ${candidate!.card.source}${candidate!.card.version.isEmpty ? '' : ' · ${candidate!.card.version}'}',
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall,
-                                  ),
-                                ],
-                              ),
+                            _CardThumbnail(
+                              path:
+                                  detected.cropImagePath ??
+                                  session.originalImagePath,
+                              width: 28,
+                              height: 40,
                             ),
                             const SizedBox(width: 8),
-                            InkWell(
-                              key: Key('scan-official-${detected.id}'),
-                              onTap: onDetail,
-                              borderRadius: BorderRadius.circular(8),
-                              child: Column(
-                                children: [
-                                  _CardThumbnail(
-                                    path: candidate!.card.imageUrl,
-                                    card: candidate!.card,
-                                    width: 44,
-                                    height: 64,
-                                  ),
-                                  const SizedBox(height: 3),
-                                  const Text(
-                                    '图鉴 ↗',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: FanColors.textSecondary,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 3,
-                          children: [
                             Text(
-                              candidate!.similarity == 0
-                                  ? '手动选择 · 请核对卡面'
-                                  : '相似度 ${(candidate!.similarity * 100).round()}%',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: candidate!.similarity >= .9
-                                    ? FanColors.mint
-                                    : FanColors.textSecondary,
-                              ),
+                              '扫描对照',
+                              style: Theme.of(context).textTheme.bodySmall,
                             ),
-                            if (ownedQuantity > 0)
-                              Text(
-                                '已拥有 ×$ownedQuantity',
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: FanColors.textSecondary,
-                                ),
-                              ),
-                            if (wished)
-                              const Text(
-                                '已喜欢',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: FanColors.coral,
-                                ),
-                              ),
                           ],
                         ),
                       ] else ...[
                         const Text(
                           '暂未找到匹配的小卡',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                          ),
+                          style: TextStyle(fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          session.detectedCount > 1
-                              ? '不影响其他小卡的处理。'
-                              : '可搜索图鉴或补充线索。',
+                          '可搜索图鉴或反馈，不影响其他小卡。',
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ],
-                      if (options.isNotEmpty && !selection.added) ...[
+                      if (options.isNotEmpty) ...[
                         const SizedBox(height: 8),
                         Text(
-                          selection.confirmed
-                              ? '其他候选 · 点图查看'
-                              : '可能是 · 点图查看，勾选确认',
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: FanColors.textSecondary,
-                          ),
+                          '其他相似结果',
+                          style: Theme.of(context).textTheme.bodySmall,
                         ),
-                        const SizedBox(height: 5),
+                        const SizedBox(height: 4),
                         Wrap(
                           spacing: 8,
-                          runSpacing: 5,
+                          runSpacing: 8,
                           children: [
                             for (final option in options)
                               _CandidateThumbnail(
@@ -1027,17 +1057,26 @@ class _DetectedResultCard extends StatelessWidget {
                     onPressed: onSearch,
                     child: const Text('搜索图鉴'),
                   ),
-                if (selection.confirmed)
-                  IconButton(
-                    tooltip: wished ? '从我的喜欢移除' : '加入我的喜欢',
-                    visualDensity: VisualDensity.compact,
+                if (selection.confirmed) ...[
+                  TextButton.icon(
+                    key: Key('scan-like-${detected.id}'),
+                    style: compactStyle,
                     onPressed: onWishlist,
                     icon: Icon(
-                      wished ? Icons.favorite_rounded : Icons.favorite_border,
-                      color: wished ? FanColors.coral : FanColors.ink,
-                      size: 19,
+                      wished ? Icons.favorite : Icons.favorite_border,
+                      size: 18,
                     ),
+                    label: Text(wished ? '取消喜欢' : '喜欢'),
                   ),
+                  if (ownedQuantity > 0 || selection.added)
+                    TextButton.icon(
+                      key: Key('scan-owned-${detected.id}'),
+                      style: compactStyle,
+                      onPressed: onOwned,
+                      icon: const Icon(Icons.check_circle_outline, size: 18),
+                      label: Text(ownedQuantity > 0 ? '取消拥有' : '标记拥有'),
+                    ),
+                ],
                 TextButton(
                   style: compactStyle,
                   onPressed: onFeedback,
@@ -1210,7 +1249,10 @@ class _CandidatePicker extends StatelessWidget {
   Widget build(BuildContext context) {
     return SafeArea(
       child: SizedBox(
-        height: MediaQuery.sizeOf(context).height * .72,
+        height: (220.0 + detected.candidates.take(5).length * 124).clamp(
+          240.0,
+          MediaQuery.sizeOf(context).height * .82,
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1237,6 +1279,11 @@ class _CandidatePicker extends StatelessWidget {
                 ],
               ),
             ),
+            TextButton(
+              key: const Key('scan-candidates-none'),
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('都不是'),
+            ),
             Expanded(
               child: ListView.separated(
                 padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
@@ -1261,7 +1308,7 @@ class _CandidatePicker extends StatelessWidget {
                         ),
                       ),
                       title: Text(
-                        candidate.card.title,
+                        candidate.card.displayTitle,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontWeight: FontWeight.w800),

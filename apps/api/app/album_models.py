@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -46,6 +46,25 @@ class AlbumPreferences(Base, TimestampMixin):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
     shelf_theme: Mapped[str] = mapped_column(String(40), default="cream-white")
     view_mode: Mapped[str] = mapped_column(String(10), default="SHELF")
+
+
+class AlbumFavoriteGroup(Base, TimestampMixin):
+    __tablename__ = "digital_album_favorite_groups"
+    __table_args__ = (UniqueConstraint("user_id", "name"),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("afg"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(40))
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AlbumFavoritePlacement(Base):
+    __tablename__ = "digital_album_favorite_placements"
+    reaction_id: Mapped[str] = mapped_column(
+        ForeignKey("digital_album_reactions.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[str] = mapped_column(
+        ForeignKey("digital_album_favorite_groups.id", ondelete="CASCADE"), index=True
+    )
 
 
 class AlbumEntitlement(Base, TimestampMixin):

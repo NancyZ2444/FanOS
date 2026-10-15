@@ -1,10 +1,13 @@
 import 'package:fan_os/app/app.dart';
+import 'package:fan_os/app/router.dart';
 import 'package:fan_os/core/api/api_client.dart';
 import 'package:fan_os/core/data/repositories.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/features/albums/data/album_draft_store.dart';
 import 'package:fan_os/features/albums/presentation/album_editor_page.dart';
+import 'package:fan_os/features/albums/presentation/album_editor_panels.dart';
 import 'package:fan_os/features/albums/presentation/album_card_picker.dart';
+import 'package:fan_os/features/albums/presentation/album_card_scene.dart';
 import 'package:fan_os/features/albums/presentation/album_viewer_page.dart';
 import 'package:fan_os/features/albums/presentation/album_widgets.dart';
 import 'package:fan_os/features/albums/state/album_state.dart';
@@ -28,6 +31,16 @@ Future<void> _wait(WidgetTester tester, Finder finder) async {
 
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() {
+    if (_enabled) {
+      // The test logs in explicitly. Do not mount LaunchPage and let its
+      // asynchronous session restoration race the initial album navigation.
+      expect(
+        const String.fromEnvironment('INITIAL_ROUTE'),
+        '/digital-albums/new',
+      );
+    }
+  });
   Future<void> capture(WidgetTester tester, String name) async {
     // Wait for the iOS route transition as well as the newly rebuilt page.
     await tester.pumpAndSettle();
@@ -56,13 +69,14 @@ void main() {
       });
       await container
           .read(sessionProvider.notifier)
-          .login(LoginMethod.phone, phone: '13800000000', code: '123456');
+          .login(LoginMethod.phone, phone: '13800000000', code: '666666');
       await tester.pumpWidget(
         UncontrolledProviderScope(
           container: container,
           child: const FanOsApp(),
         ),
       );
+      fanOsRouter.go('/digital-albums/new');
       await _wait(tester, find.text('新建相册'));
       await tester.enterText(
         find.byType(TextField),
@@ -71,6 +85,7 @@ void main() {
       FocusManager.instance.primaryFocus?.unfocus();
       await tester.pump(const Duration(milliseconds: 300));
       await tester.ensureVisible(find.text('创建相册'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('创建相册'));
       await _wait(tester, find.text('封面编辑'));
       albumId = tester
@@ -79,18 +94,28 @@ void main() {
       await _wait(tester, find.byType(AlbumCanvasWidget));
       // The reported regression happens while the keyboard is still focused.
       await tester.tap(find.text('文字'));
-      await _wait(tester, find.text('添加文字'));
+      await _wait(tester, find.byType(AlbumTextPanel));
       await tester.enterText(find.byType(TextField), '我的星光收藏');
-      await tester.tap(find.text('确定'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AlbumToolPanel),
+          matching: find.text('完成'),
+        ),
+      );
       await capture(tester, 'ios-album-text-saved');
       expect(find.text('我的星光收藏'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.tap(find.text('我的星光收藏'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('编辑'));
-      await _wait(tester, find.text('编辑文字'));
+      await _wait(tester, find.byType(AlbumTextPanel));
       await tester.enterText(find.byType(TextField), '我的星光收藏 · 更新');
-      await tester.tap(find.text('确定'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(AlbumToolPanel),
+          matching: find.text('完成'),
+        ),
+      );
       await capture(tester, 'ios-album-text-updated');
       expect(find.text('我的星光收藏 · 更新'), findsOneWidget);
       expect(tester.takeException(), isNull);
@@ -135,7 +160,7 @@ void main() {
       await tester.tap(find.byTooltip('关闭'));
       await _wait(tester, find.text('1 / 1'));
       await tester.tap(find.text('卡片模式'));
-      await _wait(tester, find.byType(PageView));
+      await _wait(tester, find.byType(AlbumCardScene));
       await tester.pump(const Duration(milliseconds: 500));
       await capture(tester, 'ios-album-carousel');
       final saved = await container.read(albumRepositoryProvider).get(albumId);
@@ -148,6 +173,137 @@ void main() {
             .where((e) => e['type'] == 'TEXT')
             .single['content'],
         '我的星光收藏 · 更新',
+      );
+      expect(tester.takeException(), isNull);
+    },
+    skip: !_enabled,
+  );
+
+  testWidgets(
+    'iOS card mode saves main card, stacked cover and reopens to its front',
+    (tester) async {
+      expect(useMockApi, isFalse);
+      expect(ApiClient.baseUrl, 'http://127.0.0.1:18001/api/v1');
+      final store = AlbumDraftStore('native-atelier-e2e');
+      final container = ProviderContainer(
+        overrides: [albumDraftStoreProvider.overrideWithValue(store)],
+      );
+      String? albumId;
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        if (albumId != null) {
+          final repo = container.read(albumRepositoryProvider);
+          await repo.delete(await repo.get(albumId));
+          await store.remove('draft-$albumId');
+        }
+        container.dispose();
+      });
+      await container
+          .read(sessionProvider.notifier)
+          .login(LoginMethod.phone, phone: '13800000000', code: '666666');
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const FanOsApp(),
+        ),
+      );
+      fanOsRouter.go('/digital-albums/new');
+      await _wait(tester, find.text('新建相册'));
+      await tester.enterText(find.byType(TextField), '月光收藏 · 卡片相册');
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('卡片模式'));
+      await tester.tap(find.text('卡片模式'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('创建相册'));
+      await tester.tap(find.text('创建相册'));
+      await _wait(tester, find.text('编辑卡片相册'));
+      albumId = tester
+          .widget<AlbumEditorPage>(find.byType(AlbumEditorPage))
+          .albumId;
+      await tester.ensureVisible(find.text('选择小卡'));
+      await tester.tap(find.text('选择小卡'));
+      await _wait(tester, find.byType(AlbumCardPicker));
+      await _wait(tester, find.byType(AlbumCardImage));
+      for (var i = 0; i < 3; i++) {
+        await tester.tap(find.byType(AlbumCardImage).at(i));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.text('已选择 3 张 · 确认添加'));
+      await _wait(tester, find.text('已选 3 张'));
+      await tester.ensureVisible(find.text('主图与顺序'));
+      await tester.tap(find.text('主图与顺序'));
+      await _wait(tester, find.byTooltip('设为主图'));
+      await tester.tap(find.byTooltip('设为主图').at(1));
+      await tester.pumpAndSettle();
+      await capture(tester, 'atelier-ios-main-order');
+      await tester.tap(find.text('完成排序'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('预览相册'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('预览相册'));
+      await _wait(tester, find.byType(AlbumCardScene));
+      await tester.tap(find.text('保存'));
+      await _wait(tester, find.byType(AlbumCardScene));
+      await tester.pumpAndSettle();
+      final repo = container.read(albumRepositoryProvider);
+      final saved = await repo.get(albumId);
+      expect(saved.opensAsCards, isTrue);
+      expect(saved.cardCount, 3);
+      expect(saved.coverSlots.first['id'], saved.featuredSlotId);
+      final shelf = (await repo.list()).albums.firstWhere(
+        (a) => a.id == albumId,
+      );
+      expect(
+        shelf.coverSlots.map((s) => s['id']),
+        saved.coverSlots.map((s) => s['id']),
+      );
+      expect(
+        shelf.card(shelf.coverSlots.first['card_id'] as String),
+        isNotNull,
+      );
+      expect(find.text('02 / 03'), findsOneWidget);
+      await capture(tester, 'atelier-ios-carousel');
+      final mainCard = find.byKey(
+        ValueKey('album-scene-card-${saved.featuredSlotId}'),
+      );
+      await tester.tap(mainCard);
+      await _wait(tester, find.byTooltip('关闭放大'));
+      await capture(tester, 'atelier-ios-extracted-front');
+      await tester.tap(mainCard);
+      await tester.pumpAndSettle();
+      final mainImage = find.descendant(
+        of: mainCard,
+        matching: find.byType(AlbumCardImage),
+      );
+      final card = saved.card(saved.orderedSlots[1]['card_id'] as String)!;
+      expect(
+        tester.widget<AlbumCardImage>(mainImage).back,
+        card.backImageUrl?.isNotEmpty == true,
+      );
+      await capture(tester, 'atelier-ios-extracted-back');
+      await tester.tap(find.byKey(const Key('album-card-next')));
+      await tester.pumpAndSettle();
+      expect(find.text('03 / 03'), findsOneWidget);
+      await tester.tap(find.byTooltip('关闭放大'));
+      await tester.pumpAndSettle();
+      expect(find.text('03 / 03'), findsOneWidget);
+      // Refresh from saved server data: a new reader always starts at main/front.
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(home: AlbumViewer(album: await repo.get(albumId))),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('02 / 03'), findsOneWidget);
+      expect(
+        tester
+            .widgetList<AlbumCardImage>(find.byType(AlbumCardImage))
+            .every((w) => !w.back),
+        isTrue,
       );
       expect(tester.takeException(), isNull);
     },

@@ -158,6 +158,44 @@ export function RecordId({ value }: { value: unknown }) {
     </Typography.Text>
   );
 }
+/** Pagination for APIs that return next_offset without a total count. */
+export function CursorPagination({
+  offset,
+  nextOffset,
+  count,
+  pageSize,
+  loading,
+  onChange,
+}: {
+  offset: number;
+  nextOffset: number | null;
+  count: number;
+  pageSize: number;
+  loading?: boolean;
+  onChange: (offset: number) => void;
+}) {
+  return (
+    <nav className="cursor-pagination" aria-label="列表分页">
+      <span aria-live="polite">
+        第 {Math.floor(offset / pageSize) + 1} 页 · 本页 {count} 条
+      </span>
+      <div className="toolbar-actions">
+        <Button
+          disabled={loading || offset === 0}
+          onClick={() => onChange(Math.max(0, offset - pageSize))}
+        >
+          上一页
+        </Button>
+        <Button
+          disabled={loading || nextOffset === null}
+          onClick={() => nextOffset !== null && onChange(nextOffset)}
+        >
+          下一页
+        </Button>
+      </div>
+    </nav>
+  );
+}
 type AdminTableProps<T> = TableProps<T> & {
   filtered?: boolean;
   onReset?: () => void;

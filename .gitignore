@@ -4,6 +4,7 @@
 **/__pycache__/
 **/.pytest_cache/
 **/.ruff_cache/
+**/.kotlin/
 **/*.pyc
 **/*.egg-info/
 
@@ -25,6 +26,7 @@ outputs/
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
 **/.env

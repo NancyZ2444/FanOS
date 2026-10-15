@@ -20,131 +20,155 @@ class _CatalogPageState extends ConsumerState<CatalogPage> {
   @override
   Widget build(BuildContext context) {
     final catalog = ref.watch(catalogProvider);
+    final data = catalog.asData?.value;
+    final groups =
+        (data?.groups ?? <FanGroup>[])
+            .where((group) => _status == '全部状态' || group.status == _status)
+            .toList()
+          ..sort(
+            (a, b) => _ascending
+                ? a.name.compareTo(b.name)
+                : b.name.compareTo(a.name),
+          );
+    void retry() => ref.invalidate(catalogProvider);
     return Scaffold(
       body: SafeArea(
-        child: catalog.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (_, _) => FanEmptyState(
-            icon: Icons.cloud_off_rounded,
-            title: '图鉴暂时无法加载',
-            message: '请检查网络后重试',
-            actionLabel: '重新加载',
-            onAction: () => ref.invalidate(catalogProvider),
-          ),
-          data: (data) {
-            final groups =
-                data.groups
-                    .where(
-                      (group) => _status == '全部状态' || group.status == _status,
-                    )
-                    .toList()
-                  ..sort(
-                    (a, b) => _ascending
-                        ? a.name.compareTo(b.name)
-                        : b.name.compareTo(a.name),
-                  );
-            return RefreshIndicator(
-              onRefresh: () => ref.refresh(catalogProvider.future),
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                child: FanContent(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _CatalogHeader(onScan: () => context.go('/scan')),
-                      const SizedBox(height: 14),
-                      FanSearchButton(
-                        hint: '搜索组合、艺人、专辑、小卡、用户',
-                        onTap: () => context.push('/search'),
-                      ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton.icon(
-                          key: const Key('catalog-missing-feedback'),
-                          onPressed: () => context.push('/catalog/feedback'),
-                          icon: const Icon(
-                            Icons.add_comment_outlined,
-                            size: 15,
-                          ),
-                          label: const Text(
-                            '反馈缺失内容',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 25),
-                      SectionHeader(
-                        title: '✦  最近更新',
-                        actionLabel: '查看更多',
-                        onAction: () => context.push('/cards'),
-                      ),
-                      const SizedBox(height: 10),
-                      _RecentUpdates(data: data),
-                      const SizedBox(height: 25),
-                      const SectionHeader(title: '✦  分类浏览'),
-                      const SizedBox(height: 10),
-                      const _CategoryGrid(),
-                      const SizedBox(height: 25),
-                      SectionHeader(
-                        title: '✦  热门组合',
-                        actionLabel: '查看全部',
-                        onAction: () => context.push('/catalog/groups'),
-                      ),
-                      const SizedBox(height: 10),
-                      _PopularGroups(groups: data.groups),
-                      const SizedBox(height: 25),
-                      const SectionHeader(title: '✦  全部组合'),
-                      const SizedBox(height: 8),
-                      _GroupFilters(
-                        status: _status,
-                        ascending: _ascending,
-                        onStatus: (value) => setState(() => _status = value),
-                        onSort: () => setState(() => _ascending = !_ascending),
-                      ),
-                      const SizedBox(height: 10),
-                      if (groups.isEmpty)
-                        FanEmptyState(
-                          icon: Icons.filter_alt_off_outlined,
-                          title: '当前筛选条件没有结果',
-                          message: '清空状态筛选后再试。',
-                          actionLabel: '清空筛选',
-                          onAction: () => setState(() {
-                            _status = '全部状态';
-                          }),
-                        )
-                      else
-                        Card(
-                          child: Column(
-                            children: [
-                              for (var i = 0; i < groups.length; i++) ...[
-                                _GroupRow(
-                                  group: groups[i],
-                                  cardCount: data.cards
-                                      .where(
-                                        (card) => card.groupId == groups[i].id,
-                                      )
-                                      .length,
-                                  albumCount: data.albums
-                                      .where(
-                                        (album) =>
-                                            album.groupId == groups[i].id,
-                                      )
-                                      .length,
-                                  onTap: () =>
-                                      context.push('/group/${groups[i].id}'),
-                                ),
-                                if (i != groups.length - 1)
-                                  const Divider(height: 1, indent: 82),
-                              ],
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            );
+        child: RefreshIndicator(
+          onRefresh: () async {
+            try {
+              ref.invalidate(catalogProvider);
+              await ref.read(catalogProvider.future);
+            } catch (_) {
+              /* Inline retry state. */
+            }
           },
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            child: FanContent(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _CatalogHeader(onScan: () => context.go('/scan')),
+                  const SizedBox(height: 16),
+                  FanSearchButton(
+                    hint: '搜索艺人、组合或小卡',
+                    onTap: () => context.push('/search'),
+                  ),
+                  const SizedBox(height: 16),
+                  const _CategoryGrid(),
+                  const SizedBox(height: 24),
+                  SectionHeader(
+                    title: '最近更新',
+                    actionLabel: '查看全部',
+                    onAction: () => context.push('/cards'),
+                  ),
+                  const SizedBox(height: 12),
+                  if (catalog.isLoading)
+                    const Card(
+                      child: SizedBox(
+                        height: 140,
+                        child: Center(child: CircularProgressIndicator()),
+                      ),
+                    )
+                  else if (catalog.hasError)
+                    FanStatusCard(
+                      key: const Key('catalog-load-error'),
+                      icon: Icons.cloud_off_outlined,
+                      title: '内容暂时未能加载',
+                      message: '请检查网络后重试',
+                      actionLabel: '重新加载',
+                      onAction: retry,
+                    )
+                  else if (data != null)
+                    _RecentUpdates(data: data),
+                  if (data != null && data.groups.isNotEmpty) ...[
+                    const SizedBox(height: 24),
+                    SectionHeader(
+                      title: '热门组合',
+                      actionLabel: '查看全部',
+                      onAction: () => context.push('/catalog/groups'),
+                    ),
+                    const SizedBox(height: 12),
+                    _PopularGroups(groups: data.groups),
+                  ],
+                  const SizedBox(height: 24),
+                  SectionHeader(
+                    title: '全部组合',
+                    actionLabel: '查看全部',
+                    onAction: () => context.push('/catalog/groups'),
+                  ),
+                  const SizedBox(height: 8),
+                  _GroupFilters(
+                    status: _status,
+                    ascending: _ascending,
+                    onStatus: (value) => setState(() => _status = value),
+                    onSort: () => setState(() => _ascending = !_ascending),
+                  ),
+                  const SizedBox(height: 12),
+                  if (catalog.isLoading)
+                    const Card(
+                      child: SizedBox(
+                        height: 120,
+                        child: Center(child: CircularProgressIndicator()),
+                      ),
+                    )
+                  else if (catalog.hasError)
+                    FanStatusCard(
+                      title: '组合暂时未能加载',
+                      message: '网络恢复后即可继续浏览',
+                      vertical: true,
+                      actionLabel: '重新加载',
+                      onAction: retry,
+                    )
+                  else if (groups.isEmpty)
+                    FanStatusCard(
+                      key: const Key('catalog-groups-empty'),
+                      vertical: true,
+                      title: '暂无组合内容',
+                      message: _status != '全部状态'
+                          ? '尝试调整筛选条件，发现更多精彩'
+                          : '新的组合资料正在陆续收录',
+                      actionLabel: _status != '全部状态' ? '清空筛选' : '反馈缺失内容',
+                      onAction: _status != '全部状态'
+                          ? () => setState(() => _status = '全部状态')
+                          : () => context.push('/catalog/feedback'),
+                    )
+                  else
+                    Card(
+                      child: Column(
+                        children: [
+                          for (var i = 0; i < groups.length; i++) ...[
+                            _GroupRow(
+                              group: groups[i],
+                              cardCount: data!.cards
+                                  .where((c) => c.groupId == groups[i].id)
+                                  .length,
+                              albumCount: data.albums
+                                  .where((a) => a.belongsToGroup(groups[i].id))
+                                  .length,
+                              onTap: () =>
+                                  context.push('/group/${groups[i].id}'),
+                            ),
+                            if (i != groups.length - 1)
+                              const Divider(height: 1, indent: 82),
+                          ],
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      key: const Key('catalog-missing-feedback'),
+                      onPressed: () => context.push('/catalog/feedback'),
+                      icon: const Icon(Icons.add_comment_outlined, size: 16),
+                      label: const Text('反馈缺失内容'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -159,18 +183,13 @@ class _CatalogHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        const Icon(Icons.auto_awesome_rounded, color: FanColors.lavender),
-        const SizedBox(width: 9),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('图鉴', style: Theme.of(context).textTheme.headlineMedium),
               const SizedBox(height: 2),
-              Text(
-                'Discover · Collect · For Your Stars',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
+              Text('收录每一份热爱', style: Theme.of(context).textTheme.bodySmall),
             ],
           ),
         ),
@@ -212,13 +231,19 @@ class _HeaderAction extends StatelessWidget {
               horizontal: label == null ? 13 : 11,
               vertical: 10,
             ),
-            child: Column(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, size: 23),
+                Icon(icon, size: 21, color: Color(0xFF6750CE)),
                 if (label != null) ...[
-                  const SizedBox(height: 2),
-                  Text(label!, style: const TextStyle(fontSize: 9)),
+                  const SizedBox(width: 6),
+                  Text(
+                    label!,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF6750CE),
+                    ),
+                  ),
                 ],
               ],
             ),
@@ -239,7 +264,7 @@ class _RecentUpdates extends StatelessWidget {
       if (data.cards.isNotEmpty)
         _UpdateItem(
           type: '小卡',
-          imageUrl: data.cards.first.imageUrl,
+          imageUrl: data.cards.first.thumbnailUrl ?? data.cards.first.imageUrl,
           title: data.cards.first.displayTitle,
           subtitle: data.cards.first.version,
           date: data.cards.first.releaseDate,
@@ -252,11 +277,15 @@ class _RecentUpdates extends StatelessWidget {
       if (data.albums.isNotEmpty)
         _UpdateItem(
           type: '专辑',
-          imageUrl: data.albums.first.frontImageUrl,
+          imageUrl:
+              data.albums.first.thumbnailUrl ?? data.albums.first.frontImageUrl,
           title: data.albums.first.displayName,
           subtitle: data.albums.first.secondaryName.isNotEmpty
               ? data.albums.first.secondaryName
-              : data.albums.first.artistName,
+              : data.artistLabel(
+                  data.albums.first.artists,
+                  data.albums.first.artistName,
+                ),
           date: data.albums.first.releaseDate,
           colors: [
             Color(data.albums.first.colorStart),
@@ -267,7 +296,8 @@ class _RecentUpdates extends StatelessWidget {
       if (data.events.isNotEmpty)
         _UpdateItem(
           type: '活动',
-          imageUrl: data.events.first.imageUrl,
+          imageUrl:
+              data.events.first.thumbnailUrl ?? data.events.first.imageUrl,
           title: data.events.first.displayName,
           subtitle: data.events.first.secondaryName.isNotEmpty
               ? data.events.first.secondaryName
@@ -280,8 +310,19 @@ class _RecentUpdates extends StatelessWidget {
           route: '/event/${data.events.first.id}',
         ),
     ];
+    if (items.isEmpty) {
+      return FanStatusCard(
+        title: '暂时没有更新',
+        message: '去图鉴发现更多值得收藏的美好',
+        icon: Icons.style_outlined,
+        actionLabel: '逛逛图鉴',
+        onAction: () => context.push('/catalog/idols'),
+      );
+    }
     return SizedBox(
-      height: 142,
+      height:
+          142 +
+          (MediaQuery.textScalerOf(context).scale(12) - 12).clamp(0, 24) * 14,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: items.length,
@@ -334,14 +375,15 @@ class _UpdateCard extends StatelessWidget {
               width: 74,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(12),
-                gradient: LinearGradient(colors: item.colors),
+                color: Colors.white,
               ),
               clipBehavior: Clip.antiAlias,
               child: FanImage(
                 imageUrl: item.imageUrl,
+                fit: BoxFit.contain,
                 fallback: const Icon(
-                  Icons.auto_awesome_rounded,
-                  color: Colors.white,
+                  Icons.photo_outlined,
+                  color: FanColors.lavender,
                 ),
               ),
             ),
@@ -366,7 +408,12 @@ class _UpdateCard extends StatelessWidget {
                     item.subtitle,
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
-                  Text(item.date, style: Theme.of(context).textTheme.bodySmall),
+                  Text(
+                    item.date,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                 ],
               ),
             ),
@@ -385,7 +432,7 @@ class _CategoryGrid extends StatelessWidget {
     (Icons.album_outlined, '专辑', '/catalog/albums'),
     (Icons.event_outlined, '活动', '/catalog/events'),
     (Icons.style_outlined, '小卡', '/cards'),
-    (Icons.shopping_bag_outlined, '其他来源', '/catalog/others'),
+    (Icons.shopping_bag_outlined, '其他', '/catalog/others'),
   ];
 
   @override
@@ -393,9 +440,15 @@ class _CategoryGrid extends StatelessWidget {
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 6,
-        mainAxisExtent: 76,
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount:
+            MediaQuery.sizeOf(context).width < 360 ||
+                MediaQuery.textScalerOf(context).scale(12) > 16
+            ? 3
+            : 6,
+        mainAxisExtent:
+            76 +
+            (MediaQuery.textScalerOf(context).scale(12) - 12).clamp(0, 36) * 4,
         crossAxisSpacing: 6,
         mainAxisSpacing: 6,
       ),
@@ -420,6 +473,7 @@ class _CategoryGrid extends StatelessWidget {
               const SizedBox(height: 7),
               Text(
                 items[index].$2,
+                textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
@@ -440,73 +494,81 @@ class _PopularGroups extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 122,
+      height:
+          132 +
+          (MediaQuery.textScalerOf(context).scale(14) - 14).clamp(0, 20) * 7,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: groups.length,
         separatorBuilder: (_, _) => const SizedBox(width: 10),
         itemBuilder: (context, index) {
           final group = groups[index];
-          return InkWell(
-            onTap: () => context.push('/group/${group.id}'),
-            borderRadius: BorderRadius.circular(17),
-            child: Container(
-              width: 230,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(17),
-                gradient: LinearGradient(
-                  colors: [Color(group.colorStart), Color(group.colorEnd)],
-                ),
-              ),
-              child: Row(
+          return SizedBox(
+            key: ValueKey('popular-group-${group.id}'),
+            width: 230,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Stack(
+                fit: StackFit.expand,
                 children: [
-                  CircleAvatar(
-                    radius: 34,
-                    backgroundColor: Colors.white.withValues(alpha: .16),
-                    child: ClipOval(
-                      child: FanImage(
-                        imageUrl: group.imageUrl,
-                        fallback: Text(
-                          group.displayName.characters.first,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
+                  FanImage(
+                    imageUrl:
+                        group.thumbnailUrl ??
+                        group.coverImageUrl ??
+                        group.imageUrl,
+                    fallbackImageUrl: group.coverImageUrl ?? group.imageUrl,
+                    fallback: const ColoredBox(color: Color(0xFF45465E)),
+                  ),
+                  // Keep both title and subtitle readable even on a white photo.
+                  const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Color(0x26000000), Color(0xDB101522)],
+                        stops: [0, .68],
                       ),
                     ),
                   ),
-                  const SizedBox(width: 13),
-                  Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          group.displayName,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w900,
-                          ),
+                  Material(
+                    type: MaterialType.transparency,
+                    child: InkWell(
+                      onTap: () => context.push('/group/${group.id}'),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              group.displayName,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                height: 1.25,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              [
+                                if (group.secondaryName.isNotEmpty)
+                                  group.secondaryName,
+                                '${group.memberIds.length} 位成员',
+                              ].join(' · '),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          [
-                            if (group.secondaryName.isNotEmpty)
-                              group.secondaryName,
-                            '${group.memberIds.length} 位成员',
-                            group.company,
-                          ].join(' · '),
-                          maxLines: 2,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: .76),
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ],
@@ -606,18 +668,17 @@ class _GroupRow extends StatelessWidget {
         alignment: Alignment.center,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
-          gradient: LinearGradient(
-            colors: [Color(group.colorStart), Color(group.colorEnd)],
-          ),
+          color: FanColors.lavenderSoft,
         ),
         clipBehavior: Clip.antiAlias,
         child: FanImage(
-          imageUrl: group.imageUrl,
+          imageUrl: group.thumbnailUrl ?? group.imageUrl,
+          fallbackImageUrl: group.imageUrl,
           fallback: Text(
             group.displayName.characters.first,
             style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w900,
+              color: FanColors.lavender,
+              fontWeight: FontWeight.w600,
             ),
           ),
         ),
@@ -626,11 +687,26 @@ class _GroupRow extends StatelessWidget {
         group.displayName,
         style: const TextStyle(fontWeight: FontWeight.w800),
       ),
-      subtitle: Text(
-        '${group.secondaryName.isEmpty ? group.company : '${group.secondaryName} · ${group.company}'}\n${group.memberIds.length} 位成员 · $albumCount 张专辑 · $cardCount 张小卡',
-        maxLines: 2,
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            [group.secondaryName].where((s) => s.isNotEmpty).join(' · '),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${group.memberIds.length} 位成员 · $albumCount 张专辑 · $cardCount 张小卡',
+            key: ValueKey('group-stats-${group.id}'),
+            style: const TextStyle(
+              fontSize: 12,
+              color: FanColors.textSecondary,
+            ),
+          ),
+        ],
       ),
-      isThreeLine: true,
       trailing: const Icon(Icons.chevron_right_rounded, size: 19),
     );
   }

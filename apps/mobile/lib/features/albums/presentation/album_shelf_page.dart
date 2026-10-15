@@ -4,6 +4,8 @@ import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/features/albums/data/album_models.dart';
+import 'package:fan_os/features/albums/data/album_favorites_repository.dart';
+import 'package:fan_os/features/albums/presentation/album_favorite_sheet.dart';
 import 'package:fan_os/features/albums/presentation/album_input_scope.dart';
 import 'package:fan_os/features/albums/presentation/album_widgets.dart';
 import 'package:fan_os/features/albums/state/album_state.dart';
@@ -22,9 +24,23 @@ class AlbumShelfPage extends StatelessWidget {
 }
 
 class AlbumShelfBody extends ConsumerStatefulWidget {
-  const AlbumShelfBody({super.key, this.userId, this.showTitle = true});
+  const AlbumShelfBody({
+    super.key,
+    this.userId,
+    this.showTitle = true,
+    this.embedded = false,
+    this.profileMode = false,
+    this.viewMode,
+    this.onViewModeChanged,
+    this.refreshTick = 0,
+  });
   final String? userId;
   final bool showTitle;
+  final bool embedded;
+  final bool profileMode;
+  final String? viewMode;
+  final ValueChanged<String>? onViewModeChanged;
+  final int refreshTick;
   @override
   ConsumerState<AlbumShelfBody> createState() => _AlbumShelfBodyState();
 }
@@ -38,9 +54,21 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
       _more = false,
       _preferencesLoaded = false;
   String? _error;
+  bool _failedMore = false;
   int? _next;
   int _request = 0;
   Timer? _debounce;
+  final _scroll = ScrollController();
+  final _positions = <String, double>{};
+  final _loadedCounts = <String, int>{};
+  bool _drafts = false;
+  List<AlbumFavoriteFolder> _folders = [];
+  String? _folderId;
+  String get _category => _favorites
+      ? 'favorite'
+      : _drafts
+      ? 'draft'
+      : 'created';
   @override
   void initState() {
     super.initState();
@@ -51,16 +79,25 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
   void didUpdateWidget(covariant AlbumShelfBody oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.userId != widget.userId) _load();
+    if (oldWidget.viewMode != widget.viewMode &&
+        widget.viewMode != null &&
+        widget.viewMode != _view) {
+      _setView(widget.viewMode!);
+    }
+    if (oldWidget.refreshTick != widget.refreshTick) _load();
   }
 
   @override
   void dispose() {
     _debounce?.cancel();
+    _scroll.dispose();
     super.dispose();
   }
 
   Future<void> _load({bool more = false}) async {
-    if (more && (_more || _next == null)) return;
+    if (more && (_more || _loading || _next == null)) return;
+    final position = _scroll.hasClients ? _scroll.offset : 0.0;
+    final category = _category;
     final request = ++_request;
     setState(() {
       if (more) {
@@ -71,29 +108,48 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
       _error = null;
     });
     try {
-      final result = await ref
-          .read(albumRepositoryProvider)
-          .list(
-            q: _q,
-            sort: _sort,
-            offset: more ? _next! : 0,
-            favorites: _favorites,
-            userId: widget.userId,
-          );
+      if (widget.profileMode && _favorites && !more) {
+        final folders = await ref
+            .read(albumFavoritesRepositoryProvider)
+            .folders(userId: widget.userId);
+        if (!mounted || request != _request) return;
+        _folders = folders;
+      }
+      final result = await _fetch(more ? _next! : 0);
       if (!mounted || request != _request) return;
+      final albums = [...result.albums];
+      var next = result.nextOffset;
+      final target = _loadedCounts[category] ?? 0;
+      while (!more && albums.length < target && next != null) {
+        final page = await _fetch(next);
+        if (!mounted || request != _request) return;
+        albums.addAll(page.albums);
+        next = page.nextOffset;
+      }
       if (widget.userId == null) ref.invalidate(albumQuotaProvider);
       setState(() {
-        _albums = more ? [..._albums, ...result.albums] : result.albums;
-        _next = result.nextOffset;
+        _albums = {
+          for (final a in [...(more ? _albums : <PhotocardAlbum>[]), ...albums])
+            a.id: a,
+        }.values.toList();
+        _loadedCounts[category] = _albums.length;
+        _next = next;
         _quota = result.quota ?? _quota;
         if (!_preferencesLoaded) {
           _theme = result.theme;
-          _view = result.viewMode;
+          _view = widget.viewMode ?? result.viewMode;
           _preferencesLoaded = true;
         }
       });
+      widget.onViewModeChanged?.call(_view);
+      if (!more) _restorePosition(position);
     } catch (e) {
-      if (mounted && request == _request) setState(() => _error = e.toString());
+      if (mounted && request == _request) {
+        setState(() {
+          _error = e.toString();
+          _failedMore = more;
+        });
+      }
     } finally {
       if (mounted && request == _request) {
         setState(() {
@@ -102,6 +158,52 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
         });
       }
     }
+  }
+
+  Future<AlbumShelfData> _fetch(int offset) {
+    if (widget.profileMode && _favorites) {
+      return ref
+          .read(albumFavoritesRepositoryProvider)
+          .list(userId: widget.userId, groupId: _folderId, offset: offset);
+    }
+    return ref
+        .read(albumRepositoryProvider)
+        .list(
+          q: _q,
+          sort: _favorites ? 'created' : _sort,
+          offset: offset,
+          favorites: _favorites,
+          status: (widget.embedded || widget.profileMode) && !_favorites
+              ? (_drafts ? 'DRAFT' : 'PUBLISHED')
+              : 'ALL',
+          userId: widget.userId,
+        );
+  }
+
+  Future<void> _editFolder([AlbumFavoriteFolder? folder]) async {
+    final saved = await editAlbumFavoriteFolder(context, folder: folder);
+    if (!mounted || saved == null) return;
+    setState(() {
+      _folderId = saved.id;
+      _albums = [];
+      _next = null;
+    });
+    _loadedCounts.remove('favorite');
+    await _load();
+  }
+
+  void _selectFolder(String? id) {
+    if (id == _folderId) return;
+    setState(() {
+      _folderId = id;
+      _albums = [];
+      _next = null;
+    });
+    _loadedCounts.remove('favorite');
+    _positions.remove('favorite');
+    _load().then((_) {
+      if (mounted) _restorePosition(0);
+    });
   }
 
   Future<void> _open(PhotocardAlbum album) async {
@@ -150,12 +252,18 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                   title: Text(item.$2),
                   onTap: () => Navigator.pop(context, item.$1),
                 ),
-            ] else if (_favorites)
+            ] else if (_favorites && widget.userId == null) ...[
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: const Text('移动到分组'),
+                onTap: () => Navigator.pop(context, 'group'),
+              ),
               ListTile(
                 leading: const AlbumIcon('Heart'),
                 title: const Text('取消收藏相册'),
                 onTap: () => Navigator.pop(context, 'unfavorite'),
               ),
+            ],
           ],
         ),
       ),
@@ -170,7 +278,18 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
       if (action == 'edit') {
         await context.push('/digital-albums/${album.id}/edit');
       }
-      if (action == 'unfavorite') await repo.react(album.id, 'favorite', false);
+      if (action == 'unfavorite') {
+        await ref.read(albumFavoritesRepositoryProvider).remove(album.id);
+      }
+      if (!mounted) return;
+      if (action == 'group') {
+        await showAlbumFavoriteSheet(
+          context,
+          album.id,
+          move: true,
+          initialGroupId: album.json['favorite_group_id'] as String?,
+        );
+      }
       if (!mounted) return;
       if (action == 'delete' &&
           await confirmAlbumAction(
@@ -231,7 +350,10 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
   }
 
   Future<void> _setView(String value) async {
+    final position = _scroll.hasClients ? _scroll.offset : 0.0;
     setState(() => _view = value);
+    widget.onViewModeChanged?.call(value);
+    _restorePosition(position);
     if (widget.userId == null) {
       try {
         await ref.read(albumRepositoryProvider).preferences(_theme, _view);
@@ -239,6 +361,26 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
         if (mounted) showFanToast(context, e.toString());
       }
     }
+  }
+
+  void _restorePosition(double offset) =>
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _scroll.hasClients) {
+          _scroll.jumpTo(offset.clamp(0.0, _scroll.position.maxScrollExtent));
+        }
+      });
+
+  Future<void> _categoryChanged(String value) async {
+    if (_category == value) return;
+    if (_scroll.hasClients) _positions[_category] = _scroll.offset;
+    setState(() {
+      _favorites = value == 'favorite';
+      _drafts = value == 'draft';
+      _albums = [];
+      _next = null;
+    });
+    await _load();
+    if (mounted && _category == value) _restorePosition(_positions[value] ?? 0);
   }
 
   Future<void> _themes(List<AlbumJson> resources) async {
@@ -337,61 +479,96 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
         : matching.first['config'] as AlbumJson;
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  widget.showTitle
-                      ? (widget.userId == null ? '我的相册' : '公开相册')
-                      : '',
-                  style: Theme.of(context).textTheme.titleLarge,
+        if (!widget.embedded && !widget.profileMode) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    widget.showTitle
+                        ? (widget.userId == null ? '我的相册' : '公开相册')
+                        : '',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
                 ),
-              ),
-              if (widget.userId == null && _quota != null)
-                Text(
-                  '${_quota!.albumCount} / ${_quota!.maxAlbums}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              if (widget.userId == null)
+                if (widget.userId == null && _quota != null)
+                  Text(
+                    '${_quota!.albumCount} / ${_quota!.maxAlbums}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                if (widget.userId == null)
+                  IconButton(
+                    tooltip: '书架主题',
+                    onPressed: resources.isEmpty
+                        ? null
+                        : () => _themes(resources),
+                    icon: const AlbumIcon('Grid2X2'),
+                  ),
                 IconButton(
-                  tooltip: '书架主题',
-                  onPressed: resources.isEmpty
-                      ? null
-                      : () => _themes(resources),
-                  icon: const AlbumIcon('Grid2X2'),
+                  tooltip: _view == 'SHELF' ? '切换列表' : '切换书架',
+                  onPressed: () =>
+                      _setView(_view == 'SHELF' ? 'LIST' : 'SHELF'),
+                  icon: AlbumIcon(_view == 'SHELF' ? 'List' : 'LayoutGrid'),
                 ),
-              IconButton(
-                tooltip: _view == 'SHELF' ? '切换列表' : '切换书架',
-                onPressed: () => _setView(_view == 'SHELF' ? 'LIST' : 'SHELF'),
-                icon: AlbumIcon(_view == 'SHELF' ? 'List' : 'LayoutGrid'),
-              ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: TextField(
-            decoration: const InputDecoration(
-              hintText: '搜索相册名称',
-              prefixIcon: Padding(
-                padding: EdgeInsets.all(13),
-                child: AlbumIcon('Search', size: 18),
-              ),
+              ],
             ),
-            onChanged: (v) {
-              _q = v;
-              _debounce?.cancel();
-              _debounce = Timer(const Duration(milliseconds: 300), _load);
-            },
           ),
-        ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextField(
+              decoration: const InputDecoration(
+                hintText: '搜索相册名称',
+                prefixIcon: Padding(
+                  padding: EdgeInsets.all(13),
+                  child: AlbumIcon('Search', size: 18),
+                ),
+              ),
+              onChanged: (v) {
+                _q = v;
+                _loadedCounts.clear();
+                _debounce?.cancel();
+                _debounce = Timer(const Duration(milliseconds: 300), _load);
+              },
+            ),
+          ),
+        ],
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           child: Row(
             children: [
-              if (widget.userId == null) ...[
+              if (widget.embedded || widget.profileMode) ...[
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final entry in {
+                          'created': widget.userId == null ? '我创建的' : 'TA 创建的',
+                          if (!widget.profileMode) 'draft': '草稿',
+                          'favorite': widget.userId == null ? '我收藏的' : 'TA 收藏的',
+                        }.entries)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: ChoiceChip(
+                              showCheckmark: false,
+                              padding: EdgeInsets.zero,
+                              labelPadding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                              ),
+                              label: Text(
+                                entry.value,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              selected: _category == entry.key,
+                              onSelected: (_) => _categoryChanged(entry.key),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ] else if (widget.userId == null) ...[
                 ChoiceChip(
                   label: const Text('我创建的'),
                   selected: !_favorites,
@@ -410,30 +587,141 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                   },
                 ),
               ],
-              const Spacer(),
-              PopupMenuButton<String>(
-                initialValue: _sort,
-                tooltip: '排序',
-                onSelected: (s) {
-                  setState(() => _sort = s);
-                  _load();
-                },
-                itemBuilder: (_) => [
-                  for (final s in [
-                    ('updated', '最近更新'),
-                    ('created', '最近创建'),
-                    ('name', '名称'),
-                  ])
-                    PopupMenuItem(value: s.$1, child: Text(s.$2)),
-                ],
-                child: const Padding(
-                  padding: EdgeInsets.all(8),
-                  child: AlbumIcon('GripVertical', size: 18),
+              if (!widget.embedded && !widget.profileMode) const Spacer(),
+              if (widget.profileMode && _favorites)
+                Text('按收藏时间', style: Theme.of(context).textTheme.bodySmall)
+              else
+                PopupMenuButton<String>(
+                  initialValue: _sort,
+                  tooltip: '排序',
+                  onSelected: (s) {
+                    if (s == 'theme') {
+                      _themes(resources);
+                      return;
+                    }
+                    if (s == 'quota') {
+                      if (_quota != null) {
+                        showAlbumQuotaDialog(context, _quota!);
+                      }
+                      return;
+                    }
+                    setState(() => _sort = s);
+                    _loadedCounts.clear();
+                    _load();
+                  },
+                  itemBuilder: (_) => [
+                    for (final s in [
+                      ('updated', '最近更新'),
+                      ('created', '最近创建'),
+                      ('name', '名称'),
+                    ])
+                      PopupMenuItem(value: s.$1, child: Text(s.$2)),
+                    if (widget.embedded) ...[
+                      const PopupMenuItem(value: 'theme', child: Text('书架主题')),
+                      if (_quota != null)
+                        PopupMenuItem(
+                          value: 'quota',
+                          child: Text(
+                            '卡册额度 ${_quota!.albumCount}/${_quota!.maxAlbums}',
+                          ),
+                        ),
+                    ],
+                  ],
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: widget.profileMode
+                        ? Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                {
+                                  'updated': '最近更新',
+                                  'created': '最近创建',
+                                  'name': '名称',
+                                }[_sort]!,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              const Icon(Icons.expand_more, size: 16),
+                            ],
+                          )
+                        : const AlbumIcon('GripVertical', size: 18),
+                  ),
                 ),
-              ),
+              if (widget.profileMode)
+                IconButton(
+                  tooltip: _view == 'SHELF' ? '切换列表' : '切换书架',
+                  onPressed: () =>
+                      _setView(_view == 'SHELF' ? 'LIST' : 'SHELF'),
+                  icon: Icon(
+                    _view == 'SHELF'
+                        ? Icons.view_list_outlined
+                        : Icons.grid_view,
+                    size: 20,
+                  ),
+                ),
             ],
           ),
         ),
+        if (widget.profileMode && _favorites)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final entry in <String?, String>{
+                          null: '全部',
+                          if (widget.userId == null) 'ungrouped': '未分组',
+                          for (final folder in _folders) folder.id: folder.name,
+                        }.entries)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: ChoiceChip(
+                              label: Text(entry.value),
+                              selected: entry.key == _folderId,
+                              showCheckmark: false,
+                              avatar: entry.key == null
+                                  ? null
+                                  : Icon(
+                                      _folders.any(
+                                            (f) =>
+                                                f.id == entry.key && f.isPublic,
+                                          )
+                                          ? Icons.public
+                                          : Icons.lock_outline,
+                                      size: 14,
+                                    ),
+                              onSelected: (_) => _selectFolder(entry.key),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (widget.userId == null) ...[
+                  if (_folders.any((f) => f.id == _folderId))
+                    IconButton(
+                      tooltip: '编辑分组与可见性',
+                      onPressed: () => _editFolder(
+                        _folders.firstWhere((f) => f.id == _folderId),
+                      ),
+                      icon: const Icon(Icons.tune, size: 20),
+                    ),
+                  IconButton(
+                    tooltip: '新建收藏分组',
+                    onPressed: () => _editFolder(),
+                    icon: const Icon(
+                      Icons.create_new_folder_outlined,
+                      size: 20,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
         Expanded(
           child: Stack(
             children: [
@@ -453,6 +741,7 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                     if (n.metrics.extentAfter < 180 &&
                         !_loading &&
                         !_more &&
+                        _error == null &&
                         _next != null) {
                       _load(more: true);
                     }
@@ -462,6 +751,7 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                     onRefresh: _load,
                     child: _albums.isEmpty
                         ? ListView(
+                            controller: _scroll,
                             physics: const AlwaysScrollableScrollPhysics(),
                             children: [
                               SizedBox(
@@ -472,6 +762,8 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                                       ? '没有找到相关相册'
                                       : _favorites
                                       ? '还没有收藏相册'
+                                      : widget.embedded && _drafts
+                                      ? '还没有草稿'
                                       : widget.userId != null
                                       ? 'TA 还没有公开相册'
                                       : '你的第一本数字小卡册，等待被填满。',
@@ -481,7 +773,9 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                                       ? '浏览他人的公开作品后，可以收藏到这里。'
                                       : '仅引用官方图鉴小卡，不会自动加入 Owned。',
                                   actionLabel:
-                                      widget.userId == null && !_favorites
+                                      widget.userId == null &&
+                                          !_favorites &&
+                                          !widget.profileMode
                                       ? '创建相册'
                                       : null,
                                   onAction: _create,
@@ -491,6 +785,7 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                           )
                         : _view == 'LIST'
                         ? ListView.builder(
+                            controller: _scroll,
                             physics: const AlwaysScrollableScrollPhysics(),
                             padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
                             itemCount: _albums.length + 1,
@@ -502,6 +797,7 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                             builder: (context, c) {
                               final cols = c.maxWidth >= 600 ? 3 : 2;
                               return ListView.builder(
+                                controller: _scroll,
                                 physics: const AlwaysScrollableScrollPhysics(),
                                 padding: const EdgeInsets.only(bottom: 80),
                                 itemCount: (_albums.length / cols).ceil() + 1,
@@ -514,9 +810,9 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                                       (theme['colors'] as List).first as String,
                                     ),
                                     padding: const EdgeInsets.fromLTRB(
-                                      16,
+                                      20,
                                       12,
-                                      16,
+                                      20,
                                       0,
                                     ),
                                     child: Column(
@@ -545,25 +841,7 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                                               ),
                                           ],
                                         ),
-                                        Container(
-                                          height: 10,
-                                          margin: const EdgeInsets.only(
-                                            top: 8,
-                                            bottom: 12,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: albumColor(
-                                              theme['ledge'] as String,
-                                            ),
-                                            boxShadow: const [
-                                              BoxShadow(
-                                                color: Color(0x20866645),
-                                                blurRadius: 5,
-                                                offset: Offset(0, 3),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
+                                        const SizedBox(height: 16),
                                       ],
                                     ),
                                   );
@@ -573,7 +851,9 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                           ),
                   ),
                 ),
-              if (widget.userId == null && !_favorites)
+              if (!widget.profileMode &&
+                  widget.userId == null &&
+                  (widget.embedded || !_favorites))
                 Positioned(
                   right: 16,
                   bottom: 16,
@@ -605,12 +885,13 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
         ? const Center(child: CircularProgressIndicator())
         : _error != null
         ? TextButton(
-            onPressed: () => _load(more: true),
+            onPressed: () => _load(more: _failedMore),
             child: const Text('加载失败，点击重试'),
           )
         : const SizedBox(height: 12),
   );
   Widget _listTile(PhotocardAlbum album, List<AlbumJson> resources) => ListTile(
+    key: ValueKey('album-list-${album.id}'),
     contentPadding: const EdgeInsets.symmetric(vertical: 10),
     onTap: () => _open(album),
     onLongPress: () => _menu(album),
@@ -635,6 +916,7 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
     List<AlbumJson> resources,
     AlbumJson theme,
   ) => GestureDetector(
+    key: ValueKey('album-shelf-${album.id}'),
     onTap: () => _open(album),
     onLongPress: () => _menu(album),
     child: Column(
@@ -642,24 +924,19 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
         Container(
           height: 185,
           padding: const EdgeInsets.all(10),
-          decoration: albumDecoration({
-            'colors': theme['colors'],
-            'type': 'GRADIENT',
-            'angle': 90,
-          }, radius: 0),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF2F1EC),
+            borderRadius: BorderRadius.circular(16),
+          ),
           child: Center(
             child: album.unavailable
                 ? const AlbumIcon('CircleOff', size: 44)
                 : AlbumCoverWidget(album, resources: resources),
           ),
         ),
-        const SizedBox(height: 7),
+        const SizedBox(height: 8),
         Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: .92),
-            borderRadius: BorderRadius.circular(12),
-          ),
+          padding: const EdgeInsets.symmetric(horizontal: 4),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -674,8 +951,8 @@ class _AlbumShelfBodyState extends ConsumerState<AlbumShelfBody> {
                     ),
                   ),
                   SizedBox(
-                    height: 24,
-                    width: 28,
+                    height: 44,
+                    width: 44,
                     child: IconButton(
                       padding: EdgeInsets.zero,
                       tooltip: '相册操作',
@@ -743,7 +1020,73 @@ class AlbumCreatePage extends ConsumerStatefulWidget {
 class _AlbumCreatePageState extends ConsumerState<AlbumCreatePage> {
   final _name = TextEditingController(text: '我的小卡册');
   String _display = 'SINGLE', _style = 'REALISTIC';
+  String _mode = 'BOOK';
   bool _busy = false;
+  Future<void> _chooseDisplay() async {
+    var selected = _display;
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '展示方式',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(
+                      value: 'SINGLE',
+                      icon: Icon(Icons.book_outlined),
+                      label: Text('单面'),
+                    ),
+                    ButtonSegment(
+                      value: 'DOUBLE',
+                      icon: Icon(Icons.menu_book_outlined),
+                      label: Text('双面'),
+                    ),
+                  ],
+                  selected: {selected},
+                  onSelectionChanged: (value) =>
+                      update(() => selected = value.first),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: FilledButton(
+                    onPressed: () => Navigator.pop(context, selected),
+                    child: const Text('确定'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (result != null && mounted) setState(() => _display = result);
+  }
+
   @override
   void dispose() {
     _name.dispose();
@@ -761,9 +1104,20 @@ class _AlbumCreatePageState extends ConsumerState<AlbumCreatePage> {
     }
     setState(() => _busy = true);
     try {
-      final album = await ref
+      var album = await ref
           .read(albumRepositoryProvider)
           .create(_name.text.trim(), _display, _style);
+      if (_mode == 'CARDS') {
+        album = await ref
+            .read(albumRepositoryProvider)
+            .save(
+              album.edit((d) {
+                final view = d['card_view'] as AlbumJson;
+                view['default_mode'] = 'CARDS';
+                view['cover_style'] = 'STACK_V1';
+              }),
+            );
+      }
       if (mounted) context.pushReplacement('/digital-albums/${album.id}/edit');
     } catch (e) {
       if (mounted) showFanToast(context, e.toString());
@@ -803,59 +1157,45 @@ class _AlbumCreatePageState extends ConsumerState<AlbumCreatePage> {
           ),
           const SizedBox(height: 18),
           const Text(
-            '展示方式',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            '相册模式',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              for (final option in [
-                ('SINGLE', '单面翻页', 'Book'),
-                ('DOUBLE', '双面翻页', 'BookOpen1'),
-              ])
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: InkWell(
-                      onTap: () => setState(() => _display = option.$1),
-                      child: Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color: _display == option.$1
-                              ? FanColors.lavenderSoft
-                              : const Color(0xFFF0F0F7),
-                          border: Border.all(
-                            color: _display == option.$1
-                                ? FanColors.lavender
-                                : FanColors.line,
-                            width: 1.5,
-                          ),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: Column(
-                          children: [
-                            AlbumIcon(
-                              option.$3,
-                              size: 34,
-                              color: _display == option.$1
-                                  ? FanColors.lavender
-                                  : FanColors.textSecondary,
-                            ),
-                            const SizedBox(height: 12),
-                            Text(
-                              option.$2,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(
+                value: 'BOOK',
+                label: Text('卡册模式'),
+                icon: Icon(Icons.menu_book_outlined),
+              ),
+              ButtonSegment(
+                value: 'CARDS',
+                label: Text('卡片模式'),
+                icon: Icon(Icons.style_outlined),
+              ),
             ],
+            selected: {_mode},
+            onSelectionChanged: (s) async {
+              setState(() => _mode = s.first);
+              if (_mode == 'BOOK') await _chooseDisplay();
+            },
           ),
+          const SizedBox(height: 8),
+          Text(
+            _mode == 'CARDS' ? '滑动欣赏、轻点翻面；最多 15 张小卡。' : '像翻阅一本实体卡册，支持自定义内页。',
+            style: const TextStyle(
+              fontSize: 12,
+              color: FanColors.textSecondary,
+            ),
+          ),
+          if (_mode == 'BOOK') ...[
+            const SizedBox(height: 12),
+            TextButton.icon(
+              onPressed: _chooseDisplay,
+              icon: const Icon(Icons.menu_book_outlined),
+              label: Text('展示方式 · ${_display == 'DOUBLE' ? '双面' : '单面'}'),
+            ),
+          ],
           const SizedBox(height: 20),
           const Text(
             '视觉风格',
@@ -885,7 +1225,7 @@ class _AlbumCreatePageState extends ConsumerState<AlbumCreatePage> {
           ),
           const SizedBox(height: 10),
           const Text(
-            '默认私密 · 允许空相册 · 不自动增加 Owned',
+            '默认私密 · 不改变小卡拥有状态',
             textAlign: TextAlign.center,
             style: TextStyle(color: FanColors.textSecondary, fontSize: 12),
           ),

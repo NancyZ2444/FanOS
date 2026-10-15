@@ -116,13 +116,7 @@ class _CardGalleryPageState extends ConsumerState<CardGalleryPage> {
                     : GridView.builder(
                         key: const Key('card-gallery-grid'),
                         padding: const EdgeInsets.fromLTRB(20, 4, 20, 30),
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 3,
-                              crossAxisSpacing: 9,
-                              mainAxisSpacing: 16,
-                              childAspectRatio: .52,
-                            ),
+                        gridDelegate: fanCardGrid(context),
                         itemCount: cards.length,
                         itemBuilder: (context, index) {
                           final card = cards[index];
@@ -177,7 +171,7 @@ class _CardGalleryPageState extends ConsumerState<CardGalleryPage> {
       case '最早发行':
         cards.sort((a, b) => a.releaseDate.compareTo(b.releaseDate));
       case 'A–Z':
-        cards.sort((a, b) => a.title.compareTo(b.title));
+        cards.sort((a, b) => a.displayTitle.compareTo(b.displayTitle));
       case '最近收录':
         cards.sort((a, b) => b.id.compareTo(a.id));
       default:

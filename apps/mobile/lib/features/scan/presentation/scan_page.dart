@@ -1,64 +1,82 @@
 import 'dart:io';
 
+import 'package:camera/camera.dart';
 import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/api/api_client.dart';
-import 'package:fan_os/core/data/models.dart';
+import 'package:fan_os/core/data/scan_detection_repository.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
-import 'package:camera/camera.dart';
+import 'package:fan_os/features/scan/presentation/scan_selection.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 class ScanPage extends ConsumerStatefulWidget {
   const ScanPage({super.key});
-
   @override
   ConsumerState<ScanPage> createState() => _ScanPageState();
 }
 
 class _ScanPageState extends ConsumerState<ScanPage>
     with WidgetsBindingObserver {
-  final _picker = ImagePicker();
-  CameraController? _cameraController;
-  String? _imagePath;
-  Size? _imageSize;
-  bool _scanning = false;
-  bool _flashEnabled = false;
-  bool _cameraUnavailable = false;
-  int _cameraGeneration = 0;
-  int _detectedCount = 0;
-  int _completedCount = 0;
-  List<ScanCropRegion> _detectedRegions = const [];
+  CameraController? _camera;
+  bool _active = false, _unavailable = false, _flash = false, _busy = false;
+  CameraLensDirection _lens = CameraLensDirection.back;
+  int _generation = 0, _operation = 0;
+  String? _imagePath, _error;
+  Size _imageSize = const Size(3, 4);
+  ScanDetection? _detection;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _initializeCamera();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final active = TickerMode.valuesOf(context).enabled;
+    if (_active == active) return;
+    _active = active;
+    if (active && _imagePath == null) {
+      _initializeCamera();
+    } else if (!active) {
+      _disposeCamera();
+    }
+  }
+
+  void _disposeCamera() {
+    _generation++;
+    final controller = _camera;
+    _camera = null;
+    controller?.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final controller = _cameraController;
     if (state == AppLifecycleState.inactive) {
-      _cameraGeneration++;
-      setState(() => _cameraController = null);
-      controller?.dispose();
-    } else if (state == AppLifecycleState.resumed) {
+      setState(_disposeCamera);
+    } else if (state == AppLifecycleState.resumed &&
+        _active &&
+        _imagePath == null &&
+        _detection == null) {
       _initializeCamera();
     }
   }
 
   Future<void> _initializeCamera() async {
-    final generation = ++_cameraGeneration;
+    if (!_active || !mounted) return;
+    _disposeCamera();
+    final generation = _generation;
     CameraController? pending;
     try {
       final cameras = await availableCameras();
-      if (cameras.isEmpty) throw StateError('No camera available');
+      if (cameras.isEmpty) throw StateError('No camera');
       final selected = cameras.firstWhere(
-        (camera) => camera.lensDirection == CameraLensDirection.back,
+        (c) => c.lensDirection == _lens,
         orElse: () => cameras.first,
       );
       final controller = CameraController(
@@ -69,572 +87,430 @@ class _ScanPageState extends ConsumerState<ScanPage>
       );
       pending = controller;
       await controller.initialize();
-      if (!mounted || generation != _cameraGeneration) {
+      if (!mounted || generation != _generation || !_active) {
         await controller.dispose();
         return;
       }
       setState(() {
-        _cameraController = controller;
-        _cameraUnavailable = false;
-        _flashEnabled = false;
+        _camera = controller;
+        _unavailable = false;
+        _flash = false;
       });
     } catch (_) {
       await pending?.dispose();
-      if (!mounted || generation != _cameraGeneration) return;
-      setState(() => _cameraUnavailable = true);
+      if (mounted && generation == _generation) {
+        setState(() => _unavailable = true);
+      }
     }
   }
 
   Future<void> _toggleFlash() async {
-    final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) {
+    if (_camera == null) {
       showFanToast(context, '当前设备暂不支持闪光灯');
       return;
     }
-    final enabled = !_flashEnabled;
     try {
-      await controller.setFlashMode(enabled ? FlashMode.torch : FlashMode.off);
-      if (!mounted) return;
-      setState(() => _flashEnabled = enabled);
+      await _camera!.setFlashMode(_flash ? FlashMode.off : FlashMode.torch);
+      if (mounted) setState(() => _flash = !_flash);
     } catch (_) {
-      if (!mounted) return;
-      showFanToast(context, '闪光灯暂时无法使用');
+      if (mounted) showFanToast(context, '闪光灯暂时无法使用');
     }
   }
 
-  Future<void> _capture() async {
-    if (_scanning || _cameraController?.value.isTakingPicture == true) return;
-    final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) {
-      if (useMockApi) {
-        showFanToast(context, '当前设备无可用相机，已进入多卡演示');
-        await _recognize();
-      } else {
-        showFanToast(context, '当前设备无可用相机，请从相册选择小卡照片');
-      }
-      return;
-    }
+  Future<void> _capture({bool gallery = false}) async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     try {
-      final file = await controller.takePicture();
+      String? path;
+      if (gallery) {
+        final file = await ImagePicker().pickImage(
+          source: ImageSource.gallery,
+          imageQuality: 90,
+          maxWidth: 2400,
+        );
+        if (file == null) return;
+        path = file.path;
+      } else if (_camera?.value.isInitialized == true) {
+        path = (await _camera!.takePicture()).path;
+      } else if (!useMockApi) {
+        if (mounted) showFanToast(context, '相机不可用，请从相册选择照片');
+        return;
+      }
       if (!mounted) return;
-      await _setImage(file.path);
+      if (path != null) {
+        final decoded = await decodeImageFromList(
+          await File(path).readAsBytes(),
+        );
+        _imageSize = Size(decoded.width.toDouble(), decoded.height.toDouble());
+        decoded.dispose();
+      }
       if (!mounted) return;
-      await controller.pausePreview();
-      await _recognize();
+      setState(() {
+        _imagePath = path;
+        _disposeCamera();
+      });
+      await _detect();
     } catch (_) {
-      if (!mounted) return;
-      showFanToast(context, '拍摄失败，请重试或从相册上传');
+      if (mounted) {
+        showFanToast(context, gallery ? '无法读取照片，请检查相册权限后重试' : '拍摄失败，请重试或从相册选择');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _detect() async {
+    if (!useMockApi && !ref.read(sessionProvider).isLoggedIn) {
+      await context.push('/login');
+      if (!mounted) return;
+      if (!ref.read(sessionProvider).isLoggedIn) {
+        setState(() => _error = '请登录后重试检测，照片已保留。');
+        return;
+      }
+    }
+    final operation = ++_operation;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final detection = await ref
+          .read(scanDetectionRepositoryProvider)
+          .detect(_imagePath);
+      if (!mounted || operation != _operation) return;
+      setState(() => _detection = detection);
+    } catch (error) {
+      if (mounted && operation == _operation) {
+        setState(() => _error = _message(error, detecting: true));
+      }
+    } finally {
+      if (mounted && operation == _operation) setState(() => _busy = false);
+    }
+  }
+
+  String _message(Object error, {bool detecting = false}) {
+    if (error is ApiException) {
+      return error.message;
+    }
+    return detecting ? '暂时无法检测小卡，请检查网络后重试。' : '暂时无法识别，已保留选中的小卡，请重试。';
+  }
+
+  Future<void> _recognize(Set<String> ids) async {
+    if (_busy || ids.isEmpty || _detection == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final result = await ref
+          .read(scanDetectionRepositoryProvider)
+          .recognize(_detection!, ids);
+      if (!mounted) return;
+      setState(() => _busy = false);
+      await context.push<void>('/scan-result', extra: result);
+      if (mounted) _retake();
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _error = _message(error);
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  void _retake() {
+    _operation++;
+    setState(() {
+      _imagePath = null;
+      _detection = null;
+      _error = null;
+      _busy = false;
+    });
+    _initializeCamera();
   }
 
   @override
   void dispose() {
-    _cameraGeneration++;
+    _operation++;
+    _disposeCamera();
     WidgetsBinding.instance.removeObserver(this);
-    _cameraController?.dispose();
     super.dispose();
   }
 
-  Future<void> _pick(ImageSource source) async {
-    try {
-      final file = await _picker.pickImage(
-        source: source,
-        imageQuality: 88,
-        maxWidth: 1800,
-      );
-      if (file == null || !mounted) return;
-      await _setImage(file.path);
-      if (!mounted) return;
-      await _cameraController?.pausePreview();
-      await _recognize();
-    } catch (_) {
-      if (!mounted) return;
-      if (useMockApi) {
-        showFanToast(context, '当前设备无法调用相册，已进入演示识别');
-        await _recognize();
-      } else {
-        showFanToast(context, '无法读取照片，请检查相册权限后重试');
-      }
-    }
-  }
-
-  Future<void> _setImage(String path) async {
-    final image = await decodeImageFromList(await File(path).readAsBytes());
-    final size = Size(image.width.toDouble(), image.height.toDouble());
-    image.dispose();
-    if (mounted) {
-      setState(() {
-        _imagePath = path;
-        _imageSize = size;
-      });
-    }
-  }
-
-  Future<void> _resetPreview() async {
-    setState(() {
-      _imagePath = null;
-      _imageSize = null;
-      _detectedCount = 0;
-      _completedCount = 0;
-      _detectedRegions = const [];
-    });
-    try {
-      if (_cameraController == null) {
-        await _initializeCamera();
-      } else {
-        await _cameraController!.resumePreview();
-      }
-    } catch (_) {
-      await _initializeCamera();
-    }
-  }
-
-  Future<void> _recognize() async {
-    if (_scanning) return;
-    if (!useMockApi && !ref.read(sessionProvider).isLoggedIn) {
-      showFanToast(context, '请先登录后扫描小卡');
-      await context.push('/login');
-      if (!mounted || !ref.read(sessionProvider).isLoggedIn) return;
-    }
-    setState(() {
-      _scanning = true;
-      _detectedCount = 0;
-      _completedCount = 0;
-      _detectedRegions = const [];
-    });
-    try {
-      final session = await ref
-          .read(scanRepositoryProvider)
-          .recognize(localImagePath: _imagePath);
-      if (!mounted) return;
-      setState(() {
-        _detectedCount = session.detectedCount;
-        _completedCount = session.detectedCount;
-        _detectedRegions = session.detectedCards
-            .map((item) => item.cropRegion)
-            .toList();
-      });
-      // The synchronous API has finished all regions; do not simulate AI progress.
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-      if (!mounted) return;
-      setState(() => _scanning = false);
-      await context.push<void>('/scan-result', extra: session);
-      if (!mounted) return;
-      await _resetPreview();
-    } on ApiException catch (error) {
-      if (!mounted) return;
-      setState(() => _scanning = false);
-      final message = error.code == 'NETWORK_ERROR'
-          ? '无法连接识别服务，请确认 Fan OS API 已启动'
-          : error.message;
-      showFanToast(context, message);
-      try {
-        await _cameraController?.resumePreview();
-      } catch (_) {
-        await _initializeCamera();
-      }
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _scanning = false);
-      showFanToast(context, '识别服务暂时不可用，请稍后重试');
-      try {
-        await _cameraController?.resumePreview();
-      } catch (_) {
-        await _initializeCamera();
-      }
-    }
-  }
-
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF15130F),
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-              child: Row(
-                children: [
-                  IconButton(
-                    tooltip: '退出扫描',
-                    onPressed: _scanning ? null : () => context.go('/home'),
-                    icon: const Icon(Icons.close_rounded, color: Colors.white),
-                  ),
-                  Expanded(
-                    child: Text(
-                      'AI Scan',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.titleLarge
-                          ?.copyWith(color: Colors.white),
+  Widget build(BuildContext context) => AnnotatedRegion<SystemUiOverlayStyle>(
+    value: SystemUiOverlayStyle.light,
+    child: Scaffold(
+      backgroundColor: const Color(0xFF24232C),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (_detection == null) ...[
+            if (_imagePath != null)
+              Image.file(File(_imagePath!), fit: BoxFit.contain)
+            else if (_camera?.value.isInitialized == true)
+              LayoutBuilder(
+                builder: (context, size) {
+                  final preview = _camera!.value.previewSize!;
+                  return ClipRect(
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: preview.height,
+                        height: preview.width,
+                        child: CameraPreview(_camera!),
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    tooltip: '我的扫描反馈',
-                    onPressed: _scanning
-                        ? null
-                        : () => context.push('/scan-feedback-history'),
-                    icon: const Icon(
-                      Icons.history_rounded,
-                      color: Colors.white,
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: _flashEnabled ? '关闭闪光灯' : '打开闪光灯',
-                    onPressed: _scanning ? null : _toggleFlash,
-                    icon: Icon(
-                      _flashEnabled
-                          ? Icons.flash_on_rounded
-                          : Icons.flash_off_rounded,
-                      color: _flashEnabled
-                          ? const Color(0xFFFFD76A)
-                          : Colors.white,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => showModalBottomSheet<void>(
-                      context: context,
-                      showDragHandle: true,
-                      builder: (context) => const Padding(
-                        padding: EdgeInsets.fromLTRB(24, 8, 24, 30),
+                  );
+                },
+              )
+            else
+              Center(
+                child: _unavailable
+                    ? Padding(
+                        padding: const EdgeInsets.all(32),
                         child: Text(
-                          '系统会自动判断卡片数量。请将一张或多张小卡完整放入画面，并尽量避免重叠、反光和遮挡。',
+                          useMockApi ? '当前设备使用演示画面' : '相机不可用\n请检查相机权限，或从相册选择照片',
                           textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.white70),
                         ),
-                      ),
-                    ),
-                    icon: const Icon(
-                      Icons.help_outline_rounded,
-                      color: Colors.white,
-                    ),
+                      )
+                    : const CircularProgressIndicator(color: Colors.white),
+              ),
+            const IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black54,
+                      Colors.transparent,
+                      Colors.transparent,
+                      Colors.black54,
+                    ],
+                    stops: [0, .3, .65, 1],
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              _scanning
-                  ? _detectedCount == 0
-                        ? '正在检测画面中的小卡…'
-                        : '识别完成 · 共 $_detectedCount 张小卡'
-                  : '将一张或多张小卡完整放入画面',
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: .78),
-                fontSize: 13,
-              ),
-            ),
-            const SizedBox(height: 5),
-            Text(
-              '尽量避免重叠、反光和遮挡，识别会更准确。',
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: .5),
-                fontSize: 11,
-              ),
-            ),
-            const SizedBox(height: 14),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 26),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(24),
-                      child: _imagePath == null
-                          ? _CameraSurface(
-                              controller: _cameraController,
-                              unavailable: _cameraUnavailable,
-                            )
-                          : Center(
-                              child: AspectRatio(
-                                aspectRatio: _imageSize!.aspectRatio,
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    Image.file(
-                                      File(_imagePath!),
-                                      fit: BoxFit.contain,
-                                    ),
-                                    if (_detectedRegions.isNotEmpty)
-                                      _DetectionOverlay(
-                                        regions: _detectedRegions,
-                                        completedCount: _completedCount,
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                    ),
-                    if (_detectedRegions.isEmpty)
-                      _MultiCardGuide(scanning: _scanning)
-                    else if (_imagePath == null)
-                      _DetectionOverlay(
-                        regions: _detectedRegions,
-                        completedCount: _completedCount,
-                      ),
-                  ],
                 ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  _RoundAction(
-                    icon: Icons.photo_library_outlined,
-                    label: '相册',
-                    onTap: _scanning ? null : () => _pick(ImageSource.gallery),
-                  ),
-                  GestureDetector(
-                    onTap: _scanning ? null : _capture,
-                    child: Container(
-                      width: 74,
-                      height: 74,
-                      padding: const EdgeInsets.all(5),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 3),
+          ],
+          SafeArea(
+            bottom: false,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Row(
+                    children: [
+                      _control(
+                        '退出扫描',
+                        Icons.close_rounded,
+                        _busy
+                            ? null
+                            : () {
+                                _disposeCamera();
+                                context.go('/home');
+                              },
                       ),
-                      child: Container(
-                        decoration: const BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
+                      const Expanded(
+                        child: Text(
+                          'AI Scan',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
-                        child: _scanning
-                            ? const Padding(
-                                padding: EdgeInsets.all(18),
-                                child: CircularProgressIndicator(
-                                  color: FanColors.ink,
-                                  strokeWidth: 2,
+                      ),
+                      _control(
+                        '我的扫描反馈',
+                        Icons.history_rounded,
+                        _busy
+                            ? null
+                            : () => context.push('/scan-feedback-history'),
+                      ),
+                      _control(
+                        '闪光灯',
+                        _flash
+                            ? Icons.flash_on_rounded
+                            : Icons.flash_off_rounded,
+                        _busy || _detection != null || _imagePath != null
+                            ? null
+                            : _toggleFlash,
+                      ),
+                      _control(
+                        '扫描帮助',
+                        Icons.help_outline_rounded,
+                        () => showModalBottomSheet<void>(
+                          context: context,
+                          showDragHandle: true,
+                          builder: (_) => const SafeArea(
+                            child: Padding(
+                              padding: EdgeInsets.fromLTRB(24, 0, 24, 24),
+                              child: Text(
+                                '将一张或多张小卡完整放入画面，尽量避免重叠、反光和遮挡。\n\n拍摄后自动框选小卡，默认全选。你可以取消不需要的小卡，点击“扫描”才开始匹配图鉴。扫描不会自动加入收藏或标记拥有。',
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 6,
+                  ),
+                  child: Text(
+                    _detection != null ? '请选择要扫描的小卡' : '将一张或多张小卡完整放入画面',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                  ),
+                ),
+                if (_detection != null)
+                  Expanded(
+                    child: ScanSelection(
+                      key: ValueKey(_detection!.sessionId),
+                      detection: _detection!,
+                      imageSize: _imageSize,
+                      localImagePath: _imagePath,
+                      busy: _busy,
+                      error: _error,
+                      onScan: _recognize,
+                      onRetake: _retake,
+                    ),
+                  )
+                else ...[
+                  Expanded(
+                    child: _busy
+                        ? const Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                CircularProgressIndicator(color: Colors.white),
+                                SizedBox(height: 16),
+                                Text(
+                                  '正在检测小卡…',
+                                  style: TextStyle(color: Colors.white),
                                 ),
-                              )
-                            : null,
+                              ],
+                            ),
+                          )
+                        : const SizedBox(),
+                  ),
+                  if (_error != null)
+                    Container(
+                      margin: const EdgeInsets.all(20),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: FanColors.canvas,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Column(
+                        children: [
+                          Text(_error!, textAlign: TextAlign.center),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: _busy ? null : _retake,
+                                  child: const Text('重新拍摄'),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: FilledButton(
+                                  onPressed: _busy ? null : _detect,
+                                  child: const Text('重试检测'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
                     ),
-                  ),
-                  _RoundAction(
-                    icon: useMockApi
-                        ? Icons.auto_awesome_rounded
-                        : Icons.refresh_rounded,
-                    label: useMockApi ? '多卡演示' : '重新取景',
-                    onTap: _scanning
-                        ? null
-                        : (useMockApi ? _recognize : _resetPreview),
-                  ),
+                  if (_error == null)
+                    SafeArea(
+                      top: false,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            _control(
+                              '相册',
+                              Icons.photo_library_outlined,
+                              _busy ? null : () => _capture(gallery: true),
+                            ),
+                            Semantics(
+                              button: true,
+                              label: '拍照检测小卡',
+                              child: GestureDetector(
+                                key: const Key('scan-shutter'),
+                                onTap: _busy ? null : () => _capture(),
+                                child: Container(
+                                  width: 80,
+                                  height: 80,
+                                  padding: const EdgeInsets.all(5),
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: Colors.white,
+                                      width: 3,
+                                    ),
+                                  ),
+                                  child: const DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            _control(
+                              '切换相机',
+                              Icons.cameraswitch_outlined,
+                              _busy
+                                  ? null
+                                  : () {
+                                      _lens = _lens == CameraLensDirection.back
+                                          ? CameraLensDirection.front
+                                          : CameraLensDirection.back;
+                                      _initializeCamera();
+                                    },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                 ],
-              ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
-    );
-  }
-}
+    ),
+  );
 
-class _CameraSurface extends StatelessWidget {
-  const _CameraSurface({required this.controller, required this.unavailable});
-
-  final CameraController? controller;
-  final bool unavailable;
-
-  @override
-  Widget build(BuildContext context) {
-    final previewSize = controller?.value.previewSize;
-    if (controller != null &&
-        controller!.value.isInitialized &&
-        previewSize != null) {
-      return FittedBox(
-        fit: BoxFit.cover,
-        child: SizedBox(
-          width: previewSize.height,
-          height: previewSize.width,
-          child: CameraPreview(controller!, key: const Key('camera-preview')),
+  Widget _control(String label, IconData icon, VoidCallback? onTap) =>
+      IconButton(
+        tooltip: label,
+        onPressed: onTap,
+        icon: Icon(icon, size: 24),
+        style: IconButton.styleFrom(
+          foregroundColor: Colors.white,
+          disabledForegroundColor: Colors.white38,
+          backgroundColor: Colors.black.withValues(alpha: .16),
+          minimumSize: const Size(44, 44),
         ),
       );
-    }
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        const FanArtwork(
-          startColor: Color(0xFF5A4F43),
-          endColor: Color(0xFF191711),
-          label: 'CARD',
-          aspectRatio: .7,
-          borderRadius: 24,
-        ),
-        if (!unavailable)
-          const Center(child: CircularProgressIndicator(color: Colors.white)),
-        if (unavailable)
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Container(
-              margin: const EdgeInsets.only(bottom: 14),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: .5),
-                borderRadius: BorderRadius.circular(99),
-              ),
-              child: Text(
-                useMockApi ? '当前设备使用演示画面' : '相机不可用，请从相册选择照片',
-                style: const TextStyle(color: Colors.white, fontSize: 11),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _MultiCardGuide extends StatelessWidget {
-  const _MultiCardGuide({required this.scanning});
-
-  final bool scanning;
-
-  @override
-  Widget build(BuildContext context) {
-    return Positioned.fill(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(22, 34, 22, 34),
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: .9),
-              width: 2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: FanColors.lavender.withValues(alpha: .3),
-                blurRadius: 18,
-              ),
-            ],
-          ),
-          child: scanning
-              ? const Center(
-                  child: CircularProgressIndicator(color: Colors.white),
-                )
-              : Center(
-                  child: Icon(
-                    Icons.grid_view_rounded,
-                    size: 34,
-                    color: Colors.white.withValues(alpha: .62),
-                  ),
-                ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DetectionOverlay extends StatelessWidget {
-  const _DetectionOverlay({
-    required this.regions,
-    required this.completedCount,
-  });
-
-  final List<ScanCropRegion> regions;
-  final int completedCount;
-
-  @override
-  Widget build(BuildContext context) {
-    return Positioned.fill(
-      child: LayoutBuilder(
-        builder: (context, constraints) => Stack(
-          children: [
-            for (var index = 0; index < regions.length; index++)
-              Positioned(
-                left: regions[index].x * constraints.maxWidth,
-                top: regions[index].y * constraints.maxHeight,
-                width: regions[index].width * constraints.maxWidth,
-                height: regions[index].height * constraints.maxHeight,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: .08),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: index < completedCount
-                          ? const Color(0xFF74E0AE)
-                          : Colors.white,
-                      width: 2,
-                    ),
-                  ),
-                  child: Align(
-                    alignment: Alignment.topRight,
-                    child: Container(
-                      width: 26,
-                      height: 26,
-                      margin: const EdgeInsets.all(6),
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: index < completedCount
-                            ? FanColors.mint
-                            : Colors.black.withValues(alpha: .5),
-                      ),
-                      child: index < completedCount
-                          ? const Icon(
-                              Icons.check_rounded,
-                              size: 17,
-                              color: Colors.white,
-                            )
-                          : SizedBox(
-                              width: 13,
-                              height: 13,
-                              child: CircularProgressIndicator(
-                                color: Colors.white.withValues(alpha: .9),
-                                strokeWidth: 1.8,
-                              ),
-                            ),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _RoundAction extends StatelessWidget {
-  const _RoundAction({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-  final IconData icon;
-  final String label;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: SizedBox(
-        width: 58,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 43,
-              height: 43,
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: .12),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(icon, color: Colors.white, size: 21),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              label,
-              style: const TextStyle(color: Colors.white, fontSize: 11),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }

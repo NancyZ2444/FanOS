@@ -34,13 +34,13 @@ void main() {
           NameDisplayMode.combined => 'LUMINA（我的团）',
         });
         expect(idol.displayName, switch (mode) {
-          NameDisplayMode.official => 'Aria',
+          NameDisplayMode.official => '艾莉娅',
           NameDisplayMode.remark => '小星星',
-          NameDisplayMode.combined => 'Aria（小星星）',
+          NameDisplayMode.combined => '艾莉娅（小星星）',
         });
         expect(
           data.idols.firstWhere((i) => i.id == 'idol-lin').displayName,
-          'Lin',
+          '琳',
         );
         expect(names.display('idols', 'missing', 'Official'), 'Official');
       }
@@ -98,7 +98,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Aria'));
+    await tester.tap(find.text('艾莉娅'));
     await tester.pump();
     expect(find.text('完成（已选 1）'), findsOneWidget);
     final star = find.byKey(const ValueKey('favorite-star-idol-aria'));

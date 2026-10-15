@@ -3,6 +3,7 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <application
+        android:allowBackup="false"
         android:label="Fan OS"
         android:usesCleartextTraffic="true"
         android:name="${applicationName}"

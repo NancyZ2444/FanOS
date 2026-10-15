@@ -8,10 +8,8 @@ class StrictModel(BaseModel):
 
 
 class Background(StrictModel):
-    type: Literal["SOLID", "GRADIENT"] = "GRADIENT"
-    colors: list[str] = Field(
-        default_factory=lambda: ["#EDE8FF", "#F9EDF2"], min_length=1, max_length=4
-    )
+    type: Literal["SOLID", "GRADIENT"] = "SOLID"
+    colors: list[str] = Field(default_factory=lambda: ["#E8EBE3"], min_length=1, max_length=4)
     angle: float = Field(default=45, ge=-360, le=360)
 
     @model_validator(mode="after")
@@ -30,11 +28,14 @@ class ElementStyle(StrictModel):
     font_size: float = Field(default=20, ge=8, le=96)
     font_family: Literal["system", "serif", "monospace"] = "system"
     bold: bool = False
+    stroke_width: float = Field(default=3, ge=1, le=20)
+    opacity: float = Field(default=1, ge=0.1, le=1)
 
 
 class Element(StrictModel):
     id: str = Field(min_length=1, max_length=64)
-    type: Literal["TEXT", "EMOJI", "STICKER", "CARD"]
+    type: Literal["TEXT", "EMOJI", "STICKER", "CARD", "STROKE"]
+    points: list[tuple[float, float]] = Field(default_factory=list, max_length=512)
     content: str = Field(default="", max_length=500)
     x: float = Field(default=0.1, ge=-2, le=2)
     y: float = Field(default=0.1, ge=-2, le=2)
@@ -43,6 +44,14 @@ class Element(StrictModel):
     rotation: float = Field(default=0, ge=-3600, le=3600)
     z_index: int = Field(default=0, ge=0, le=10000)
     style: ElementStyle = Field(default_factory=ElementStyle)
+
+    @model_validator(mode="after")
+    def valid_stroke(self):
+        if self.type == "STROKE" and len(self.points) < 2:
+            raise ValueError("画笔轨迹至少包含两个点")
+        if any(not (0 <= x <= 1 and 0 <= y <= 1) for x, y in self.points):
+            raise ValueError("画笔坐标须在画布范围内")
+        return self
 
 
 class CanvasConfig(StrictModel):
@@ -82,6 +91,11 @@ class CardView(StrictModel):
     order_customized: bool = False
     background: Background = Field(default_factory=Background)
     animation_style: Literal["STACK"] = "STACK"
+    default_mode: Literal["BOOK", "CARDS"] = "BOOK"
+    cover_style: Literal["AUTO", "STACK_V1", "CUSTOM"] = "AUTO"
+    display_fields: list[
+        Literal["idol", "group", "source", "type", "version", "release", "region", "size"]
+    ] = Field(default_factory=lambda: ["idol", "group", "source"], max_length=8)
 
 
 class AlbumCreate(StrictModel):

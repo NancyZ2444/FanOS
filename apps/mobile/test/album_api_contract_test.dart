@@ -17,7 +17,7 @@ void main() {
       final client = ApiClient(dio: Dio(BaseOptions(baseUrl: endpoint)));
       final auth = await client.postData(
         '/auth/login',
-        data: {'method': 'phone', 'phone': '13800000000', 'code': '123456'},
+        data: {'method': 'phone', 'phone': '13800000000', 'code': '666666'},
       );
       client.setAccessToken(auth['access_token'] as String);
       final repo = ApiAlbumRepository(client);
@@ -25,7 +25,7 @@ void main() {
       final admin = ApiClient(dio: Dio(BaseOptions(baseUrl: endpoint)));
       final adminAuth = await admin.postData(
         '/auth/login',
-        data: {'method': 'phone', 'phone': '13900000000', 'code': '123456'},
+        data: {'method': 'phone', 'phone': '13900000000', 'code': '666666'},
       );
       admin.setAccessToken(adminAuth['access_token'] as String);
       final visitorRepo = ApiAlbumRepository(visitor),
@@ -59,10 +59,25 @@ void main() {
             'order_customized': true,
             'featured_slot_id': slotIds.last,
             'background': albumBackground(),
+            'default_mode': 'CARDS',
+            'cover_style': 'STACK_V1',
+            'display_fields': ['idol', 'group', 'source'],
           },
         ),
       );
       expect(album.orderedSlotIds.first, slotIds.last);
+      expect(album.opensAsCards, isTrue);
+      final summary = (await repo.list()).albums.firstWhere(
+        (a) => a.id == album.id,
+      );
+      expect(
+        summary.coverSlots.map((s) => s['id']),
+        album.coverSlots.map((s) => s['id']),
+      );
+      expect(
+        summary.card(summary.coverSlots.first['card_id'] as String),
+        isNotNull,
+      );
       final oldVersion = album;
       album = await repo.publish(album);
       expect(() => repo.save(oldVersion), throwsA(isA<ApiException>()));

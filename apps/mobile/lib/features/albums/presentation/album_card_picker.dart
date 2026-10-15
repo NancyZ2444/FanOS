@@ -25,6 +25,7 @@ AlbumJson albumCardJson(CollectibleCard c) => {
   'color_start': c.colorStart,
   'color_end': c.colorEnd,
   'image_url': c.imageUrl,
+  'thumbnail_url': c.thumbnailUrl,
   'back_image_url': c.backImageUrl,
   'source_entity_id': c.sourceEntityId,
   'source_entity_type': c.sourceEntityType,
@@ -34,14 +35,18 @@ AlbumJson albumCardJson(CollectibleCard c) => {
 Future<List<CollectibleCard>?> pickAlbumCards(
   BuildContext context, {
   bool single = false,
+  int? maxSelected,
 }) => Navigator.push<List<CollectibleCard>>(
   context,
-  MaterialPageRoute(builder: (_) => AlbumCardPicker(single: single)),
+  MaterialPageRoute(
+    builder: (_) => AlbumCardPicker(single: single, maxSelected: maxSelected),
+  ),
 );
 
 class AlbumCardPicker extends ConsumerStatefulWidget {
-  const AlbumCardPicker({super.key, this.single = false});
+  const AlbumCardPicker({super.key, this.single = false, this.maxSelected});
   final bool single;
+  final int? maxSelected;
   @override
   ConsumerState<AlbumCardPicker> createState() => _AlbumCardPickerState();
 }
@@ -236,6 +241,15 @@ class _AlbumCardPickerState extends ConsumerState<AlbumCardPicker> {
                                                 (s) => s.id == c.id,
                                               );
                                             } else {
+                                              if (widget.maxSelected != null &&
+                                                  _selected.length >=
+                                                      widget.maxSelected!) {
+                                                showFanToast(
+                                                  context,
+                                                  '本次最多选择 ${widget.maxSelected} 张',
+                                                );
+                                                return;
+                                              }
                                               if (widget.single) {
                                                 _selected.clear();
                                               }

@@ -33,6 +33,9 @@ def catalog_thumbnail(kind: str, entity_id: str, request: Request, db: Session =
         )
     )
     source = portrait_source(row.data or {}) if row else None
+    from app.modules.catalog.media_import import public_image
+
+    source = public_image(source)
     if not source:
         raise DomainError("IMAGE_NOT_FOUND", "图片不存在或未公开", 404)
     try:

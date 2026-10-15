@@ -10,9 +10,11 @@ AlbumJson cloneAlbumJson(AlbumJson value) =>
 String albumId(String prefix) =>
     '$prefix-${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 32)}';
 
-AlbumJson albumBackground([
-  List<String> colors = const ['#D7CEFF', '#F9DEE9'],
-]) => {'type': 'GRADIENT', 'colors': colors, 'angle': 45.0};
+AlbumJson albumBackground([List<String> colors = const ['#E8EBE3']]) => {
+  'type': colors.length > 1 ? 'GRADIENT' : 'SOLID',
+  'colors': colors,
+  'angle': 45.0,
+};
 AlbumJson albumCanvas() => {
   'background': albumBackground(),
   'elements': <AlbumJson>[],
@@ -69,6 +71,40 @@ class PhotocardAlbum {
 
   List<String> get orderedSlotIds =>
       orderedSlots.map((s) => s['id'] as String).toList();
+  bool get opensAsCards => cardView['default_mode'] == 'CARDS';
+  String? get featuredSlotId {
+    final slots = orderedSlots;
+    final saved = cardView['featured_slot_id'];
+    return slots.any((s) => s['id'] == saved)
+        ? saved as String
+        : slots.firstOrNull?['id'] as String?;
+  }
+
+  /// Featured front first, then the current order. Shelf summaries provide
+  /// only these slots instead of downloading all inner pages.
+  List<AlbumJson> get coverSlots {
+    if (!json.containsKey('pages')) {
+      return ((json['cover_slots'] as List?) ?? [])
+          .cast<AlbumJson>()
+          .take(5)
+          .toList();
+    }
+    final slots = orderedSlots;
+    final featured = featuredSlotId;
+    return [
+      ...slots.where((s) => s['id'] == featured),
+      ...slots.where((s) => s['id'] != featured),
+    ].take(5).toList();
+  }
+
+  bool get usesStackCover =>
+      cardView['cover_style'] == 'STACK_V1' ||
+      (cardView['cover_style'] != 'CUSTOM' &&
+          ((cover['elements'] as List?) ?? []).isEmpty &&
+          coverSlots.isNotEmpty);
+  List<String> get displayFields =>
+      ((cardView['display_fields'] as List?) ?? ['idol', 'group', 'source'])
+          .cast<String>();
 
   CollectibleCard? card(String? id) {
     if (id == null) return null;
@@ -123,7 +159,7 @@ void synchronizeAlbum(AlbumJson data) {
     view['featured_slot_id'] = null;
   }
   view['order_customized'] = custom;
-  view['background'] ??= albumBackground(['#D7CEFF', '#7862DB']);
+  view['background'] ??= albumBackground(['#F4F1FF', '#E5DEFA']);
   view['animation_style'] = 'STACK';
   data['card_view'] = view;
   data['page_count'] = pages.length;

@@ -1,4 +1,5 @@
 import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/config/feature_flags.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/data/social_feed_models.dart';
 import 'package:fan_os/core/state/app_state.dart';
@@ -18,9 +19,11 @@ class _HomePageState extends ConsumerState<HomePage> {
   @override
   void initState() {
     super.initState();
-    Future<void>.microtask(
-      () => ref.read(socialFeedProvider.notifier).ensureHomeLoaded(),
-    );
+    Future<void>.microtask(() {
+      if (mounted && ref.read(idolFeedEnabledProvider)) {
+        ref.read(socialFeedProvider.notifier).ensureHomeLoaded();
+      }
+    });
   }
 
   @override
@@ -29,16 +32,20 @@ class _HomePageState extends ConsumerState<HomePage> {
     final daily = ref.watch(dailyCardProvider);
     final favorites = ref.watch(favoritesProvider);
     final catalog = ref.watch(catalogProvider);
-    final feed = ref.watch(socialFeedProvider);
-    final feedNotifications = ref.watch(idolFeedNotificationProvider);
+    final showFeed = ref.watch(idolFeedEnabledProvider);
+    final feed = showFeed
+        ? ref.watch(socialFeedProvider)
+        : const SocialFeedState();
 
     return Scaffold(
       body: SafeArea(
         child: RefreshIndicator(
           onRefresh: () async {
             await Future.wait([
-              ref.refresh(catalogProvider.future),
-              ref.read(socialFeedProvider.notifier).refreshHome(),
+              ref
+                  .refresh(catalogProvider.future)
+                  .then<void>((_) {}, onError: (Object _) {}),
+              if (showFeed) ref.read(socialFeedProvider.notifier).refreshHome(),
             ]);
           },
           child: SingleChildScrollView(
@@ -49,12 +56,22 @@ class _HomePageState extends ConsumerState<HomePage> {
                 children: [
                   Row(
                     children: [
-                      const FanWordmark(),
-                      const Spacer(),
+                      const Expanded(
+                        child: FittedBox(
+                          alignment: Alignment.centerLeft,
+                          fit: BoxFit.scaleDown,
+                          child: FanWordmark(),
+                        ),
+                      ),
                       IconButton(
                         tooltip: '通知',
                         onPressed: () => context.push('/notifications'),
-                        icon: feedNotifications.enabled && feed.newCount > 0
+                        icon:
+                            showFeed &&
+                                ref
+                                    .watch(idolFeedNotificationProvider)
+                                    .enabled &&
+                                feed.newCount > 0
                             ? Badge.count(
                                 count: feed.newCount,
                                 child: const Icon(
@@ -88,12 +105,15 @@ class _HomePageState extends ConsumerState<HomePage> {
                   const SizedBox(height: 12),
                   FanSearchButton(onTap: () => context.push('/search')),
                   const SizedBox(height: 16),
-                  _HeroBanner(
-                    album: catalog.asData?.value.albums.firstOrNull,
-                    card: catalog.asData?.value.cards.firstOrNull,
-                    onTap: () => context.go('/catalog'),
-                  ),
-                  const SizedBox(height: 24),
+                  if (catalog.asData?.value.albums.isNotEmpty == true ||
+                      catalog.asData?.value.cards.isNotEmpty == true) ...[
+                    _HeroBanner(
+                      album: catalog.asData?.value.albums.firstOrNull,
+                      card: catalog.asData?.value.cards.firstOrNull,
+                      onTap: () => context.go('/catalog'),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
                   const SectionHeader(
                     title: '今日翻卡',
                     subtitle: '每天 3 次，发现与你有关的小卡',
@@ -121,68 +141,89 @@ class _HomePageState extends ConsumerState<HomePage> {
                         : context.push('/onboarding/favorites'),
                   ),
                   const SizedBox(height: 10),
-                  SizedBox(
-                    height: 92,
-                    child: catalog.when(
-                      loading: () =>
-                          const Center(child: CircularProgressIndicator()),
-                      error: (_, _) => const Center(child: Text('暂时无法加载')),
-                      data: (data) {
-                        if (!session.isGuest && favorites.selectedIds.isEmpty) {
-                          return _EmptyFavoritesPrompt(
-                            onTap: () => context.push('/onboarding/favorites'),
-                          );
-                        }
-                        final idols = session.isGuest
-                            ? data.idols.take(5).toList()
-                            : data.idols
-                                  .where(
-                                    (idol) =>
-                                        favorites.selectedIds.contains(idol.id),
-                                  )
-                                  .toList();
-                        if (idols.isEmpty && !session.isGuest) {
-                          return _EmptyFavoritesPrompt(
-                            onTap: () => context.push('/onboarding/favorites'),
-                          );
-                        }
-                        return ListView.separated(
+                  catalog.when(
+                    loading: () =>
+                        const Center(child: CircularProgressIndicator()),
+                    error: (_, _) => FanStatusCard(
+                      title: '艺人暂时未能加载',
+                      message: '请检查网络后重试',
+                      icon: Icons.cloud_off_outlined,
+                      actionLabel: '重新加载',
+                      onAction: () => ref.invalidate(catalogProvider),
+                    ),
+                    data: (data) {
+                      if (!session.isGuest && favorites.selectedIds.isEmpty) {
+                        return _EmptyFavoritesPrompt(
+                          onTap: () => context.push('/onboarding/favorites'),
+                        );
+                      }
+                      final idols = session.isGuest
+                          ? data.idols.take(5).toList()
+                          : data.idols
+                                .where(
+                                  (idol) =>
+                                      favorites.selectedIds.contains(idol.id),
+                                )
+                                .toList();
+                      if (idols.isEmpty && !session.isGuest) {
+                        return _EmptyFavoritesPrompt(
+                          onTap: () => context.push('/onboarding/favorites'),
+                        );
+                      }
+                      if (idols.isEmpty) {
+                        return FanStatusCard(
+                          title: '暂时没有推荐艺人',
+                          message: '去图鉴发现你的本命',
+                          icon: Icons.style_outlined,
+                          actionLabel: '逛逛图鉴',
+                          onAction: () => context.go('/catalog'),
+                        );
+                      }
+                      return SizedBox(
+                        height: 94,
+                        child: ListView.separated(
                           scrollDirection: Axis.horizontal,
                           itemCount: idols.length,
                           separatorBuilder: (_, _) => const SizedBox(width: 16),
                           itemBuilder: (context, index) =>
                               _IdolShortcut(idol: idols[index]),
-                        );
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  SectionHeader(
-                    title: feed.newCount > 0
-                        ? '本命动态 · ${feed.newCount} 条新动态'
-                        : '本命动态',
-                    actionLabel: '查看全部',
-                    onAction: () => context.push('/feed'),
-                  ),
-                  if (!session.isGuest && favorites.selectedIds.isEmpty) ...[
-                    const SizedBox(height: 6),
-                    _CompactFeedFavoriteHint(
-                      onTap: () => context.push('/onboarding/favorites'),
-                    ),
-                  ],
-                  const SizedBox(height: 10),
-                  _HomeFeedPreview(
-                    state: feed,
-                    primaryIdolId: favorites.primaryId,
-                    onOpen: () => context.push('/feed'),
-                    onPostOpen: (post) {
-                      ref.read(socialFeedProvider.notifier).markViewed(post.id);
-                      ref.read(feedEngagementProvider.notifier).registerPosts([
-                        post,
-                      ]);
-                      context.push('/feed/post/${post.id}', extra: post);
+                        ),
+                      );
                     },
                   ),
+                  if (showFeed) ...[
+                    const SizedBox(height: 24),
+                    SectionHeader(
+                      title: feed.newCount > 0
+                          ? '本命动态 · ${feed.newCount} 条新动态'
+                          : '本命动态',
+                      actionLabel: '查看全部',
+                      onAction: () => context.push('/feed'),
+                    ),
+                    if (!session.isGuest && favorites.selectedIds.isEmpty) ...[
+                      const SizedBox(height: 6),
+                      _CompactFeedFavoriteHint(
+                        onTap: () => context.push('/onboarding/favorites'),
+                      ),
+                    ],
+                    const SizedBox(height: 10),
+                    _HomeFeedPreview(
+                      state: feed,
+                      primaryIdolId: favorites.primaryId,
+                      onRetry: () =>
+                          ref.read(socialFeedProvider.notifier).refreshHome(),
+                      onOpen: () => context.push('/feed'),
+                      onPostOpen: (post) {
+                        ref
+                            .read(socialFeedProvider.notifier)
+                            .markViewed(post.id);
+                        ref.read(feedEngagementProvider.notifier).registerPosts(
+                          [post],
+                        );
+                        context.push('/feed/post/${post.id}', extra: post);
+                      },
+                    ),
+                  ],
                   const SizedBox(height: 24),
                   const SectionHeader(title: '快捷入口'),
                   const SizedBox(height: 10),
@@ -276,12 +317,14 @@ class _HomeFeedPreview extends StatelessWidget {
     required this.primaryIdolId,
     required this.onOpen,
     required this.onPostOpen,
+    required this.onRetry,
   });
 
   final SocialFeedState state;
   final String? primaryIdolId;
   final VoidCallback onOpen;
   final ValueChanged<SocialFeedPost> onPostOpen;
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -295,30 +338,13 @@ class _HomeFeedPreview extends StatelessWidget {
       );
     }
     if (posts.isEmpty) {
-      return InkWell(
-        onTap: onOpen,
-        borderRadius: BorderRadius.circular(20),
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(18),
-            child: Row(
-              children: [
-                const Icon(
-                  Icons.dynamic_feed_outlined,
-                  color: Color(0xFF4F73B7),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    state.errorMessage ?? '暂时还没有获取到近期动态',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-                const Icon(Icons.chevron_right_rounded),
-              ],
-            ),
-          ),
-        ),
+      final failed = state.errorMessage != null;
+      return FanStatusCard(
+        title: failed ? '动态暂时未能加载' : '暂时还没有近期动态',
+        message: failed ? '请检查网络后重试' : '关注你喜欢的艺人，有新动态时会在这里展示',
+        icon: failed ? Icons.cloud_off_outlined : Icons.dynamic_feed_outlined,
+        actionLabel: failed ? '重新加载' : '查看动态',
+        onAction: failed ? onRetry : onOpen,
       );
     }
     return Card(
@@ -548,19 +574,28 @@ class _HomePostRow extends ConsumerWidget {
   }
 }
 
-class _HeroBanner extends StatelessWidget {
+class _HeroBanner extends ConsumerWidget {
   const _HeroBanner({required this.onTap, this.album, this.card});
   final VoidCallback onTap;
   final CatalogAlbum? album;
   final CollectibleCard? card;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final artistName = album == null
+        ? ''
+        : ref
+                  .watch(catalogProvider)
+                  .value
+                  ?.artistLabel(album!.artists, album!.artistName) ??
+              album!.artistName;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(20),
       child: Container(
-        height: 140,
+        height:
+            140 +
+            (MediaQuery.textScalerOf(context).scale(22) - 22).clamp(0, 30) * 9,
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(20),
@@ -578,7 +613,7 @@ class _HeroBanner extends StatelessWidget {
                   Text(
                     album == null
                         ? 'FAN OS · DISCOVER'
-                        : '${album!.artistName} · ${album!.displayName}',
+                        : '$artistName · ${album!.displayName}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(

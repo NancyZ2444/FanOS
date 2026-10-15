@@ -85,7 +85,7 @@ class _NamePreferencesPageState extends ConsumerState<NamePreferencesPage> {
                       (i) => (
                         kind: 'idols',
                         id: i.id,
-                        name: i.nameEn.isNotEmpty ? i.nameEn : i.name,
+                        name: i.officialDisplayName,
                         search: '${i.name} ${i.nameKo} ${i.nameTranslated}',
                       ),
                     ),
@@ -141,8 +141,11 @@ Future<void> showNameRemarkEditor(
     showFanToast(context, '登录后可设置专属备注');
     return;
   }
-  await showDialog<void>(
+  await showModalBottomSheet<void>(
     context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    useSafeArea: true,
     builder: (_) =>
         _RemarkDialog(kind: kind, id: id, officialName: officialName),
   );
@@ -182,47 +185,73 @@ class _RemarkDialogState extends ConsumerState<_RemarkDialog> {
   @override
   Widget build(BuildContext context) => PopScope(
     canPop: !_saving,
-    child: AlertDialog(
-      title: Text('备注 · ${widget.officialName}'),
-      content: TextField(
-        key: const Key('name-remark-input'),
-        controller: _text,
-        maxLength: 40,
-        autofocus: true,
-        decoration: InputDecoration(
-          hintText: '留空可清除备注',
-          helperText: '仅自己可见，官方资料不会改变',
-          errorText: _error,
+    child: Padding(
+      padding: EdgeInsets.fromLTRB(
+        20,
+        0,
+        20,
+        MediaQuery.viewInsetsOf(context).bottom + 20,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '备注 · ${widget.officialName}',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              key: const Key('name-remark-input'),
+              controller: _text,
+              maxLength: 40,
+              autofocus: true,
+              decoration: InputDecoration(
+                hintText: '留空可清除备注',
+                helperText: '仅自己可见',
+                errorText: _error,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: _saving ? null : () => Navigator.pop(context),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(76, 40),
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                  ),
+                  key: const Key('name-remark-save'),
+                  onPressed: _saving
+                      ? null
+                      : () async {
+                          setState(() {
+                            _saving = true;
+                            _error = null;
+                          });
+                          try {
+                            await ref
+                                .read(namePreferencesProvider.notifier)
+                                .setRemark(widget.kind, widget.id, _text.text);
+                            if (context.mounted) Navigator.pop(context);
+                          } catch (_) {
+                            if (mounted) setState(() => _error = '保存失败，请重试');
+                          } finally {
+                            if (mounted) setState(() => _saving = false);
+                          }
+                        },
+                  child: Text(_saving ? '保存中…' : '保存'),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: _saving ? null : () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          key: const Key('name-remark-save'),
-          onPressed: _saving
-              ? null
-              : () async {
-                  setState(() {
-                    _saving = true;
-                    _error = null;
-                  });
-                  try {
-                    await ref
-                        .read(namePreferencesProvider.notifier)
-                        .setRemark(widget.kind, widget.id, _text.text);
-                    if (context.mounted) Navigator.pop(context);
-                  } catch (_) {
-                    if (mounted) setState(() => _error = '保存失败，请重试');
-                  } finally {
-                    if (mounted) setState(() => _saving = false);
-                  }
-                },
-          child: Text(_saving ? '保存中…' : '保存'),
-        ),
-      ],
     ),
   );
 }

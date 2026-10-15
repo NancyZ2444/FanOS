@@ -56,6 +56,7 @@ import AdminUsers from "./pages/AdminUsers";
 import CatalogDetail from "./pages/CatalogDetail";
 import CatalogWorkbench from "./pages/CatalogWorkbench";
 import DigitalAlbums from "./pages/DigitalAlbums";
+import FeedbackWorkbench from "./pages/FeedbackWorkbench";
 
 function Login({ onLogin }: { onLogin: (actor: Actor) => void }) {
   const [busy, setBusy] = useState(false);
@@ -281,6 +282,8 @@ export default function App() {
           : []),
         { label: "批次与批量编辑", path: "/catalog/workbench" },
         { label: "图鉴审核与质量", path: "/catalog/review" },
+        { label: "小卡缺失收录", path: "/catalog/missing-cards" },
+        { label: "图鉴问题纠错", path: "/catalog/corrections" },
       ],
     },
     ...(contentRole
@@ -423,6 +426,11 @@ export default function App() {
                             location.pathname === c.path ||
                             (c.path === "/catalog/cards" &&
                               /^\/catalog\/cards\//.test(location.pathname)) ||
+                            ([
+                              "/catalog/missing-cards",
+                              "/catalog/corrections",
+                            ].includes(c.path) &&
+                              location.pathname.startsWith(c.path + "/")) ||
                             (c as any).match?.includes(location.pathname)
                               ? "active"
                               : ""
@@ -612,6 +620,18 @@ export default function App() {
                 ))}
                 <Route path="/catalog/tags" element={<Tags />} />
                 <Route path="/catalog/import" element={<Imports />} />
+                <Route
+                  path="/catalog/missing-cards/:feedbackId?"
+                  element={
+                    <FeedbackWorkbench key="missing" kind="MISSING_CARD" />
+                  }
+                />
+                <Route
+                  path="/catalog/corrections/:feedbackId?"
+                  element={
+                    <FeedbackWorkbench key="corrections" kind="CORRECTION" />
+                  }
+                />
                 <Route path="/reviews/sources" element={<Sources />} />
                 <Route path="/digital-albums" element={<DigitalAlbums />} />
                 {Object.keys(operationNames).map((kind) => (

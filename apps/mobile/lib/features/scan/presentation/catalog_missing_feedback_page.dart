@@ -163,7 +163,7 @@ class _CatalogMissingFeedbackPageState
                   'start_date': _start.text.trim(),
                   'end_date': _end.text.trim(),
                 },
-                if (!_other && _kind != _MissingKind.albumVersion) ...{
+                if (_kind != _MissingKind.albumVersion) ...{
                   if ((_targetId == null || _kind == _MissingKind.card) &&
                       _groupId != null &&
                       _groupId != 'missing')
@@ -349,7 +349,7 @@ class _CatalogMissingFeedbackPageState
                               _idolId == 'missing' ||
                               i.idolId == _idolId,
                         )
-                        .map((i) => (i.id, i.title))
+                        .map((i) => (i.id, i.displayTitle))
                         .toList(),
                   _MissingKind.album || _MissingKind.albumVersion =>
                     data.albums
@@ -416,7 +416,7 @@ class _CatalogMissingFeedbackPageState
                           }),
                         ),
                         const SizedBox(height: 14),
-                        if (!_other) ...[
+                        ...[
                           _select(
                             'missing-group',
                             '组合',

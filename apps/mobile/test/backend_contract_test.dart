@@ -18,7 +18,7 @@ void main() {
   test('Flutter repositories complete a real Fan OS API flow', () async {
     final client = ApiClient();
     await ApiAuthRepository(client)
-        .login(LoginMethod.phone, phone: '13800000000', code: '123456');
+        .login(LoginMethod.phone, phone: '13800000000', code: '666666');
 
     final catalog = await ApiCatalogRepository(client).fetchCatalog();
     expect(catalog.groups, hasLength(3));
