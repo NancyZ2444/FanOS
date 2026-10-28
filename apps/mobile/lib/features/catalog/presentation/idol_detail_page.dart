@@ -1,3 +1,5 @@
+import 'catalog_profile_tab.dart';
+
 import 'package:fan_os/core/widgets/entity_header.dart';
 import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/config/feature_flags.dart';
@@ -5,6 +7,7 @@ import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/features/feed/presentation/entity_social_feed.dart';
+import 'package:fan_os/features/feedback/catalog_contributors.dart';
 import 'package:flutter/material.dart';
 import 'package:fan_os/features/profile/presentation/name_preferences_page.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -46,13 +49,21 @@ class IdolDetailPage extends ConsumerWidget {
   }
 }
 
-class _IdolBody extends ConsumerWidget {
+class _IdolBody extends ConsumerStatefulWidget {
   const _IdolBody({required this.idol, required this.data});
   final IdolProfile idol;
   final CatalogBundle data;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_IdolBody> createState() => _IdolBodyState();
+}
+
+class _IdolBodyState extends ConsumerState<_IdolBody> {
+  String? _profileSection;
+  IdolProfile get idol => widget.idol;
+  CatalogBundle get data => widget.data;
+  @override
+  Widget build(BuildContext context) {
     final cards = data.cards.where((card) => card.idolId == idol.id).toList();
     final group = data.groups
         .where((item) => item.name == idol.groupName)
@@ -97,7 +108,8 @@ class _IdolBody extends ConsumerWidget {
         .toList();
     final showFeed = ref.watch(idolFeedEnabledProvider);
     return DefaultTabController(
-      length: showFeed ? 5 : 4,
+      key: ValueKey('idol-tabs-$showFeed'),
+      length: showFeed ? 6 : 5,
       initialIndex: showFeed ? 1 : 0,
       child: NestedScrollView(
         headerSliverBuilder: (context, _) => [
@@ -128,9 +140,7 @@ class _IdolBody extends ConsumerWidget {
                     }
                   },
                 ),
-              IconButton(
-                tooltip: '设置备注',
-                icon: const Icon(Icons.edit_outlined),
+              CatalogPersonalRemarkButton(
                 onPressed: () => showNameRemarkEditor(
                   context,
                   ref,
@@ -138,13 +148,6 @@ class _IdolBody extends ConsumerWidget {
                   idol.id,
                   idol.officialDisplayName,
                 ),
-              ),
-              IconButton(
-                tooltip: '反馈问题',
-                onPressed: () => context.push(
-                  '/catalog-correction?type=idols&id=${idol.id}',
-                ),
-                icon: const Icon(Icons.more_horiz_rounded),
               ),
             ],
             hero: _IdolHero(
@@ -161,7 +164,10 @@ class _IdolBody extends ConsumerWidget {
               onGroup: group == null
                   ? null
                   : () => context.push('/group/${group.id}'),
-              onCareer: () => _showCareer(context, idol),
+              onCareer: () {
+                setState(() => _profileSection = 'career');
+                DefaultTabController.of(context).animateTo(showFeed ? 5 : 4);
+              },
             ),
           ),
           SliverPersistentHeader(
@@ -172,6 +178,7 @@ class _IdolBody extends ConsumerWidget {
               '专辑',
               '活动',
               '其他',
+              '资料',
             ], textScale: MediaQuery.textScalerOf(context).scale(14) / 14),
           ),
         ],
@@ -236,75 +243,12 @@ class _IdolBody extends ConsumerWidget {
                   )
                   .toList(),
             ),
+            CatalogProfileTab(
+              kind: 'idols',
+              entityId: idol.id,
+              section: _profileSection,
+            ),
           ],
-        ),
-      ),
-    );
-  }
-
-  void _showCareer(BuildContext context, IdolProfile idol) {
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      useSafeArea: true,
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.sizeOf(context).height * .8,
-      ),
-      builder: (context) => SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '${idol.displayName} · 个人经历',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-              const SizedBox(height: 18),
-              if (idol.careers.isEmpty)
-                const Text('暂无公开经历')
-              else
-                for (final career in idol.careers)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 16),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Padding(
-                          padding: EdgeInsets.only(top: 5),
-                          child: CircleAvatar(
-                            radius: 5,
-                            backgroundColor: FanColors.lavender,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                career.period,
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                career.title,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                              if (career.subtitle.isNotEmpty)
-                                Text(career.subtitle),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-            ],
-          ),
         ),
       ),
     );
@@ -337,6 +281,7 @@ class _IdolHero extends StatelessWidget {
     ].where((s) => s.trim().isNotEmpty).join(' · '),
     details: [idol.role, idol.birthDate, idol.company],
     description: idol.bio,
+    contribution: CatalogContributors(kind: 'idols', entityId: idol.id),
     actions: [
       OutlinedButton.icon(
         style: OutlinedButton.styleFrom(minimumSize: const Size(0, 40)),

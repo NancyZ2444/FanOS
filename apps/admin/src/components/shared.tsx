@@ -104,20 +104,15 @@ export function CardArt({
     );
   return (
     <div
-      className={`card-art art-placeholder ${small ? "small" : ""} ${back ? "back" : ""}`}
+      className={`card-art default-card-art ${small ? "small" : ""}`}
     >
-      <span className="art-group">{card.group_name || "FAN OS"}</span>
-      <div className="art-orbit">
-        <span>✦</span>
-      </div>
-      <div className="art-name">
-        {back
-          ? "COLLECT YOUR MOMENT"
-          : card.idol_name || (card.is_group_pc ? "GROUP" : "PHOTOCARD")}
-      </div>
+      <img
+        src="/images/default-card-back.png"
+        alt={`Fan OS 默认卡图 · ${url ? "图片暂时无法加载" : `待上传${back ? "背面" : "正面"}`}`}
+      />
       {!small && (
-        <span className="art-caption">
-          {url ? "图片暂时无法加载" : "图片待上传"}
+        <span className="default-card-caption">
+          {url ? "图片暂时无法加载" : `待上传${back ? "背面" : "正面"}`}
         </span>
       )}
     </div>

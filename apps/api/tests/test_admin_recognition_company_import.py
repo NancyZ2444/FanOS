@@ -9,8 +9,7 @@ from sqlalchemy import select
 from test_catalog_bulk import ROOT, confirm, preview
 
 from app.core.database import SessionLocal
-from app.core.security import create_token
-from app.models import Card, User, UserCollectionItem
+from app.models import Card, UserCollectionItem
 from app.modules.admin.catalog_extensions import CatalogRecord
 
 
@@ -100,7 +99,7 @@ def test_admin_unknown_and_ambiguous_match_require_no_catalog_writes(
 
 
 def test_admin_recognition_rejects_invalid_images_and_wrong_role(
-    client, admin_headers, auth_headers
+    client, admin_headers, auth_headers, admin_actor_headers
 ):
     bad = client.post(
         ROOT + "/cards/recognize",
@@ -108,22 +107,9 @@ def test_admin_recognition_rejects_invalid_images_and_wrong_role(
         files={"file": ("card.png", b"not an image", "image/png")},
     )
     assert bad.status_code == 422
-    assert upload_scan(client, auth_headers, scan_artwork(1)).status_code == 403
-    with SessionLocal() as db:
-        db.add(
-            User(
-                id="operations-scan",
-                phone="13911111111",
-                display_name="Ops",
-                role="operation_admin",
-            )
-        )
-        db.commit()
-    token = create_token("operations-scan", "access")
-    assert (
-        upload_scan(client, {"Authorization": "Bearer " + token}, scan_artwork(1)).status_code
-        == 403
-    )
+    assert upload_scan(client, auth_headers, scan_artwork(1)).status_code == 401
+    headers = admin_actor_headers("operation_admin", "operations-scan")
+    assert upload_scan(client, headers, scan_artwork(1)).status_code == 403
 
 
 @pytest.mark.parametrize("fmt", ["csv", "xlsx"])

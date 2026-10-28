@@ -77,10 +77,11 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
       await tester.pump();
 
-      expect(find.text('已拥有'), findsNWidgets(2));
-      expect(find.text('心愿单'), findsNWidgets(2));
-      expect(find.text('卡册'), findsNWidgets(2));
-      expect(find.text('我的贡献'), findsNWidgets(2));
+      expect(find.textContaining('已拥有('), findsOneWidget);
+      expect(find.text('已拥有'), findsNothing);
+      expect(find.textContaining('心愿单('), findsOneWidget);
+      expect(find.textContaining('卡册('), findsOneWidget);
+      expect(find.text('我的贡献(0)'), findsOneWidget);
       expect(find.text('照片'), findsNothing);
       expect(find.text('喜欢'), findsNothing);
       expect(find.textContaining('Lv.12'), findsOneWidget);
@@ -98,8 +99,13 @@ void main() {
         findsOneWidget,
       );
 
-      await tester.ensureVisible(find.text('心愿单').last);
-      await tester.tap(find.text('心愿单').last);
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('profile-tab-likes')),
+      );
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('profile-tab-likes')),
+      );
+      await tester.tap(find.byKey(const ValueKey('profile-tab-likes')));
       await tester.pumpAndSettle();
       expect(
         find.byKey(const ValueKey('profile-gallery-likes')),
@@ -113,22 +119,27 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('profile-list-likes')), findsOneWidget);
 
-      await tester.tap(find.text('卡册').last);
+      await tester.tap(find.byKey(const ValueKey('profile-tab-albums')));
       await tester.pumpAndSettle();
       expect(find.byType(AlbumShelfBody), findsOneWidget);
       expect(find.text('我创建的'), findsOneWidget);
-      expect(find.text('我收藏的'), findsOneWidget);
+      expect(find.text('我收藏的'), findsNothing);
       expect(find.text('我的相册'), findsNothing);
       expect(find.text('搜索相册名称'), findsNothing);
-      expect(find.text('最近更新'), findsOneWidget);
+      expect(find.text('最近更新'), findsNothing);
+      expect(find.byKey(const Key('album-filter')), findsOneWidget);
+      expect(find.byKey(const Key('profile-view-toggle')), findsNothing);
       expect(find.text('草稿'), findsNothing);
 
-      await tester.tap(find.text('我的贡献').last);
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('profile-tab-contributions')),
+      );
+      await tester.tap(find.byKey(const ValueKey('profile-tab-contributions')));
       await tester.pumpAndSettle();
       expect(find.text('还没有收录的贡献小卡'), findsOneWidget);
       expect(find.text('添加图片'), findsNothing);
 
-      await tester.tap(find.text('心愿单').last);
+      await tester.tap(find.byKey(const ValueKey('profile-tab-likes')));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('profile-list-likes')), findsOneWidget);
       expect(tester.takeException(), isNull);

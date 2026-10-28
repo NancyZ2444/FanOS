@@ -1,3 +1,4 @@
+import 'package:fan_os/core/api/auth_flow.dart';
 import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/state/app_state.dart';
@@ -8,8 +9,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 class FavoriteSetupPage extends ConsumerStatefulWidget {
-  const FavoriteSetupPage({super.key, this.isOnboarding = false});
+  const FavoriteSetupPage({
+    super.key,
+    this.isOnboarding = false,
+    this.returnTo,
+  });
   final bool isOnboarding;
+  final String? returnTo;
 
   @override
   ConsumerState<FavoriteSetupPage> createState() => _FavoriteSetupPageState();
@@ -34,6 +40,10 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
   }
 
   void _close() {
+    if (widget.isOnboarding) {
+      context.go(safeLoginReturn(widget.returnTo));
+      return;
+    }
     if (context.canPop()) {
       context.pop();
     } else {
@@ -50,9 +60,41 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
       await ref
           .read(favoritesProvider.notifier)
           .saveSelection(_selected.intersection(visibleIds), _primary);
+      if (widget.isOnboarding) {
+        await ref.read(sessionProvider.notifier).finishOnboarding();
+      }
       if (mounted) _close();
     } catch (_) {
       if (mounted) showFanToast(context, '本命保存失败，请重试');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _skip() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      if (widget.isOnboarding) {
+        await ref.read(sessionProvider.notifier).finishOnboarding();
+      }
+      if (mounted) _close();
+    } catch (_) {
+      if (mounted) {
+        showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('暂时无法保存引导状态'),
+            content: const Text('请检查网络后重试，已选择的本命保持不变。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('知道了'),
+              ),
+            ],
+          ),
+        );
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -69,7 +111,7 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
     final selectedCount = _selected.intersection(validIds).length;
     return Scaffold(
       appBar: AppBar(
-        leading: const BackButton(),
+        leading: BackButton(onPressed: widget.isOnboarding ? _skip : _close),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).push(
@@ -195,7 +237,7 @@ class _FavoriteSetupPageState extends ConsumerState<FavoriteSetupPage> {
                 const SizedBox(height: 6),
                 Center(
                   child: TextButton(
-                    onPressed: _saving ? null : _close,
+                    onPressed: _saving ? null : _skip,
                     child: const Text('暂时跳过'),
                   ),
                 ),

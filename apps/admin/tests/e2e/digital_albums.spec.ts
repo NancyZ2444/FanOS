@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 
-const api = "http://127.0.0.1:8011/api/v1";
+// Use the configured UI proxy so this regression can run against an isolated API.
+const api = "/api/v1";
 
 test("digital album moderation, limits and system resources work end to end", async ({
   page,
@@ -48,52 +49,86 @@ test("digital album moderation, limits and system resources work end to end", as
     .getByPlaceholder("处理原因", { exact: true })
     .fill("自动化测试：复核公开内容");
   await page
-    .getByRole("dialog")
+    .locator(".ant-modal:visible")
     .getByRole("button", { name: "限制公开", exact: true })
     .click();
-  await expect(row).toContainText("限制公开");
+  await expect(page.locator(".ant-modal:visible")).toHaveCount(0);
+  const drawer = page.locator(".ant-drawer");
+  await expect(drawer).toContainText("限制公开");
   expect((await request.get(`${api}/albums/${book.id}`)).status()).toBe(403);
   await page.screenshot({
     path: "../../output/album-qa/admin-albums.png",
     fullPage: true,
   });
-  await row.getByRole("button", { name: "更多", exact: true }).click();
-  await page.getByRole("menuitem", { name: "解除限制", exact: true }).click();
+  await drawer.getByRole("button", { name: "恢复作品", exact: true }).click();
   await page
     .getByPlaceholder("处理原因", { exact: true })
     .fill("自动化测试：复核完成");
   await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "解除限制", exact: true })
+    .locator(".ant-modal:visible")
+    .getByRole("button", { name: "恢复作品", exact: true })
     .click();
-  await expect(row).not.toContainText("限制公开");
+  await expect(drawer).toContainText("待作者重新发布");
+  expect((await request.get(`${api}/albums/${book.id}`)).status()).toBe(403);
+  const restored = (
+    await (await request.get(`${api}/albums/${book.id}`, { headers })).json()
+  ).data;
+  expect(
+    (
+      await request.post(`${api}/albums/${book.id}/publish`, {
+        headers,
+        data: { revision: restored.revision },
+      })
+    ).ok(),
+  ).toBeTruthy();
   expect((await request.get(`${api}/albums/${book.id}`)).status()).toBe(200);
+  await drawer.getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("tab", { name: "额度与会员", exact: true }).click();
-  await page.getByLabel("普通用户实际页面上限", { exact: true }).fill("11");
+  await page
+    .getByRole("spinbutton", { name: "普通用户单本页面数量", exact: true })
+    .fill("11");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByText("相册配置已保存", { exact: true })).toBeVisible();
   expect(
     (await (await request.get(api + "/albums/quota", { headers })).json()).data
       .max_page_per_album,
   ).toBe(11);
-  await page.getByLabel("普通用户实际页面上限", { exact: true }).fill("10");
+  await page
+    .getByRole("spinbutton", { name: "普通用户单本页面数量", exact: true })
+    .fill("10");
   await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page
+    .locator(".ant-modal:visible")
+    .getByRole("button", { name: "确认并保存", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.getByRole("tab", { name: "主题与系统素材", exact: true }).click();
   await page.getByRole("button", { name: "新增系统素材", exact: true }).click();
-  await page.getByLabel("资源 ID", { exact: true }).fill("e2e-star");
-  await page.getByLabel("名称", { exact: true }).fill("E2E 星光");
+  const resourceId = `e2e-star-${Date.now()}`;
+  await page.getByLabel("资源 ID", { exact: true }).fill(resourceId);
+  await page.getByLabel("素材名称", { exact: true }).fill("E2E 星光");
   await page
-    .getByRole("dialog")
+    .locator(".ant-select")
+    .filter({ has: page.getByLabel("素材状态", { exact: true }) })
+    .click();
+  await page
+    .locator(".ant-select-dropdown:visible")
+    .getByText("已上架", { exact: true })
+    .click();
+  await page
+    .locator(".ant-modal:visible")
     .getByRole("button", { name: "保存", exact: true })
     .click();
+  await expect(page.locator(".ant-modal:visible")).toHaveCount(0);
+  await page.getByPlaceholder("搜索素材名称或编号").fill(resourceId);
   await expect(
-    page.locator(".ant-table-tbody tr").filter({ hasText: "e2e-star" }),
+    page.locator(".ant-table-tbody tr").filter({ hasText: resourceId }),
   ).toContainText("E2E 星光");
   const resources = (
     await (await request.get(api + "/albums/resources")).json()
   ).data.items;
   expect(
-    resources.some((r: { id: string }) => r.id === "e2e-star"),
+    resources.some((r: { id: string }) => r.id === resourceId),
   ).toBeTruthy();
   const latest = (
     await (await request.get(`${api}/albums/${book.id}`, { headers })).json()

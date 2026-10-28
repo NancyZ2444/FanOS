@@ -14,9 +14,9 @@ AlbumJson albumCardJson(CollectibleCard c) => {
   'title_ko': c.titleKo,
   'title_translated': c.titleTranslated,
   'idol_id': c.idolId,
-  'idol_name': c.idolName,
+  'idol_name': c.officialIdolName,
   'group_id': c.groupId,
-  'group_name': c.groupName,
+  'group_name': c.officialGroupName,
   'source': c.source,
   'card_type': c.cardType,
   'version': c.version,
@@ -36,17 +36,31 @@ Future<List<CollectibleCard>?> pickAlbumCards(
   BuildContext context, {
   bool single = false,
   int? maxSelected,
+  String title = '官方图鉴选卡',
+  String confirmLabel = '确认添加',
 }) => Navigator.push<List<CollectibleCard>>(
   context,
   MaterialPageRoute(
-    builder: (_) => AlbumCardPicker(single: single, maxSelected: maxSelected),
+    builder: (_) => AlbumCardPicker(
+      single: single,
+      maxSelected: maxSelected,
+      title: title,
+      confirmLabel: confirmLabel,
+    ),
   ),
 );
 
 class AlbumCardPicker extends ConsumerStatefulWidget {
-  const AlbumCardPicker({super.key, this.single = false, this.maxSelected});
+  const AlbumCardPicker({
+    super.key,
+    this.single = false,
+    this.maxSelected,
+    this.title = '官方图鉴选卡',
+    this.confirmLabel = '确认添加',
+  });
   final bool single;
   final int? maxSelected;
+  final String title, confirmLabel;
   @override
   ConsumerState<AlbumCardPicker> createState() => _AlbumCardPickerState();
 }
@@ -61,7 +75,7 @@ class _AlbumCardPickerState extends ConsumerState<AlbumCardPicker> {
     final favorites = ref.watch(favoritesProvider).selectedIds;
     final owned = ref.watch(collectionProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('官方图鉴选卡')),
+      appBar: AppBar(title: Text(widget.title)),
       body: ref
           .watch(catalogProvider)
           .when(
@@ -349,7 +363,9 @@ class _AlbumCardPickerState extends ConsumerState<AlbumCardPicker> {
                         onPressed: _selected.isEmpty
                             ? null
                             : () => Navigator.pop(context, _selected.toList()),
-                        child: Text('已选择 ${_selected.length} 张 · 确认添加'),
+                        child: Text(
+                          '已选择 ${_selected.length} 张 · ${widget.confirmLabel}',
+                        ),
                       ),
                     ),
                   ),

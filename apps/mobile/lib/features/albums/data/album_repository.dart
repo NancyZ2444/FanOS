@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
 import 'package:fan_os/core/api/api_client.dart';
 import 'package:fan_os/core/data/demo_catalog.dart';
 import 'package:fan_os/features/albums/data/album_models.dart';
@@ -10,11 +13,19 @@ abstract interface class AlbumRepository {
     int offset = 0,
     bool favorites = false,
     String status = 'ALL',
+    String workMode = 'ALL',
     String? userId,
   });
   Future<PhotocardAlbum> get(String id);
   Future<AlbumJson> cardAssets(List<String> cardIds);
-  Future<PhotocardAlbum> create(String name, String display, String style);
+  Future<PhotocardAlbum> create(
+    String name,
+    String display,
+    String style, {
+    String mode = 'BOOK',
+    String description = '',
+    String? requestId,
+  });
   Future<PhotocardAlbum> save(PhotocardAlbum album);
   Future<PhotocardAlbum> publish(PhotocardAlbum album);
   Future<PhotocardAlbum> duplicate(PhotocardAlbum album);
@@ -24,6 +35,13 @@ abstract interface class AlbumRepository {
   Future<void> preferences(String theme, String viewMode);
   Future<void> react(String id, String kind, bool active);
   Future<void> report(String id, String reason);
+  Future<PhotocardAlbum> requestReview(PhotocardAlbum album);
+  Future<AlbumExtractedColors> extractColors({
+    required String requestId,
+    String? cardId,
+    Uint8List? bytes,
+    String? fileName,
+  });
 }
 
 class ApiAlbumRepository implements AlbumRepository {
@@ -36,6 +54,7 @@ class ApiAlbumRepository implements AlbumRepository {
     int offset = 0,
     bool favorites = false,
     String status = 'ALL',
+    String workMode = 'ALL',
     String? userId,
   }) async {
     final path = favorites
@@ -46,7 +65,13 @@ class ApiAlbumRepository implements AlbumRepository {
     return AlbumShelfData.fromJson(
       await client.getData(
         path,
-        query: {'q': q, 'sort': sort, 'offset': offset, 'status': status},
+        query: {
+          'q': q,
+          'sort': sort,
+          'offset': offset,
+          'status': status,
+          'work_mode': workMode,
+        },
       ) as AlbumJson,
     );
   }
@@ -63,11 +88,21 @@ class ApiAlbumRepository implements AlbumRepository {
   Future<PhotocardAlbum> create(
     String name,
     String display,
-    String style,
-  ) async => PhotocardAlbum(
+    String style, {
+    String mode = 'BOOK',
+    String description = '',
+    String? requestId,
+  }) async => PhotocardAlbum(
     await client.postData(
       '/albums',
-      data: {'name': name, 'display_type': display, 'visual_style': style},
+      data: {
+        'name': name,
+        'work_mode': mode,
+        'description': description,
+        'request_id': requestId,
+        if (mode == 'BOOK') 'display_type': display,
+        if (mode == 'BOOK') 'visual_style': style,
+      },
     ) as AlbumJson,
   );
   @override
@@ -121,6 +156,37 @@ class ApiAlbumRepository implements AlbumRepository {
   }
 
   @override
+  Future<PhotocardAlbum> requestReview(PhotocardAlbum album) async =>
+      PhotocardAlbum(
+        await client.postData(
+          '/albums/${album.id}/review-request',
+          data: {'revision': album.revision},
+        ) as AlbumJson,
+      );
+
+  @override
+  Future<AlbumExtractedColors> extractColors({
+    required String requestId,
+    String? cardId,
+    Uint8List? bytes,
+    String? fileName,
+  }) async => AlbumExtractedColors.fromJson(
+    await client.postData(
+      '/albums/color-extractions',
+      data: FormData.fromMap({
+        'request_id': requestId,
+        'card_id': ?cardId,
+        if (bytes != null)
+          'file': MultipartFile.fromBytes(
+            bytes,
+            filename: fileName ?? 'photo.jpg',
+          ),
+      }),
+      receiveTimeout: const Duration(seconds: 60),
+    ) as AlbumJson,
+  );
+
+  @override
   Future<void> report(String id, String reason) async {
     await client.postData('/albums/$id/report', data: {'reason': reason});
   }
@@ -165,6 +231,7 @@ class MockAlbumRepository implements AlbumRepository {
     int offset = 0,
     bool favorites = false,
     String status = 'ALL',
+    String workMode = 'ALL',
     String? userId,
   }) async {
     await _load();
@@ -174,7 +241,8 @@ class MockAlbumRepository implements AlbumRepository {
               .where(
                 (a) =>
                     a.name.toLowerCase().contains(q.toLowerCase()) &&
-                    (status == 'ALL' || a.json['status'] == status),
+                    (status == 'ALL' || a.json['status'] == status) &&
+                    (workMode == 'ALL' || a.workMode == workMode),
               )
               .toList();
     if (sort == 'name') {
@@ -220,8 +288,11 @@ class MockAlbumRepository implements AlbumRepository {
   Future<PhotocardAlbum> create(
     String name,
     String display,
-    String style,
-  ) async {
+    String style, {
+    String mode = 'BOOK',
+    String description = '',
+    String? requestId,
+  }) async {
     await _load();
     if (_albums.length >= 10) {
       throw const ApiException('ALBUM_QUOTA_EXCEEDED', '相册数量已达上限');
@@ -232,7 +303,9 @@ class MockAlbumRepository implements AlbumRepository {
       'author_name': '星河收藏家',
       'is_owner': true,
       'name': name,
-      'description': '',
+      'description': description,
+      'work_mode': mode,
+      'card_instances': <AlbumJson>[],
       'display_type': display,
       'visual_style': style,
       'visibility': 'PRIVATE',
@@ -240,7 +313,7 @@ class MockAlbumRepository implements AlbumRepository {
       'revision': 1,
       'cover': albumCanvas(),
       'pages': <AlbumJson>[],
-      'card_view': <String, dynamic>{},
+      'card_view': <String, dynamic>{'default_mode': mode},
       'cards': {
         for (final c in DemoCatalog.cards)
           c.id: {
@@ -287,14 +360,28 @@ class MockAlbumRepository implements AlbumRepository {
   }
 
   @override
-  Future<PhotocardAlbum> publish(PhotocardAlbum album) async =>
-      save(album.edit((d) => d['status'] = 'PUBLISHED'));
+  Future<PhotocardAlbum> publish(PhotocardAlbum album) async {
+    if (album.isModerated) {
+      throw const ApiException('ALBUM_MODERATED', '相册限制解除后才能公开发布');
+    }
+    return save(
+      album.edit((d) {
+        d['status'] = 'PUBLISHED';
+        if (d['review_status'] == 'RESTORED') d['review_status'] = 'NONE';
+      }),
+    );
+  }
+
   @override
   Future<PhotocardAlbum> duplicate(PhotocardAlbum album) async {
+    if (album.isModerated) {
+      throw const ApiException('ALBUM_MODERATED', '相册限制解除前不能复制');
+    }
     final target = await create(
       '${album.name} 副本',
       album.isDouble ? 'DOUBLE' : 'SINGLE',
       album.realistic ? 'REALISTIC' : 'MINIMAL',
+      mode: album.workMode,
     );
     final data = cloneAlbumJson(album.json)
       ..['id'] = target.id
@@ -302,6 +389,11 @@ class MockAlbumRepository implements AlbumRepository {
       ..['visibility'] = 'PRIVATE'
       ..['status'] = 'DRAFT';
     final mapping = <String, String>{};
+    for (final s in (data['card_instances'] as List? ?? [])) {
+      final id = albumId('instance');
+      mapping[s['id'] as String] = id;
+      s['id'] = id;
+    }
     for (final p in (data['pages'] as List).cast<AlbumJson>()) {
       p['id'] = albumId('page');
       for (final s in (p['slots'] as List).cast<AlbumJson>()) {
@@ -340,6 +432,27 @@ class MockAlbumRepository implements AlbumRepository {
   Future<void> react(String id, String kind, bool active) async {}
   @override
   Future<void> report(String id, String reason) async {}
+  @override
+  Future<PhotocardAlbum> requestReview(PhotocardAlbum album) async {
+    if (!album.isModerated) {
+      throw const ApiException('ALBUM_NOT_RESTRICTED', '当前相册无需复核');
+    }
+    return save(album.edit((d) => d['review_status'] = 'PENDING'));
+  }
+
+  @override
+  Future<AlbumExtractedColors> extractColors({
+    required String requestId,
+    String? cardId,
+    Uint8List? bytes,
+    String? fileName,
+  }) async {
+    throw const ApiException(
+      'LIVE_API_REQUIRED',
+      '图片取色需连接本地或正式 API，演示模式不会消耗次数',
+    );
+  }
+
   @override
   Future<List<AlbumJson>> resources() async => [
     for (final r in [

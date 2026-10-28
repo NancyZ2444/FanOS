@@ -130,6 +130,10 @@ def target(db, kind, item_id, published=True):
 
 
 def description(db, kind, item_id):
+    if kind in {"groups", "idols"}:
+        from app.modules.catalog.profiles import editor_definition
+
+        return editor_definition(db, kind, item_id)
     row, raw = target(db, kind, item_id)
     fields = []
     visible_names = set()
@@ -188,6 +192,37 @@ def display_value(db, field, value):
     if value is None or value == "" or value == []:
         return ""
     editor = field["type"]
+    if editor == "relations":
+        from app.modules.catalog.profiles import display
+
+        current = {
+            v["id"]: v for v in field.get("current", []) if isinstance(v, dict) and "id" in v
+        }
+        resolved = []
+        for op in value:
+            if "operation" not in op:
+                resolved.append(op)
+                continue
+            entry = {**current.get(op.get("id"), {}), **op.get("data", {})}
+            target_kind = (
+                "companies"
+                if field["key"] == "company_relations"
+                else "idols"
+                if field.get("entity_type") == "groups"
+                else "groups"
+            )
+            if entry.get("target_id"):
+                entry["name"] = reference_name(db, target_kind, entry["target_id"]) or entry.get(
+                    "name", ""
+                )
+            operation = {"ADD": "新增", "UPDATE": "修改", "DELETE": "建议作废"}.get(
+                op["operation"], ""
+            )
+            entry["name"] = " · ".join(
+                filter(None, [operation, entry.get("name"), op.get("reason")])
+            )
+            resolved.append(entry)
+        return display(field, resolved)
     if editor == "multi_reference":
         return " · ".join(reference_name(db, v.get("type"), v.get("id")) for v in value)
     if editor == "reference":
@@ -258,6 +293,11 @@ def search_objects(db, kind, q="", limit=50, parent_id=None):
 
 def validate_value(db, field, value):
     kind = field["type"]
+    if kind == "relations":
+        from app.modules.catalog.profiles import validate_relations
+
+        validate_relations(db, field["entity_type"], field["entity_id"], field["key"], value)
+        return
     if kind == "boolean":
         if not isinstance(value, bool):
             raise DomainError("INVALID_VALUE", "请选择是或否", 422)
@@ -276,8 +316,14 @@ def validate_value(db, field, value):
                 raise DomainError("INVALID_VALUE", "归属对象无效", 422)
             target(db, v["type"], v.get("id"))
     else:
-        if not isinstance(value, str) or not value.strip() or len(value) > 2000:
-            raise DomainError("INVALID_VALUE", "请填写建议值（最多2000字）", 422)
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value) > field.get("max_length", 2000)
+        ):
+            raise DomainError(
+                "INVALID_VALUE", f"请填写建议值（最多{field.get('max_length', 2000)}字）", 422
+            )
         if kind == "date":
             try:
                 date.fromisoformat(value)

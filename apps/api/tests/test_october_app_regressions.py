@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import io
-import json
+from uuid import uuid4
 
 from conftest import scan_artwork
 from PIL import Image, ImageDraw
+from test_feedback_workflow import ROOT as FEEDBACK_ROOT
+from test_feedback_workflow import action, result
 from test_scan_real_matching import upload
 
 from app.admin_models import ContentMetadata
@@ -54,7 +56,7 @@ def test_published_admin_default_images_reach_every_catalog_contract(client):
 
 
 def test_profile_cover_upload_persistence_public_view_removal_and_validation(
-    client, auth_headers, admin_headers
+    client, auth_headers, second_app_headers
 ):
     content = io.BytesIO()
     Image.new("RGB", (800, 300), "#8176ca").save(content, "PNG")
@@ -78,7 +80,7 @@ def test_profile_cover_upload_persistence_public_view_removal_and_validation(
         == url
     )
     assert (
-        client.get("/api/v1/users/current-user", headers=admin_headers).json()["data"][
+        client.get("/api/v1/users/current-user", headers=second_app_headers).json()["data"][
             "background_url"
         ]
         == url
@@ -155,7 +157,7 @@ def test_scan_excludes_enclosing_album_frame_and_matches_each_card(
 
 
 def test_feedback_group_membership_history_progress_and_owner_isolation(
-    client, auth_headers, admin_headers, scan_index
+    client, auth_headers, admin_headers, second_app_headers, scan_index
 ):
     session = upload(client, auth_headers, Image.new("RGB", (360, 520), "white")).json()["data"]
     metadata = {
@@ -163,47 +165,55 @@ def test_feedback_group_membership_history_progress_and_owner_isolation(
         "detected_card_id": session["detected_cards"][0]["detected_card_id"],
         "group_id": "group-lumina",
         "idol_id": "idol-yuna",
+        "source_entity_type": "ALBUM",
+        "source_entity_id": "album-starlit",
     }
     assert (
         client.post(
-            "/api/v1/scan/feedback", headers=auth_headers, data={"metadata": json.dumps(metadata)}
+            FEEDBACK_ROOT,
+            headers=auth_headers,
+            json={"kind": "MISSING_CARD", "request_key": str(uuid4()), "missing": metadata},
         ).status_code
         == 400
     )
-    metadata.update(idol_id="idol-aria", notes="请确认版本")
-    result = client.post(
-        "/api/v1/scan/feedback", headers=auth_headers, data={"metadata": json.dumps(metadata)}
+    metadata.update(idol_id="idol-aria")
+    row = result(
+        client.post(
+            FEEDBACK_ROOT,
+            headers=auth_headers,
+            json={
+                "kind": "MISSING_CARD",
+                "request_key": str(uuid4()),
+                "missing": metadata,
+                "notes": "请确认版本",
+            },
+        )
     )
-    assert result.status_code == 200, result.text
-    feedback_id = result.json()["data"]["feedback_id"]
-    detail_url = f"/api/v1/scan/feedback/{feedback_id}"
-    detail = client.get(detail_url, headers=auth_headers).json()["data"]
-    assert detail["status"] == "pending"
-    assert detail["crop_image_url"] and detail["notes"] == "请确认版本"
-    assert client.get(detail_url, headers=admin_headers).status_code == 404
-    assert client.get("/api/v1/scan/feedback", headers=admin_headers).json()["data"]["items"] == []
-    assert (
-        client.patch(
-            f"/api/v1/admin/scan/feedback/{feedback_id}",
-            headers=admin_headers,
-            json={"status": "reviewing"},
-        ).status_code
-        == 200
+    detail_url = f"{FEEDBACK_ROOT}/records/{row['id']}"
+    detail = result(client.get(detail_url, headers=auth_headers))
+    assert detail["status"] == "PENDING"
+    assert detail["submission"]["scan"]["crop_image_url"]
+    assert detail["submission"]["notes"] == "请确认版本"
+    assert client.get(detail_url, headers=second_app_headers).status_code == 404
+    assert result(client.get(FEEDBACK_ROOT, headers=second_app_headers))["items"] == []
+    reviewing = result(action(client, admin_headers, row, "start"))
+    assert reviewing["status"] == "PROCESSING"
+    # Internal progress is deliberately hidden until a public review decision.
+    assert result(client.get(detail_url, headers=auth_headers))["status"] == "PENDING"
+    owned_before = result(client.get("/api/v1/me/profile", headers=auth_headers))["owned"]
+    result(
+        action(
+            client,
+            admin_headers,
+            reviewing,
+            "match",
+            card_id="card-aria-01",
+            public_note="已补充对应官方图鉴",
+        )
     )
-    assert client.get(detail_url, headers=auth_headers).json()["data"]["status"] == "reviewing"
-    reviewed = client.post(
-        f"/api/v1/admin/console/review-queue/scan/{feedback_id}/actions",
-        headers=admin_headers,
-        json={"action": "match", "card_id": "card-aria-01", "reason": "已补充对应官方图鉴"},
-    )
-    assert reviewed.status_code == 200, reviewed.text
-    item = client.get("/api/v1/scan/feedback", headers=auth_headers).json()["data"]["items"][0]
-    assert item["status"] == "resolved"
-    assert item["matched_card"]["id"] == "card-aria-01"
-    assert item["review_reason"] == "已补充对应官方图鉴"
-    assert (
-        client.get("/api/v1/me/profile", headers=auth_headers).json()["data"]["owned"][
-            "card-aria-01"
-        ]
-        == 1
-    )
+    item = result(client.get(FEEDBACK_ROOT, headers=auth_headers))["items"][0]
+    assert item["status"] == "PROCESSED" and item["result"] == "NOT_INCLUDED"
+    assert item["entity_id"] == "card-aria-01" and item["target_available"]
+    assert item["public_note"] == "已补充对应官方图鉴"
+    # Reviewing a suggestion must not silently alter the user's collection.
+    assert result(client.get("/api/v1/me/profile", headers=auth_headers))["owned"] == owned_before

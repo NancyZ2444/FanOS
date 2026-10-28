@@ -3,6 +3,7 @@ import 'package:fan_os/app/theme.dart';
 import 'dart:async';
 
 import 'package:fan_os/core/data/models.dart';
+import 'package:fan_os/core/data/profile_models.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:flutter/material.dart';
@@ -103,15 +104,18 @@ class _SearchPageState extends ConsumerState<SearchPage> {
             ),
             const SizedBox(height: 8),
             Expanded(
-              child: catalog.when(
-                loading: () => const Center(child: CircularProgressIndicator()),
-                error: (_, _) => const FanEmptyState(
-                  icon: Icons.cloud_off_rounded,
-                  title: '搜索暂时不可用',
-                  message: '请稍后再试',
-                ),
-                data: _buildResults,
-              ),
+              child: _selectedType == '用户'
+                  ? _userResults()
+                  : catalog.when(
+                      loading: () =>
+                          const Center(child: CircularProgressIndicator()),
+                      error: (_, _) => const FanEmptyState(
+                        icon: Icons.cloud_off_rounded,
+                        title: '搜索暂时不可用',
+                        message: '请稍后再试',
+                      ),
+                      data: _buildResults,
+                    ),
             ),
           ],
         ),
@@ -165,7 +169,10 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           ),
         )
         .toList();
-    final userMatches = matches('月光收藏家 Lin LUMINA 把心动装进卡册');
+    final usersAsync = _show('用户') && _query.isNotEmpty
+        ? ref.watch(userSearchProvider(_query))
+        : null;
+    final userMatches = usersAsync?.value?.isNotEmpty ?? false;
 
     final hasResults = switch (_selectedType) {
       '组合' => groups.isNotEmpty,
@@ -184,7 +191,9 @@ class _SearchPageState extends ConsumerState<SearchPage> {
             others.isNotEmpty ||
             userMatches,
     };
-    if (!hasResults) {
+    if (!hasResults &&
+        usersAsync?.isLoading != true &&
+        usersAsync?.hasError != true) {
       return FanEmptyState(
         icon: Icons.search_off_rounded,
         title: '没有找到相关结果',
@@ -317,22 +326,24 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                 .toList(),
             others.length,
           ),
+        if (_show('用户') && usersAsync?.isLoading == true)
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Center(child: CircularProgressIndicator()),
+          ),
+        if (_show('用户') && usersAsync?.hasError == true)
+          ListTile(
+            title: const Text('用户搜索加载失败'),
+            trailing: TextButton(
+              onPressed: () => ref.invalidate(userSearchProvider(_query)),
+              child: const Text('重试'),
+            ),
+          ),
         if (_show('用户') && userMatches)
           _SearchSection(
             title: '用户',
-            count: 1,
-            children: [
-              ListTile(
-                onTap: () => context.push('/user/user-luna'),
-                leading: const CircleAvatar(child: Text('月')),
-                title: const Text(
-                  '月光收藏家',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-                subtitle: const Text('★ Lin · 把心动装进卡册'),
-                trailing: const Icon(Icons.chevron_right_rounded),
-              ),
-            ],
+            count: usersAsync!.value!.length,
+            children: usersAsync.value!.take(_limit).map(_userTile).toList(),
           ),
         if (_show('小卡') && cards.isNotEmpty) ...[
           SectionHeader(title: '小卡', actionLabel: '${cards.length} 个结果'),
@@ -356,6 +367,63 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   }
 
   int get _limit => _selectedType == '全部' ? 3 : 1000;
+
+  Widget _userTile(PublicUserProfile user) => ListTile(
+    onTap: () => context.push('/user/${user.id}'),
+    leading: ClipOval(
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: FanImage(
+          imageUrl: user.avatarPath,
+          fallback: Center(child: Text(user.initial)),
+        ),
+      ),
+    ),
+    title: Text(
+      user.displayName,
+      style: const TextStyle(fontWeight: FontWeight.w600),
+    ),
+    subtitle: Text(
+      user.bio.isEmpty ? 'Lv.${user.level}' : user.bio,
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+    ),
+    trailing: const Icon(Icons.chevron_right_rounded),
+  );
+
+  Widget _userResults() {
+    if (_query.isEmpty) {
+      return const FanEmptyState(
+        icon: Icons.person_search_outlined,
+        title: '搜索用户',
+        message: '输入用户昵称。',
+      );
+    }
+    return ref
+        .watch(userSearchProvider(_query))
+        .when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (_, _) => FanEmptyState(
+            icon: Icons.cloud_off_outlined,
+            title: '用户搜索加载失败',
+            message: '请检查网络或登录状态后重试。',
+            actionLabel: '重试',
+            onAction: () => ref.invalidate(userSearchProvider(_query)),
+          ),
+          data: (users) => users.isEmpty
+              ? const FanEmptyState(
+                  icon: Icons.search_off_rounded,
+                  title: '没有找到相关用户',
+                  message: '请尝试其他昵称。',
+                )
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 30),
+                  children: users.map(_userTile).toList(),
+                ),
+        );
+  }
+
   bool _show(String type) => _selectedType == '全部' || _selectedType == type;
 
   Widget _entitySection(String title, List<_SearchEntity> items, int count) =>

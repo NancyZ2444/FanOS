@@ -21,7 +21,6 @@ from app.models import (
     new_id,
 )
 from app.modules.albums import service as album_service
-from app.modules.albums.schemas import AlbumCreate as DigitalAlbumCreate
 from app.modules.albums.schemas import AlbumPatch
 from app.modules.collections.schemas import AlbumCardsUpdate, AlbumCreate, QuantityUpdate
 
@@ -145,10 +144,7 @@ def get_albums(user: User = Depends(current_user), db: Session = Depends(get_db)
 def create_album(
     payload: AlbumCreate, user: User = Depends(current_user), db: Session = Depends(get_db)
 ) -> dict:
-    album = album_service.create(db, user, DigitalAlbumCreate(name=payload.name))
-    db.commit()
-    db.refresh(album)
-    return success(album_payload(db, album, user))
+    raise DomainError("ALBUM_CLIENT_UPDATE_REQUIRED", "请使用新版创建流程，先选择固定作品类型", 409)
 
 
 @router.put("/me/card-albums/{album_id}/cards")

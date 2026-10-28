@@ -138,5 +138,5 @@ def test_regular_user_cannot_delete(client, admin_headers, auth_headers):
     item_id = create_group(client, admin_headers, "Protected")
     archive(client, admin_headers, "groups", item_id)
     assert (
-        client.delete(ROOT + f"/entities/groups/{item_id}", headers=auth_headers).status_code == 403
+        client.delete(ROOT + f"/entities/groups/{item_id}", headers=auth_headers).status_code == 401
     )

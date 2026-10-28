@@ -25,5 +25,6 @@ def get_db() -> Generator[Session, None, None]:
 
 def create_schema() -> None:
     from app import models  # noqa: F401
+    from app import auth_models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

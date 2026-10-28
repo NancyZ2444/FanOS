@@ -63,7 +63,7 @@ Future<PhotocardAlbum> _album(
   String name, {
   bool draft = false,
 }) async {
-  var album = await repo.create(name, 'SINGLE', 'MINIMAL');
+  var album = await repo.create(name, 'SINGLE', 'MINIMAL', mode: 'CARDS');
   album = await repo.save(
     album.edit((d) {
       final page = blankAlbumPage(9);
@@ -71,7 +71,7 @@ Future<PhotocardAlbum> _album(
         slot['card_id'] = 'card-aria-01';
       }
       (page['slots'] as List).last['card_id'] = 'card-lin-01';
-      d['pages'] = [page];
+      d['card_instances'] = page['slots'];
       d['card_view'] = <String, dynamic>{
         'default_mode': 'CARDS',
         'cover_style': 'STACK_V1',
@@ -330,6 +330,8 @@ void main() {
       expect(find.byKey(ValueKey('album-shelf-${created.id}')), findsOneWidget);
       expect(find.text(draft.name), findsNothing);
       await _capture(tester, key, '03-album-shelf');
+      await tester.tap(find.byTooltip('所属范围'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('草稿'));
       await tester.pumpAndSettle();
       expect(find.text(draft.name), findsOneWidget);
@@ -338,6 +340,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(ValueKey('album-list-${draft.id}')), findsOneWidget);
       await _capture(tester, key, '04-album-list');
+      await tester.tap(find.byTooltip('所属范围'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('我收藏的'));
       await tester.pumpAndSettle();
       expect(find.text('还没有收藏相册'), findsOneWidget);

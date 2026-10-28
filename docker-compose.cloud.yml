@@ -56,7 +56,6 @@ services:
       WORKER_TOKEN: ${WORKER_TOKEN:?Run cloud init first}
       LOCAL_MEDIA_ROOT: /srv/api/data/uploads
       PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-http://localhost:5173/media}
-      DEV_PHONE_CODE: ${DEV_PHONE_CODE:?Run cloud init first}
       CATALOG_IMAGE_HOSTS: ${CATALOG_IMAGE_HOSTS:-["upload.wikimedia.org","image-cdn-fa.spotifycdn.com","image-cdn-ak.spotifycdn.com","i.scdn.co"]}
       CATALOG_IMAGES_LOCAL_ONLY: 'true'
       CATALOG_REMOTE_PORTRAITS_ENABLED: 'false'
@@ -113,7 +112,6 @@ services:
       PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-http://localhost:5173/media}
       JWT_SECRET: ${JWT_SECRET:?Run cloud init first}
       WORKER_TOKEN: ${WORKER_TOKEN:?Run cloud init first}
-      DEV_PHONE_CODE: ${DEV_PHONE_CODE:?Run cloud init first}
     depends_on:
       api:
         condition: service_started

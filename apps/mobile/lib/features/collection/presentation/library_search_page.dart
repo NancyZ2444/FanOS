@@ -354,7 +354,12 @@ class _LibrarySearchPageState extends ConsumerState<LibrarySearchPage> {
         : [
             card.hasIndividualIdol
                 ? entityDisplayName(ref, 'idols', card.idolId, card.idolName)
-                : card.groupName,
+                : entityDisplayName(
+                    ref,
+                    'groups',
+                    card.groupId,
+                    card.groupName,
+                  ),
             card.source,
           ].where((s) => s.isNotEmpty).join(' · ');
     final subtitle = card == null
@@ -369,7 +374,7 @@ class _LibrarySearchPageState extends ConsumerState<LibrarySearchPage> {
             if (item.matchType == 'card') '包含匹配的小卡',
           ].join(' · ')
         : [
-            card.groupName,
+            entityDisplayName(ref, 'groups', card.groupId, card.groupName),
             card.cardType,
             card.version,
             if (kind == 'owned') '已拥有 ×${item.quantity}',

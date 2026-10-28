@@ -10,6 +10,7 @@ import 'package:fan_os/core/data/repositories.dart';
 import 'package:fan_os/core/data/social_feed_models.dart';
 import 'package:fan_os/core/data/social_feed_repository.dart';
 import 'package:fan_os/core/data/user_data_repository.dart';
+import 'package:fan_os/core/data/user_social_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 const useMockApi = bool.fromEnvironment('USE_MOCK_API', defaultValue: true);
@@ -53,12 +54,29 @@ void _syncRemote(Future<void> operation) {
   unawaited(operation.catchError((Object _) {}));
 }
 
-final catalogProvider = FutureProvider<CatalogBundle>((ref) async {
-  final preferences = ref.watch(namePreferencesProvider);
-  return preferences.apply(
-    await ref.watch(catalogRepositoryProvider).fetchCatalog(),
-  );
-});
+final catalogLoadTimeoutProvider = Provider<Duration>(
+  (ref) => const Duration(seconds: 30),
+);
+
+final catalogProvider = FutureProvider<CatalogBundle>(
+  (ref) async {
+    final preferences = ref.watch(namePreferencesProvider);
+    final timeout = ref.watch(catalogLoadTimeoutProvider);
+    final catalog = await ref
+        .watch(catalogRepositoryProvider)
+        .fetchCatalog()
+        .timeout(
+          timeout,
+          onTimeout: () {
+            throw const ApiException('REQUEST_TIMEOUT', '图鉴加载超时，请重新加载');
+          },
+        );
+    return preferences.apply(catalog);
+  },
+  // Keep a visible, actionable error. Riverpod's automatic backoff should not
+  // turn a timed-out catalog back into a seemingly endless loading indicator.
+  retry: (_, _) => null,
+);
 
 class NamePreferencesController extends Notifier<NamePreferences> {
   @override
@@ -107,9 +125,34 @@ final namePreferencesProvider =
     );
 
 final publicUserProfileProvider =
-    FutureProvider.family<PublicUserProfile, String>(
-      (ref, id) => ref.watch(userDataRepositoryProvider).fetchPublicProfile(id),
-    );
+    FutureProvider.family<PublicUserProfile, String>((ref, id) {
+      ref.watch(sessionProvider.select((session) => session.userId));
+      return ref.watch(userDataRepositoryProvider).fetchPublicProfile(id);
+    });
+
+final userSocialRepositoryProvider = Provider<UserSocialRepository>(
+  (ref) => useMockApi
+      ? MockUserSocialRepository()
+      : ApiUserSocialRepository(ref.watch(apiClientProvider)),
+);
+
+final userSearchProvider = FutureProvider.autoDispose
+    .family<List<PublicUserProfile>, String>((ref, query) {
+      ref.watch(sessionProvider.select((session) => session.userId));
+      if (query.trim().isEmpty) return Future.value([]);
+      return ref.watch(userSocialRepositoryProvider).search(query);
+    });
+
+final userRelationsProvider = FutureProvider.autoDispose
+    .family<List<PublicUserProfile>, ({String userId, String type})>((
+      ref,
+      request,
+    ) {
+      ref.watch(sessionProvider.select((session) => session.userId));
+      return ref
+          .watch(userSocialRepositoryProvider)
+          .relations(request.userId, request.type);
+    });
 
 class SessionState {
   const SessionState({
@@ -118,6 +161,10 @@ class SessionState {
     this.displayName = '星河收藏家',
     this.userId = 'current-user',
     this.weiboVisible = false,
+    this.weiboName,
+    this.weiboUrl,
+    this.onboardingCompleted = true,
+    this.passwordSetupRequired = false,
     this.bio = '把每一次心动，都好好收藏。',
     this.avatarPath,
     this.backgroundPath,
@@ -132,6 +179,10 @@ class SessionState {
   final String displayName;
   final String userId;
   final bool weiboVisible;
+  final String? weiboName;
+  final String? weiboUrl;
+  final bool onboardingCompleted;
+  final bool passwordSetupRequired;
   final String bio;
   final String? avatarPath;
   final String? backgroundPath;
@@ -143,6 +194,8 @@ class SessionState {
   SessionState copyWith({
     bool? isLoggedIn,
     bool? isGuest,
+    bool? passwordSetupRequired,
+    bool? onboardingCompleted,
     String? displayName,
     bool? weiboVisible,
     String? bio,
@@ -157,6 +210,10 @@ class SessionState {
     displayName: displayName ?? this.displayName,
     userId: userId,
     weiboVisible: weiboVisible ?? this.weiboVisible,
+    weiboName: weiboName,
+    weiboUrl: weiboUrl,
+    onboardingCompleted: onboardingCompleted ?? this.onboardingCompleted,
+    passwordSetupRequired: passwordSetupRequired ?? this.passwordSetupRequired,
     bio: bio ?? this.bio,
     avatarPath: clearAvatar ? null : (avatarPath ?? this.avatarPath),
     backgroundPath: clearBackground
@@ -185,6 +242,40 @@ class SessionController extends Notifier<SessionState> {
       return;
     }
     await _loadAccount();
+  }
+
+  Future<void> acceptAuthentication(Map<String, dynamic> data) async {
+    final generation = ++_generation;
+    final client = ref.read(apiClientProvider);
+    await client.saveAuthTokens(data);
+    client.isNewAccount = data['is_new_user'] == true;
+    client.onboardingCompleted =
+        data['onboarding_completed'] as bool? ?? !client.isNewAccount;
+    client.passwordSetupRequired = data['password_setup_required'] == true;
+    if (generation != _generation) return;
+    await _loadAccount();
+  }
+
+  Future<void> reloadAccount() => _loadAccount();
+
+  void passwordRegistrationCompleted() {
+    ref.read(apiClientProvider).passwordSetupRequired = false;
+    state = state.copyWith(passwordSetupRequired: false);
+  }
+
+  Future<void> finishOnboarding() async {
+    if (!useMockApi) {
+      await ref
+          .read(apiClientProvider)
+          .postData('/account/onboarding/complete');
+      ref.read(apiClientProvider).onboardingCompleted = true;
+    }
+    state = state.copyWith(onboardingCompleted: true);
+  }
+
+  Future<void> signOut() async {
+    if (!useMockApi) await ref.read(apiClientProvider).revokeSession();
+    await logout();
   }
 
   Future<bool> restore() async {
@@ -218,6 +309,10 @@ class SessionController extends Notifier<SessionState> {
       isLoggedIn: true,
       displayName: snapshot.displayName,
       weiboVisible: snapshot.weiboVisible,
+      weiboName: snapshot.weiboName,
+      weiboUrl: snapshot.weiboUrl,
+      onboardingCompleted: snapshot.onboardingCompleted,
+      passwordSetupRequired: snapshot.passwordSetupRequired,
       bio: snapshot.bio,
       avatarPath: snapshot.avatarPath,
       backgroundPath: snapshot.backgroundPath,
@@ -297,6 +392,10 @@ class SessionController extends Notifier<SessionState> {
     ref.invalidate(collectionProvider);
     ref.invalidate(profileAssetProvider);
     ref.invalidate(profileRelationshipProvider);
+    ref.invalidate(publicUserProfileProvider);
+    ref.invalidate(userRelationsProvider);
+    ref.invalidate(userSearchProvider);
+    ref.invalidate(userSocialRepositoryProvider);
     state = const SessionState();
   }
 
@@ -381,12 +480,14 @@ final favoritesProvider = NotifierProvider<FavoritesController, FavoritesState>(
 
 class ProfileRelationshipState {
   const ProfileRelationshipState({
-    this.followingIds = const {'user-luna'},
-    this.followsMeIds = const {'user-luna', 'user-mint'},
+    this.followingIds = const {},
+    this.followsMeIds = const {},
     this.busyUserIds = const {},
-    this.myFollowingCount = 128,
-    this.myFollowersCount = 2356,
+    this.myFollowingCount = 0,
+    this.myFollowersCount = 0,
     this.followerCountAdjustments = const {},
+    this.knownStatuses = const {},
+    this.targetFollowerCounts = const {},
   });
 
   final Set<String> followingIds;
@@ -395,18 +496,24 @@ class ProfileRelationshipState {
   final int myFollowingCount;
   final int myFollowersCount;
   final Map<String, int> followerCountAdjustments;
+  final Map<String, UserRelationStatus> knownStatuses;
+  final Map<String, int> targetFollowerCounts;
 
-  UserRelationStatus statusFor(String userId) {
+  UserRelationStatus statusFor(
+    String userId, {
+    UserRelationStatus fallback = UserRelationStatus.none,
+  }) {
+    if (knownStatuses.containsKey(userId)) return knownStatuses[userId]!;
     final following = followingIds.contains(userId);
     final followsMe = followsMeIds.contains(userId);
     if (following && followsMe) return UserRelationStatus.mutual;
     if (following) return UserRelationStatus.following;
     if (followsMe) return UserRelationStatus.followsYou;
-    return UserRelationStatus.none;
+    return fallback;
   }
 
   int followerCountFor(PublicUserProfile profile) =>
-      profile.followersCount + (followerCountAdjustments[profile.id] ?? 0);
+      targetFollowerCounts[profile.id] ?? profile.followersCount;
 
   ProfileRelationshipState copyWith({
     Set<String>? followingIds,
@@ -415,6 +522,8 @@ class ProfileRelationshipState {
     int? myFollowingCount,
     int? myFollowersCount,
     Map<String, int>? followerCountAdjustments,
+    Map<String, UserRelationStatus>? knownStatuses,
+    Map<String, int>? targetFollowerCounts,
   }) => ProfileRelationshipState(
     followingIds: followingIds ?? this.followingIds,
     followsMeIds: followsMeIds ?? this.followsMeIds,
@@ -423,12 +532,26 @@ class ProfileRelationshipState {
     myFollowersCount: myFollowersCount ?? this.myFollowersCount,
     followerCountAdjustments:
         followerCountAdjustments ?? this.followerCountAdjustments,
+    knownStatuses: knownStatuses ?? this.knownStatuses,
+    targetFollowerCounts: targetFollowerCounts ?? this.targetFollowerCounts,
   );
 }
 
 class ProfileRelationshipController extends Notifier<ProfileRelationshipState> {
+  int _generation = 0;
   @override
-  ProfileRelationshipState build() => const ProfileRelationshipState();
+  ProfileRelationshipState build() {
+    _generation++;
+    ref.onDispose(() => _generation++);
+    return useMockApi
+        ? const ProfileRelationshipState(
+            followingIds: {'user-luna'},
+            followsMeIds: {'user-luna', 'user-mint'},
+            myFollowingCount: 128,
+            myFollowersCount: 2356,
+          )
+        : const ProfileRelationshipState();
+  }
 
   void hydrateCounts(int followingCount, int followersCount) {
     state = state.copyWith(
@@ -437,30 +560,64 @@ class ProfileRelationshipController extends Notifier<ProfileRelationshipState> {
     );
   }
 
-  Future<void> toggleFollow(String userId) async {
-    if (state.busyUserIds.contains(userId) || userId == 'current-user') return;
-    state = state.copyWith(busyUserIds: {...state.busyUserIds, userId});
-    await Future<void>.delayed(const Duration(milliseconds: 180));
-    final nextFollowing = {...state.followingIds};
-    final nextAdjustments = {...state.followerCountAdjustments};
-    final wasFollowing = nextFollowing.remove(userId);
-    if (wasFollowing) {
-      nextAdjustments[userId] = (nextAdjustments[userId] ?? 0) - 1;
-    } else {
-      nextFollowing.add(userId);
-      nextAdjustments[userId] = (nextAdjustments[userId] ?? 0) + 1;
+  Future<void> toggleFollow(
+    String userId, {
+    UserRelationStatus? currentStatus,
+  }) async {
+    if (state.busyUserIds.contains(userId) ||
+        userId == ref.read(sessionProvider).userId) {
+      return;
     }
-    state = state.copyWith(
-      followingIds: nextFollowing,
-      busyUserIds: {...state.busyUserIds}..remove(userId),
-      myFollowingCount: state.myFollowingCount + (wasFollowing ? -1 : 1),
-      followerCountAdjustments: nextAdjustments,
+    final actingUserId = ref.read(sessionProvider).userId;
+    final generation = _generation;
+    final status = state.statusFor(
+      userId,
+      fallback: currentStatus ?? UserRelationStatus.none,
     );
-    _syncRemote(
-      ref
-          .read(userDataRepositoryProvider)
-          .setFollow(userId, nextFollowing.contains(userId)),
-    );
+    final wasFollowing =
+        status == UserRelationStatus.following ||
+        status == UserRelationStatus.mutual;
+    state = state.copyWith(busyUserIds: {...state.busyUserIds, userId});
+    try {
+      final result = await ref
+          .read(userSocialRepositoryProvider)
+          .setFollow(userId, !wasFollowing);
+      if (generation != _generation ||
+          ref.read(sessionProvider).userId != actingUserId) {
+        return;
+      }
+      final nextFollowing = {...state.followingIds}..remove(userId);
+      final nextFollowers = {...state.followsMeIds}..remove(userId);
+      if (result.status == UserRelationStatus.following ||
+          result.status == UserRelationStatus.mutual) {
+        nextFollowing.add(userId);
+      }
+      if (result.status == UserRelationStatus.followsYou ||
+          result.status == UserRelationStatus.mutual) {
+        nextFollowers.add(userId);
+      }
+      state = state.copyWith(
+        followingIds: nextFollowing,
+        followsMeIds: nextFollowers,
+        myFollowingCount: result.myFollowingCount,
+        myFollowersCount: result.myFollowersCount,
+        knownStatuses: {...state.knownStatuses, userId: result.status},
+        targetFollowerCounts: {
+          ...state.targetFollowerCounts,
+          userId: result.followersCount,
+        },
+      );
+      ref.invalidate(userRelationsProvider);
+      ref.invalidate(userSearchProvider);
+      ref.invalidate(publicUserProfileProvider(userId));
+    } finally {
+      if (generation == _generation &&
+          ref.read(sessionProvider).userId == actingUserId) {
+        state = state.copyWith(
+          busyUserIds: {...state.busyUserIds}..remove(userId),
+        );
+      }
+    }
   }
 }
 

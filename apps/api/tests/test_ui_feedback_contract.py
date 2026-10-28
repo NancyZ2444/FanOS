@@ -3,7 +3,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
-from test_feedback_workflow import action, result, upload
+from test_feedback_workflow import accept_and_publish, result, upload
 
 from app.core.database import SessionLocal
 from app.models import Card
@@ -101,11 +101,10 @@ def test_clear_legacy_version_does_not_reappear(client, auth_headers, admin_head
         )
     )
     published = result(
-        action(
+        accept_and_publish(
             client,
             admin_headers,
             row,
-            "publish",
             object_version=obj["version"],
             decisions=[{"key": "entity_version_id", "decision": "ACCEPT"}],
         )

@@ -64,18 +64,38 @@ TRANSITIONS = {
 
 
 def permit(actor: User, domain: str, action: str = "view") -> None:
-    if actor.role == "admin":
-        return
-    allowed = (
-        {"catalog", "social", "sources"}
-        if actor.role == "content_operator"
-        else {"daily", "notifications", "announcements", "users", "comments", "reports"}
-    )
-    if domain not in allowed or (
-        actor.role == "content_operator"
-        and action in {"publish", "reject", "delete", "offline", "archive", "merge"}
-    ):
-        raise DomainError("PERMISSION_DENIED", "当前角色没有此操作权限", 403)
+    from .permissions import capability, require
+
+    require(actor, capability(domain, action))
+
+
+def permit_feedback_write(
+    db: Session,
+    actor: User,
+    kind: str,
+    item_id: str | None,
+    action: str,
+    submission_id: str | None = None,
+) -> None:
+    """Publication may persist its reviewed target without granting general editing rights."""
+    feedback_id = db.info.get("active_feedback_publication")
+    if feedback_id and action in {"edit", "submit"}:
+        from app.modules.feedback.models import Feedback
+
+        feedback = db.get(Feedback, feedback_id)
+        if (
+            feedback
+            and feedback.kind in {"MISSING_CARD", "MISSING_CATALOG", "CORRECTION"}
+            and feedback.result == "PENDING"
+            and feedback.handler_id == actor.id
+            and feedback.entity_type == kind
+            and (feedback.entity_id or None) == item_id
+            and (submission_id == feedback.id if action == "edit" else bool(item_id))
+        ):
+            # Recheck the live capability; the transaction context is not a permission grant.
+            permit(actor, "catalog", "publish")
+            return
+    permit(actor, "catalog", action)
 
 
 def audit(
@@ -324,8 +344,10 @@ def validate_relations(
                         GroupMembership.group_id == payload.group_id,
                     )
                 ).all()
+                from .catalog_memberships import membership_covers_release
+
                 if not any(
-                    m.start_date <= released and (m.end_date is None or released <= m.end_date)
+                    membership_covers_release(db, m, released)
                     for m in periods
                 ):
                     # Existing identities are not invalidated by incomplete legacy dates.
@@ -385,14 +407,6 @@ def validate_relations(
             error("back_image_url", "双面卡必须上传背面图片")
         if payload.has_ar and not payload.ar_resource:
             error("ar_resource", "AR 卡必须填写 AR 资源地址")
-        for side in ("front_source", "back_source"):
-            if side == "back_source" and not payload.back_image_url:
-                continue
-            info = getattr(payload, side)
-            if info.source_type != "USER_SUBMITTED" and not info.source_url:
-                error(f"{side}.source_url", "请填写图片来源链接")
-            if info.copyright_status not in {"AUTHORIZED", "OFFICIAL_SOURCE"}:
-                error(f"{side}.copyright_status", "发布前请确认图片版权为已授权或官方来源")
     return errors
 
 
@@ -412,7 +426,7 @@ def save_card(
     tag_source="INTERNAL",
     submission_id=None,
 ) -> Card:
-    permit(actor, "catalog", "edit")
+    permit_feedback_write(db, actor, "cards", card_id, "edit", submission_id)
     card = db.get(Card, card_id) if card_id else None
     fail_fields(validate_relations(db, payload, existing_card=card))
     if card_id and not card:
@@ -544,7 +558,7 @@ def save_card(
 
 
 def transition_card(db: Session, actor: User, card_id: str, action: str, reason: str = "") -> dict:
-    permit(actor, "catalog", action)
+    permit_feedback_write(db, actor, "cards", card_id, action)
     card = db.get(Card, card_id)
     if not card:
         raise DomainError("CARD_NOT_FOUND", "小卡不存在", 404)
@@ -595,7 +609,7 @@ def save_entity(
     tag_source="INTERNAL",
     submission_id=None,
 ) -> dict:
-    permit(actor, "catalog", "edit")
+    permit_feedback_write(db, actor, kind, item_id, "edit", submission_id)
     if kind not in MODELS:
         raise DomainError("INVALID_ENTITY_TYPE", "不支持的图鉴类型", 404)
     row = entity(db, kind, item_id) if item_id else None
@@ -738,7 +752,9 @@ def save_entity(
             "tags": bind_tags(db, kind, row.id, payload.tags, actor.id, tag_source, submission_id),
         }
     if kind == "idols" and before is None and payload.group_id:
-        db.add(GroupMembership(group_id=payload.group_id, idol_id=row.id))
+        from .catalog_memberships import create_undated_membership
+
+        create_undated_membership(db, payload.group_id, row.id)
     sync_company_selection(db, actor, kind, row.id, payload, before)
     if kind == "albums":
         from .album_versions import replace_versions
@@ -756,7 +772,7 @@ def save_entity(
 def transition_entity(
     db: Session, actor: User, kind: str, item_id: str, action: str, reason: str = ""
 ) -> dict:
-    permit(actor, "catalog", action)
+    permit_feedback_write(db, actor, kind, item_id, action)
     row = entity(db, kind, item_id)
     before = entity_payload(db, kind, row)
     allowed, target = TRANSITIONS.get(action, (set(), ""))
@@ -777,6 +793,10 @@ def transition_entity(
             fail_fields([{"field": "artists", "message": "请选择至少一个有效的组合或艺人"}])
     if action == "reject" and not reason.strip():
         raise DomainError("REASON_REQUIRED", "请填写驳回原因", 422)
+    if kind in {"groups", "idols"} and before["status"] == "PUBLISHED":
+        from app.modules.catalog.profiles import initialize
+
+        initialize(db, kind, item_id)
     meta = meta_for(db, kind, item_id)
     if not meta:
         meta = ContentMetadata(entity_type=kind, entity_id=item_id, operator_id=actor.id, data={})
@@ -790,6 +810,18 @@ def transition_entity(
         row.is_published = target == "PUBLISHED"
     db.flush()
     result = entity_payload(db, kind, row)
+    if kind in {"groups", "idols"} and action == "publish":
+        from app.modules.catalog import profiles
+
+        previous = profiles.latest(db, kind, item_id)
+        profiles.append_version(
+            db,
+            kind,
+            item_id,
+            previous.data["snapshot"] if previous else {},
+            profiles.snapshot(db, kind, item_id),
+            summary=reason or "后台资料发布",
+        )
     audit(db, actor, f"catalog.entity.{action}", kind, item_id, before, result)
     return result
 

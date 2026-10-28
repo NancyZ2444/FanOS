@@ -1,3 +1,5 @@
+import 'package:fan_os/features/profile/presentation/account_security_page.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/data/profile_models.dart';
 import 'package:fan_os/core/state/app_state.dart';
@@ -39,7 +41,7 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
     final session = ref.read(sessionProvider);
     _nameController = TextEditingController(text: session.displayName);
     _bioController = TextEditingController(text: session.bio);
-    _weiboVisible = session.weiboVisible;
+    _weiboVisible = session.weiboVisible && session.weiboName != null;
     _discoverable = session.privacy.discoverable;
     _favoritesVisible = session.privacy.favoritesVisible;
     _collectionVisible = session.privacy.collectionVisible;
@@ -143,190 +145,252 @@ class _EditProfilePageState extends ConsumerState<EditProfilePage> {
 
   @override
   Widget build(BuildContext context) {
+    final identities = ref.watch(accountIdentitiesProvider);
+    final weiboBound = (identities.asData?.value['identities'] as List? ?? [])
+        .whereType<Map>()
+        .any((i) => i['provider'] == 'weibo' && i['bound'] == true);
     return Scaffold(
       appBar: AppBar(
         leading: const BackButton(),
         title: const Text('编辑资料'),
+        backgroundColor: FanColors.canvas,
+        surfaceTintColor: Colors.transparent,
+        scrolledUnderElevation: 0,
         actions: [
           TextButton(
             onPressed: _saving ? null : _save,
-            child: Text(_saving ? '保存中…' : '保存'),
+            child: Text(
+              _saving ? '保存中…' : '保存',
+              style: const TextStyle(fontSize: 16),
+            ),
           ),
         ],
       ),
-      body: SingleChildScrollView(
-        child: FanContent(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 8),
-              Center(
-                child: _ImageEditTarget(
-                  label: '更换头像',
-                  imageUrl: _avatarPath,
-                  width: 84,
-                  height: 84,
-                  circular: true,
-                  onTap: _saving ? null : () => _pickImage(false),
+      body: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          child: FanContent(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: 8),
+                Center(
+                  child: _ImageEditTarget(
+                    label: '更换头像',
+                    imageUrl: _avatarPath,
+                    width: 84,
+                    height: 84,
+                    circular: true,
+                    onTap: _saving ? null : () => _pickImage(false),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 18),
-              _ImageEditTarget(
-                key: const Key('choose-profile-background'),
-                label: '更换主页背景',
-                imageUrl: _backgroundPath,
-                height: 140,
-                onTap: _saving ? null : () => _pickImage(true),
-              ),
-              if (_backgroundPath != null)
-                Align(
-                  alignment: Alignment.centerRight,
+                const SizedBox(height: 18),
+                _ImageEditTarget(
+                  key: const Key('choose-profile-background'),
+                  label: '更换主页背景',
+                  imageUrl: _backgroundPath,
+                  height: 140,
+                  onTap: _saving ? null : () => _pickImage(true),
+                ),
+                if (_backgroundPath != null)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: _saving
+                          ? null
+                          : () => setState(() {
+                              _backgroundPath = null;
+                              _backgroundChanged = true;
+                            }),
+                      child: const Text('移除背景', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                const SizedBox(height: 14),
+                const Text(
+                  '基本资料',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _nameController,
+                  maxLength: 20,
+                  decoration: const InputDecoration(labelText: '昵称'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _bioController,
+                  maxLength: 120,
+                  maxLines: 3,
+                  decoration: InputDecoration(
+                    labelText: '简介',
+                    hintText: '介绍一下你的收藏故事',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.favorite_border_rounded),
+                    title: const Text('管理我的本命'),
+                    subtitle: const Text('选择本命、设置星标'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => context.push('/onboarding/favorites'),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.drive_file_rename_outline),
+                    title: const Text('名称与备注'),
+                    subtitle: const Text('艺人、组合备注，优先展示且仅自己可见'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const NamePreferencesPage(),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Card(
+                  child: ListTile(
+                    title: const Text('账号与安全'),
+                    subtitle: const Text('手机号、微信与微博绑定、账号恢复'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () => context.push('/account/security'),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  '第三方身份',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  child: _SettingSwitchRow(
+                    title: const Text('在主页展示微博身份'),
+                    subtitle: Text(
+                      weiboBound
+                          ? '隐藏不等于解绑，仍可使用微博登录'
+                          : identities.hasError
+                          ? '身份状态暂时无法加载，请在账号与安全重试'
+                          : '绑定可信微博身份后可展示，请前往账号与安全',
+                    ),
+                    value: _weiboVisible,
+                    onChanged: weiboBound
+                        ? (value) => setState(() => _weiboVisible = value)
+                        : null,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  '隐私',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  child: Column(
+                    children: [
+                      _SettingSwitchRow(
+                        title: const Text('允许通过公开信息搜索到我'),
+                        value: _discoverable,
+                        onChanged: (value) =>
+                            setState(() => _discoverable = value),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      _SettingSwitchRow(
+                        title: const Text('公开展示我的本命'),
+                        subtitle: const Text('关闭后不影响个性化推荐'),
+                        value: _favoritesVisible,
+                        onChanged: (value) =>
+                            setState(() => _favoritesVisible = value),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      _SettingSwitchRow(
+                        title: const Text('公开我的收藏'),
+                        value: _collectionVisible,
+                        onChanged: (value) =>
+                            setState(() => _collectionVisible = value),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      _SettingSwitchRow(
+                        title: const Text('公开我的喜欢'),
+                        value: _likesVisible,
+                        onChanged: (value) =>
+                            setState(() => _likesVisible = value),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      _SettingSwitchRow(
+                        title: const Text('公开我的卡册'),
+                        value: _albumsVisible,
+                        onChanged: (value) =>
+                            setState(() => _albumsVisible = value),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      _SettingSwitchRow(
+                        title: const Text('公开我的相册'),
+                        value: _photosVisible,
+                        onChanged: (value) =>
+                            setState(() => _photosVisible = value),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      _SettingSwitchRow(
+                        title: const Text('公开关注列表'),
+                        value: _followingListVisible,
+                        onChanged: (value) =>
+                            setState(() => _followingListVisible = value),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      _SettingSwitchRow(
+                        title: const Text('公开粉丝列表'),
+                        value: _followersListVisible,
+                        onChanged: (value) =>
+                            setState(() => _followersListVisible = value),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
                   child: TextButton(
-                    onPressed: _saving
-                        ? null
-                        : () => setState(() {
-                            _backgroundPath = null;
-                            _backgroundChanged = true;
-                          }),
-                    child: const Text('移除背景', style: TextStyle(fontSize: 12)),
-                  ),
-                ),
-              const SizedBox(height: 14),
-              const Text('基本资料', style: TextStyle(fontWeight: FontWeight.w800)),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _nameController,
-                maxLength: 20,
-                decoration: const InputDecoration(labelText: '昵称'),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _bioController,
-                maxLength: 120,
-                maxLines: 3,
-                decoration: InputDecoration(
-                  labelText: '简介',
-                  hintText: '介绍一下你的收藏故事',
-                ),
-              ),
-              const SizedBox(height: 10),
-              Card(
-                child: ListTile(
-                  leading: const Icon(Icons.favorite_border_rounded),
-                  title: const Text('管理我的本命'),
-                  subtitle: const Text('选择本命、设置星标'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () => context.push('/onboarding/favorites'),
-                ),
-              ),
-              const SizedBox(height: 18),
-              Card(
-                child: ListTile(
-                  leading: const Icon(Icons.drive_file_rename_outline),
-                  title: const Text('名称与备注'),
-                  subtitle: const Text('艺人、组合备注及默认展示方式'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const NamePreferencesPage(),
+                    onPressed: () async {
+                      try {
+                        await ref.read(sessionProvider.notifier).signOut();
+                      } catch (_) {
+                        if (context.mounted) {
+                          await showDialog<void>(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              title: const Text('退出未完成'),
+                              content: const Text('请检查网络后重试，登录凭证已保留。'),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(context),
+                                  child: const Text('知道了'),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+                        return;
+                      }
+                      if (context.mounted) context.go('/');
+                    },
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFFB45C5C),
+                    ),
+                    child: const Text(
+                      '退出登录',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w400,
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const Text(
-                '第三方身份',
-                style: TextStyle(fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 10),
-              Card(
-                child: SwitchListTile(
-                  secondary: const Icon(
-                    Icons.rss_feed_rounded,
-                    color: FanColors.coral,
-                  ),
-                  title: const Text('在主页展示微博身份'),
-                  subtitle: const Text('隐藏不等于解绑，仍可使用微博登录'),
-                  value: _weiboVisible,
-                  onChanged: (value) => setState(() => _weiboVisible = value),
-                ),
-              ),
-              const SizedBox(height: 20),
-              const Text('隐私', style: TextStyle(fontWeight: FontWeight.w800)),
-              const SizedBox(height: 10),
-              Card(
-                child: Column(
-                  children: [
-                    SwitchListTile(
-                      title: const Text('允许通过公开信息搜索到我'),
-                      value: _discoverable,
-                      onChanged: (value) =>
-                          setState(() => _discoverable = value),
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile(
-                      title: const Text('公开展示我的本命'),
-                      subtitle: const Text('关闭后不影响个性化推荐'),
-                      value: _favoritesVisible,
-                      onChanged: (value) =>
-                          setState(() => _favoritesVisible = value),
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile(
-                      title: const Text('公开我的收藏'),
-                      value: _collectionVisible,
-                      onChanged: (value) =>
-                          setState(() => _collectionVisible = value),
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile(
-                      title: const Text('公开我的喜欢'),
-                      value: _likesVisible,
-                      onChanged: (value) =>
-                          setState(() => _likesVisible = value),
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile(
-                      title: const Text('公开我的卡册'),
-                      value: _albumsVisible,
-                      onChanged: (value) =>
-                          setState(() => _albumsVisible = value),
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile(
-                      title: const Text('公开我的相册'),
-                      value: _photosVisible,
-                      onChanged: (value) =>
-                          setState(() => _photosVisible = value),
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile(
-                      title: const Text('公开关注列表'),
-                      value: _followingListVisible,
-                      onChanged: (value) =>
-                          setState(() => _followingListVisible = value),
-                    ),
-                    const Divider(height: 1),
-                    SwitchListTile(
-                      title: const Text('公开粉丝列表'),
-                      value: _followersListVisible,
-                      onChanged: (value) =>
-                          setState(() => _followersListVisible = value),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-              OutlinedButton(
-                onPressed: () async {
-                  await ref.read(sessionProvider.notifier).logout();
-                  if (context.mounted) context.go('/');
-                },
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: FanColors.coral,
-                ),
-                child: const Text('退出登录'),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -393,6 +457,69 @@ class _ImageEditTarget extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    ),
+  );
+}
+
+class _SettingSwitchRow extends StatelessWidget {
+  const _SettingSwitchRow({
+    required this.title,
+    this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+  final Widget title;
+  final Widget? subtitle;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  @override
+  Widget build(BuildContext context) => ConstrainedBox(
+    constraints: const BoxConstraints(minHeight: 56),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DefaultTextStyle.merge(
+                  style: const TextStyle(
+                    fontSize: 16,
+                    height: 1.4,
+                    fontWeight: FontWeight.w400,
+                    color: FanColors.ink,
+                  ),
+                  child: title,
+                ),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 4),
+                  DefaultTextStyle.merge(
+                    style: const TextStyle(
+                      fontSize: 13,
+                      height: 1.45,
+                      fontWeight: FontWeight.w400,
+                      color: FanColors.textSecondary,
+                    ),
+                    child: subtitle!,
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 16),
+          SizedBox(
+            width: 51,
+            height: 44,
+            child: CupertinoSwitch(
+              value: value,
+              activeTrackColor: FanColors.lavender,
+              inactiveTrackColor: FanColors.line,
+              onChanged: onChanged,
+            ),
+          ),
+        ],
       ),
     ),
   );

@@ -3,7 +3,11 @@ import 'package:dio/dio.dart';
 import 'token_store.dart';
 
 class ApiClient {
-  ApiClient({Dio? dio, this.tokenStore}) : _dio = dio ?? _buildDio();
+  ApiClient({
+    Dio? dio,
+    this.tokenStore,
+    this.catalogRequestTimeout = const Duration(seconds: 20),
+  }) : _dio = dio ?? _buildDio();
 
   static const baseUrl = String.fromEnvironment(
     'API_BASE_URL',
@@ -12,6 +16,10 @@ class ApiClient {
 
   final Dio _dio;
   final TokenStore? tokenStore;
+
+  /// Wall-clock limit for catalog reads, including auth refresh and response
+  /// decoding. Dio receiveTimeout alone only limits gaps between packets.
+  final Duration catalogRequestTimeout;
   Future<void> _storageWork = Future.value();
   Future<void> _store(Future<void> Function() operation) {
     final result = _storageWork.then((_) => operation());
@@ -24,6 +32,10 @@ class ApiClient {
   Future<void>? _refreshing;
   int _authGeneration = 0;
   bool isNewAccount = false;
+  bool onboardingCompleted = true;
+  bool passwordSetupRequired = false;
+  String? _refreshRequestId;
+  void Function(ApiException)? onAccountBanned;
 
   /// Local uploads belong to the configured backend, including on physical phones.
   static String resolveMediaUrl(String value, {String backend = baseUrl}) {
@@ -65,6 +77,7 @@ class ApiClient {
     _accessToken = null;
     _refreshToken = null;
     _expiresAt = null;
+    _refreshRequestId = null;
   }
 
   Future<void> saveAuthTokens(Map<String, dynamic> data) async {
@@ -88,6 +101,8 @@ class ApiClient {
     if (generation != _authGeneration) {
       throw const ApiException('AUTH_REQUIRED', '请重新登录');
     }
+    onboardingCompleted =
+        data['onboarding_completed'] as bool? ?? onboardingCompleted;
     _accessToken = access;
     _refreshToken = refresh;
     _expiresAt = expiry;
@@ -112,6 +127,16 @@ class ApiClient {
     return true;
   }
 
+  Future<void> revokeSession() async {
+    if (_accessToken == null) return;
+    try {
+      await postData('/auth/logout', data: {'refresh_token': _refreshToken});
+    } on ApiException catch (e) {
+      if (e.statusCode != 401 && e.code != 'ACCOUNT_BANNED') rethrow;
+    }
+    await logout();
+  }
+
   Future<void> logout() async {
     clearAccessToken();
     await _store(() async {
@@ -128,6 +153,12 @@ class ApiClient {
       final response = await _dio.post<dynamic>(
         '/auth/refresh',
         data: {'refresh_token': _refreshToken},
+        options: Options(
+          headers: {
+            'Idempotency-Key': _refreshRequestId ??=
+                'refresh-${DateTime.now().microsecondsSinceEpoch}',
+          },
+        ),
       );
       if (generation != _authGeneration) {
         throw const ApiException('AUTH_REQUIRED', '请重新登录');
@@ -135,7 +166,19 @@ class ApiClient {
       await saveAuthTokens(
         Map<String, dynamic>.from(_unwrap(response.data) as Map),
       );
+      _refreshRequestId = null;
     } on DioException catch (e) {
+      if (e.response?.data is Map &&
+          (e.response!.data['error_code'] ?? e.response!.data['code']) ==
+              'ACCOUNT_BANNED') {
+        final failure = _apiError(
+          Map<String, dynamic>.from(e.response!.data as Map),
+          403,
+        );
+        if (generation == _authGeneration) await logout();
+        onAccountBanned?.call(failure);
+        throw failure;
+      }
       if (e.response?.statusCode == 401 || e.response?.statusCode == 403) {
         if (generation == _authGeneration) await logout();
         throw const ApiException(
@@ -165,9 +208,42 @@ class ApiClient {
     ),
   );
 
-  Future<dynamic> getData(String path, {Map<String, dynamic>? query}) async {
-    return _request(
-      () => _dio.get<dynamic>(path, queryParameters: query, options: _options),
+  Future<dynamic> getData(
+    String path, {
+    Map<String, dynamic>? query,
+    bool authenticated = true,
+  }) async {
+    final requestPath = Uri.tryParse(path)?.path ?? path;
+    final isCatalog =
+        requestPath == '/catalog' || requestPath.startsWith('/catalog/');
+    final cancelToken = isCatalog ? CancelToken() : null;
+    // Resolve authorization for every attempt, after any refresh performed by
+    // _request. Capturing Options here would replay an expired access token.
+    Options options() {
+      final current = authenticated ? _options : Options();
+      return isCatalog
+          ? current.copyWith(receiveTimeout: catalogRequestTimeout)
+          : current;
+    }
+
+    final request = _request(
+      () => _dio.get<dynamic>(
+        path,
+        queryParameters: query,
+        cancelToken: cancelToken,
+        options: options(),
+      ),
+      authenticated: authenticated,
+    );
+    if (!isCatalog) return request;
+    return request.timeout(
+      catalogRequestTimeout,
+      onTimeout: () {
+        // Cancels an in-flight transport, and also prevents a late auth refresh
+        // from starting this request after the caller has already timed out.
+        cancelToken!.cancel('Catalog request deadline exceeded');
+        throw const ApiException('REQUEST_TIMEOUT', '图鉴请求超时，请重新加载');
+      },
     );
   }
 
@@ -175,14 +251,34 @@ class ApiClient {
     String path, {
     Object? data,
     Duration? receiveTimeout,
+    bool authenticated = true,
+    String? idempotencyKey,
   }) async {
-    return _request(
+    Future<dynamic> perform() => _request(
       () => _dio.post<dynamic>(
         path,
         data: data is FormData ? data.clone() : data,
-        options: _options.copyWith(receiveTimeout: receiveTimeout),
+        options: (authenticated ? _options : Options()).copyWith(
+          receiveTimeout: receiveTimeout,
+          headers: {
+            if (authenticated) ...?_options.headers,
+            'Idempotency-Key': ?idempotencyKey,
+          },
+        ),
       ),
+      authenticated: authenticated,
     );
+    try {
+      return await perform();
+    } on ApiException catch (error) {
+      // Only replay explicitly idempotent mutations, preserving the same body
+      // and key. Never replay an unkeyed state-changing request.
+      if (idempotencyKey != null &&
+          (error.code == 'NETWORK_ERROR' || error.code == 'REQUEST_TIMEOUT')) {
+        return perform();
+      }
+      rethrow;
+    }
   }
 
   Future<dynamic> putData(String path, {Object? data}) async {
@@ -206,8 +302,10 @@ class ApiClient {
   Future<dynamic> _request(
     Future<Response<dynamic>> Function() operation, {
     bool retried = false,
+    bool authenticated = true,
   }) async {
-    if (!retried &&
+    if (authenticated &&
+        !retried &&
         _refreshToken != null &&
         _expiresAt != null &&
         _expiresAt!.isBefore(DateTime.now().add(const Duration(seconds: 30)))) {
@@ -218,22 +316,21 @@ class ApiClient {
       final response = await operation();
       return _unwrap(response.data);
     } on DioException catch (error) {
-      if (error.response?.statusCode == 401 &&
+      if (authenticated &&
+          error.response?.statusCode == 401 &&
           !retried &&
           _refreshToken != null) {
         if (requestToken == _accessToken) await _refreshAuth();
-        return _request(operation, retried: true);
+        return _request(operation, retried: true, authenticated: authenticated);
       }
       final body = error.response?.data;
       final status = error.response?.statusCode;
       if (body is Map<String, dynamic> &&
-          body['error_code'] != null &&
+          (body['error_code'] != null || body['code'] is String) &&
           body['message'] is String) {
-        throw ApiException(
-          body['error_code'].toString(),
-          body['message'] as String,
-          statusCode: status,
-        );
+        final failure = _apiError(body, status);
+        if (failure.code == 'ACCOUNT_BANNED') onAccountBanned?.call(failure);
+        throw failure;
       }
       final (code, message) = switch (status) {
         401 => ('AUTH_REQUIRED', '登录已失效，请重新登录后重试'),
@@ -263,27 +360,46 @@ class ApiClient {
     }
   }
 
+  ApiException _apiError(Map<String, dynamic> body, int? status) =>
+      ApiException(
+        (body['error_code'] ?? body['code']).toString(),
+        body['message'] as String? ?? '请求失败',
+        statusCode: status,
+        details: {
+          ...body,
+          if (body['data'] is Map)
+            ...Map<String, dynamic>.from(body['data'] as Map),
+          if (body['details'] is Map)
+            ...Map<String, dynamic>.from(body['details'] as Map),
+        },
+      );
+
   dynamic _unwrap(dynamic body) {
     if (body is! Map<String, dynamic>) {
       throw const ApiException('INVALID_RESPONSE', '服务返回格式异常');
     }
     final code = body['code'];
     if (code != 0) {
-      throw ApiException(
-        (body['error_code'] ?? 'UNKNOWN_ERROR').toString(),
-        (body['message'] ?? '请求失败，请稍后重试').toString(),
-      );
+      final failure = _apiError(body, null);
+      if (failure.code == 'ACCOUNT_BANNED') onAccountBanned?.call(failure);
+      throw failure;
     }
     return _resolveMedia(body['data']);
   }
 }
 
 class ApiException implements Exception {
-  const ApiException(this.code, this.message, {this.statusCode});
+  const ApiException(
+    this.code,
+    this.message, {
+    this.statusCode,
+    this.details = const {},
+  });
 
   final String code;
   final String message;
   final int? statusCode;
+  final Map<String, dynamic> details;
 
   @override
   String toString() => '$code: $message';

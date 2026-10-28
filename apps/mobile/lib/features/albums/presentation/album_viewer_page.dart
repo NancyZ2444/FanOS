@@ -1,4 +1,7 @@
 import 'dart:async';
+
+import 'album_moderation_banner.dart';
+
 import 'dart:math' as math;
 
 import 'package:fan_os/app/theme.dart';
@@ -15,6 +18,55 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+
+// Evaluate the actual gradient behind the title, including reversed gradients.
+// Images get a local dark navigation scrim instead of guessing their pixels.
+Color _headerSurfaceColor(BuildContext context, BoxDecoration background) {
+  if (background.image != null) return Colors.black;
+  final gradient = background.gradient;
+  if (gradient is! LinearGradient) return background.color ?? FanColors.surface;
+  final size = MediaQuery.sizeOf(context);
+  final begin = gradient.begin.resolve(Directionality.of(context));
+  final end = gradient.end.resolve(Directionality.of(context));
+  final start = Offset(
+    (begin.x + 1) * size.width / 2,
+    (begin.y + 1) * size.height / 2,
+  );
+  final vector = Offset(
+    (end.x - begin.x) * size.width / 2,
+    (end.y - begin.y) * size.height / 2,
+  );
+  final point =
+      Offset(
+        size.width / 2,
+        MediaQuery.paddingOf(context).top + kToolbarHeight / 2,
+      ) -
+      start;
+  final lengthSquared = vector.distanceSquared;
+  final t = lengthSquared == 0
+      ? 0.0
+      : ((point.dx * vector.dx + point.dy * vector.dy) / lengthSquared).clamp(
+          0.0,
+          1.0,
+        );
+  final stops =
+      gradient.stops ??
+      List.generate(
+        gradient.colors.length,
+        (i) => i / (gradient.colors.length - 1),
+      );
+  for (var i = 1; i < stops.length; i++) {
+    if (t <= stops[i]) {
+      final span = stops[i] - stops[i - 1];
+      return Color.lerp(
+        gradient.colors[i - 1],
+        gradient.colors[i],
+        span <= 0 ? 1 : ((t - stops[i - 1]) / span).clamp(0.0, 1.0),
+      )!;
+    }
+  }
+  return gradient.colors.last;
+}
 
 class AlbumViewerPage extends ConsumerWidget {
   const AlbumViewerPage({
@@ -110,10 +162,6 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
     });
   }
 
-  void _mode(bool cards) {
-    setState(() => _cards = cards);
-  }
-
   Future<void> _contents() async {
     final album = widget.album;
     final chosen = await showModalBottomSheet<int>(
@@ -179,6 +227,13 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
   }
 
   Future<void> _share() async {
+    if (widget.album.isModerated || widget.album.publicationBlocked) {
+      showFanToast(
+        context,
+        widget.album.isModerated ? '作品暂不可公开，限制解除并重新发布后可分享' : '请先主动发布修改内容后再分享',
+      );
+      return;
+    }
     if (!widget.album.isPublic) {
       showFanToast(context, '私密相册链接仍仅创建者可访问');
     }
@@ -191,7 +246,14 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
     if (mounted) showFanToast(context, '相册链接已复制');
   }
 
-  Future<void> _actions() async {
+  Future<void> _edit() async {
+    final album = widget.album;
+    if (!album.isOwner || widget.preview) return;
+    await context.push('/digital-albums/${album.id}/edit');
+    if (mounted) ref.invalidate(albumDetailProvider(album.id));
+  }
+
+  Future<void> _visitorActions() async {
     final album = widget.album;
     final action = await showModalBottomSheet<String>(
       context: context,
@@ -199,24 +261,6 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (album.isOwner)
-              ListTile(
-                leading: const AlbumIcon('Type'),
-                title: const Text('编辑相册'),
-                onTap: () => Navigator.pop(context, 'edit'),
-              ),
-            if (album.isOwner)
-              ListTile(
-                leading: const AlbumIcon('GripVertical'),
-                title: const Text('设置主图与顺序'),
-                onTap: () => Navigator.pop(context, 'order'),
-              ),
-            if (album.isOwner)
-              ListTile(
-                leading: const AlbumIcon('LayoutGrid'),
-                title: const Text('相册设置'),
-                onTap: () => Navigator.pop(context, 'settings'),
-              ),
             ListTile(
               leading: const AlbumIcon('Share'),
               title: const Text('分享相册链接'),
@@ -233,12 +277,6 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
       ),
     );
     if (!mounted || action == null) return;
-    if (['edit', 'order', 'settings'].contains(action)) {
-      await context.push(
-        '/digital-albums/${album.id}/edit${action == 'edit' ? '' : '?panel=$action'}',
-      );
-      ref.invalidate(albumDetailProvider(album.id));
-    }
     if (action == 'share') await _share();
     if (action == 'report') {
       if (!mounted) return;
@@ -285,100 +323,95 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
   Widget build(BuildContext context) {
     final album = widget.album;
     final resources = ref.watch(albumResourcesProvider).value ?? <AlbumJson>[];
+    final background = _cards
+        ? albumDecoration(album.cardView['background'] as AlbumJson?, radius: 0)
+        : const BoxDecoration(color: Color(0xFFF1EEFC));
+    final headerColor = _headerSurfaceColor(context, background);
+    final darkHeader =
+        ThemeData.estimateBrightnessForColor(headerColor) == Brightness.dark;
+    final headerForeground = darkHeader ? Colors.white : FanColors.ink;
     return PopScope(
       canPop: !_expanded,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _scene.currentState?.collapse();
       },
-      child: Scaffold(
-        backgroundColor: _cards
-            ? albumDecoration(album.cardView['background'] as AlbumJson?).color
-            : const Color(0xFFF1EEFC),
-        appBar: AppBar(
+      child: DecoratedBox(
+        key: const Key('album-viewer-background'),
+        // One continuous surface behind the navigation and both safe areas.
+        decoration: background,
+        child: Scaffold(
           backgroundColor: Colors.transparent,
-          leading: _expanded
-              ? IconButton(
-                  tooltip: '收回小卡',
-                  onPressed: () => _scene.currentState?.collapse(),
-                  icon: const Icon(Icons.arrow_back),
-                )
-              : null,
-          title: Text(
-            widget.preview ? '相册预览' : album.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          actions: [
-            if (widget.preview && widget.allowSave && !_expanded)
-              TextButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('保存'),
-              ),
-            if (_expanded)
-              IconButton(
-                tooltip: '关闭放大',
-                onPressed: () => _scene.currentState?.collapse(),
-                icon: const Icon(Icons.close),
-              )
-            else if (album.isOwner && !widget.preview)
-              TextButton(onPressed: _actions, child: const Text('编辑'))
-            else if (!widget.preview)
-              IconButton(
-                tooltip: '相册操作',
-                onPressed: _actions,
-                icon: const AlbumIcon('Ellipsis'),
-              ),
-          ],
-        ),
-        body: SafeArea(
-          child: DecoratedBox(
-            decoration: _cards
-                ? albumDecoration(
-                    album.cardView['background'] as AlbumJson?,
-                    radius: 0,
+          appBar: AppBar(
+            backgroundColor: background.image == null
+                ? Colors.transparent
+                : Colors.black.withValues(alpha: .55),
+            surfaceTintColor: Colors.transparent,
+            foregroundColor: headerForeground,
+            titleTextStyle: Theme.of(context).appBarTheme.titleTextStyle
+                ?.copyWith(color: headerForeground),
+            systemOverlayStyle: darkHeader
+                ? SystemUiOverlayStyle.light
+                : SystemUiOverlayStyle.dark,
+            leading: _expanded
+                ? IconButton(
+                    tooltip: '收回小卡',
+                    onPressed: () => _scene.currentState?.collapse(),
+                    icon: const Icon(Icons.arrow_back),
                   )
-                : const BoxDecoration(),
+                : null,
+            title: Text(
+              album.json['is_example'] == true
+                  ? '示例效果'
+                  : widget.preview
+                  ? '作品预览'
+                  : album.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            actions: [
+              if (widget.preview && widget.allowSave && !_expanded)
+                TextButton(
+                  style: TextButton.styleFrom(
+                    foregroundColor: headerForeground,
+                  ),
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('保存'),
+                ),
+              if (_expanded)
+                IconButton(
+                  tooltip: '关闭放大',
+                  onPressed: () => _scene.currentState?.collapse(),
+                  icon: const Icon(Icons.close),
+                )
+              else if (album.isOwner && !widget.preview) ...[
+                IconButton(
+                  key: const Key('album-viewer-share'),
+                  tooltip: '分享相册链接',
+                  onPressed: _share,
+                  icon: const AlbumIcon('Share'),
+                ),
+                TextButton(
+                  key: const Key('album-viewer-edit'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: headerForeground,
+                    minimumSize: const Size(44, 44),
+                  ),
+                  onPressed: _edit,
+                  child: const Text('编辑'),
+                ),
+              ] else if (!widget.preview)
+                IconButton(
+                  tooltip: '相册操作',
+                  onPressed: _visitorActions,
+                  icon: const AlbumIcon('Ellipsis'),
+                ),
+            ],
+          ),
+          body: SafeArea(
             child: Column(
               children: [
-                if (!_expanded)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 8,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: SegmentedButton<bool>(
-                            showSelectedIcon: false,
-                            style: SegmentedButton.styleFrom(
-                              side: BorderSide.none,
-                              backgroundColor: Colors.white.withValues(
-                                alpha: .65,
-                              ),
-                              selectedBackgroundColor: FanColors.lavenderSoft,
-                              selectedForegroundColor: FanColors.lavender,
-                              textStyle: const TextStyle(fontSize: 13),
-                            ),
-                            segments: const [
-                              ButtonSegment(
-                                value: false,
-                                label: Text('相册模式'),
-                                icon: AlbumIcon('BookOpen', size: 18),
-                              ),
-                              ButtonSegment(
-                                value: true,
-                                label: Text('卡片模式'),
-                                icon: AlbumIcon('RectangleVertical', size: 18),
-                              ),
-                            ],
-                            selected: {_cards},
-                            onSelectionChanged: (s) => _mode(s.first),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                if (!widget.preview && !_expanded)
+                  AlbumModerationBanner(album: album),
                 if (!album.isOwner && !widget.preview)
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -437,21 +470,14 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
                       ],
                     ),
                   ),
-                if (widget.preview && !_expanded)
+                if (widget.preview &&
+                    !_expanded &&
+                    album.json['is_example'] != true)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
                     child: FilledButton.tonal(
                       onPressed: () => Navigator.pop(context),
                       child: const Text('返回编辑'),
-                    ),
-                  )
-                else if (album.isOwner && !_cards)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
-                    child: OutlinedButton.icon(
-                      onPressed: _actions,
-                      icon: const AlbumIcon('Type', size: 18),
-                      label: const Text('编辑与展示设置'),
                     ),
                   )
                 else if (!widget.preview && !album.isOwner && !_expanded)
@@ -556,25 +582,20 @@ class _AlbumViewerState extends ConsumerState<AlbumViewer> {
                                     borderRadius: BorderRadius.circular(14),
                                   ),
                                 )
-                              : Transform(
-                                  alignment: Alignment.centerLeft,
-                                  transform: Matrix4.identity()
-                                    ..setEntry(3, 2, .001)
-                                    ..rotateY(album.realistic ? .018 : 0),
-                                  child: AlbumBinderWidget(
-                                    album: album,
-                                    page: album.pages[index + side],
-                                    resources: resources,
-                                    showBinding: side == 0,
-                                    onTapSlot: (s) {
-                                      if (s['card_id'] != null) {
-                                        showAlbumCardPreview(
-                                          context,
-                                          album.card(s['card_id'] as String),
-                                        );
-                                      }
-                                    },
-                                  ),
+                              : AlbumBinderWidget(
+                                  album: album,
+                                  page: album.pages[index + side],
+                                  resources: resources,
+                                  showBinding: side == 0,
+                                  onTapSlot: (s) {
+                                    if (s['card_id'] != null) {
+                                      showAlbumCardPreview(
+                                        context,
+                                        album.card(s['card_id'] as String),
+                                        nameMode: album.nameDisplayMode,
+                                      );
+                                    }
+                                  },
                                 ),
                         ),
                       ),

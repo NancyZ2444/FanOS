@@ -1,3 +1,5 @@
+import 'package:fan_os/core/data/name_preferences.dart';
+
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -475,7 +477,7 @@ void main() {
     },
   );
 
-  testWidgets('card mode and front/back preview keep reading position', (
+  testWidgets('fixed book type and front/back preview keep reading position', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(390, 844);
@@ -499,12 +501,9 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('卡片模式'));
-    await tester.pumpAndSettle();
+    expect(find.text('卡片模式'), findsNothing);
+    expect(find.text('相册模式'), findsNothing);
     expect(tester.takeException(), isNull);
-    await _capture(tester, key, 'card-carousel');
-    await tester.tap(find.text('相册模式'));
-    await tester.pumpAndSettle();
     expect(find.text('2 / 3'), findsOneWidget);
     await tester.tap(find.byType(AlbumCardImage).first);
     await tester.pumpAndSettle();
@@ -691,12 +690,20 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('相册设置'));
     await tester.pumpAndSettle();
+    final nameMode = find.byKey(const ValueKey('album-name-mode-remark'));
+    await tester.ensureVisible(nameMode);
+    await tester.tap(nameMode);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('官方名').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byType(TextField).first);
     await tester.enterText(find.byType(TextField).first, '新的相册名称');
     await tester.ensureVisible(find.text('返回编辑'));
     await tester.tap(find.text('返回编辑'));
     await tester.pumpAndSettle();
     await container.read(albumEditorProvider(book.id)).save();
     expect((await repo.get(book.id)).name, '新的相册名称');
+    expect((await repo.get(book.id)).nameDisplayMode, NameDisplayMode.official);
     expect(find.text('相册设置'), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -726,6 +733,9 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('相册操作').first);
     await tester.pumpAndSettle();
+    expect(find.text('查看相册'), findsNothing);
+    expect(find.text('修改可见性'), findsNothing);
+    expect(find.text('设为公开'), findsOneWidget);
     await tester.tap(find.text('重命名'));
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -739,6 +749,61 @@ void main() {
     await tester.pumpAndSettle();
     expect((await repo.get(book.id)).name, '重命名后的相册');
     expect(find.byType(AlertDialog), findsNothing);
+    await tester.tap(find.byTooltip('相册操作').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设为公开'));
+    await tester.pumpAndSettle();
+    expect((await repo.get(book.id)).isPublic, isTrue);
+    await tester.tap(find.byTooltip('相册操作').first);
+    await tester.pumpAndSettle();
+    expect(find.text('设为私密'), findsOneWidget);
+    expect(find.text('设为公开'), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'tapping a draft opens the viewer while editing stays in its menu',
+    (tester) async {
+      final repo = MockAlbumRepository();
+      final book = await repo.create('默认点击预览', 'SINGLE', 'REALISTIC');
+      final container = ProviderContainer(
+        overrides: [
+          authRepositoryProvider.overrideWithValue(_Auth()),
+          albumRepositoryProvider.overrideWithValue(repo),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(sessionProvider.notifier).login(LoginMethod.phone);
+      final router = GoRouter(
+        routes: [
+          GoRoute(path: '/', builder: (_, _) => const AlbumShelfPage()),
+          GoRoute(
+            path: '/digital-albums/:id',
+            builder: (_, state) =>
+                Scaffold(body: Text('预览 ${state.pathParameters['id']}')),
+          ),
+          GoRoute(
+            path: '/digital-albums/:id/edit',
+            builder: (_, _) => const Scaffold(body: Text('编辑入口')),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp.router(
+            theme: FanOsTheme.light,
+            routerConfig: router,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('默认点击预览'));
+      await tester.pumpAndSettle();
+      expect(find.text('预览 ${book.id}'), findsOneWidget);
+      expect(find.text('编辑入口'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

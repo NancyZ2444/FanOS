@@ -1,5 +1,6 @@
 export type Values = Record<string, any>;
-export type FeedbackKind = "MISSING_CARD" | "CORRECTION";
+export type FeedbackKind = "MISSING_CARD" | "MISSING_CATALOG" | "CORRECTION";
+export type ReviewDecision = "ACCEPTED" | "REJECTED" | "NEEDS_INFO";
 export type Field = {
   key: string;
   label: string;
@@ -9,6 +10,11 @@ export type Field = {
   mode: string;
   reason: string;
   reference?: string;
+  parent_id?: string | null;
+  section?: string;
+  max_length?: number;
+  entity_type?: string;
+  entity_id?: string;
   options?: string[];
 };
 export type Decision = {
@@ -24,6 +30,8 @@ export type FeedbackRecord = {
   name: string;
   status: string;
   result: string;
+  review_decision?: ReviewDecision | null;
+  can_publish?: boolean;
   status_label: string;
   user: { name: string; id: string };
   created_at: string;
@@ -59,14 +67,20 @@ export const sourceLabels: Record<string, string> = {
   EVENT: "活动",
   OTHER: "其他来源",
 };
-export function resultLabel(result: string, kind: FeedbackKind) {
+export function resultLabel(
+  result: string,
+  kind: FeedbackKind,
+  decision?: ReviewDecision | null,
+) {
+  void kind;
+  if (result === "PENDING" && decision === "ACCEPTED") return "已采纳，待发布";
   return result === "INCLUDED"
-    ? "已收录"
+    ? "已采纳并发布"
     : result === "NOT_INCLUDED"
-      ? kind === "MISSING_CARD"
-        ? "未收录"
-        : "未采纳"
-      : "待确认";
+      ? "未采纳"
+      : result === "NEEDS_INFO"
+        ? "信息缺失待补充"
+        : "待确认";
 }
 export const copyrightOptions = [
   { value: "UNKNOWN", label: "尚未核实" },

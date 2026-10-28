@@ -293,21 +293,11 @@ class ApiDailyCardRepository implements DailyCardRepository {
 }
 
 class ApiAuthRepository implements AuthRepository {
-  ApiAuthRepository(this._client);
-  final ApiClient _client;
+  ApiAuthRepository(ApiClient client);
 
   @override
   Future<void> login(LoginMethod method, {String? phone, String? code}) async {
-    final data = await _client.postData(
-      '/auth/login',
-      data: {'method': method.name, 'phone': phone, 'code': code},
-    ) as Map<String, dynamic>;
-    final accessToken = data['access_token'] as String?;
-    if (accessToken == null || accessToken.isEmpty) {
-      throw const ApiException('INVALID_AUTH_RESPONSE', '登录服务返回格式异常');
-    }
-    await _client.saveAuthTokens(data);
-    _client.isNewAccount = data['is_new_user'] == true;
+    throw const ApiException('CHALLENGE_REQUIRED', '请先获取本次登录验证码');
   }
 }
 

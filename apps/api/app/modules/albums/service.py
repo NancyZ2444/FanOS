@@ -3,18 +3,22 @@ from __future__ import annotations
 from collections import Counter
 from copy import deepcopy
 from datetime import UTC
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, attributes
 
 from app.album_models import (
+    AlbumColorExtraction,
     AlbumEntitlement,
     AlbumPage,
     AlbumPreferences,
     AlbumReaction,
     AlbumResource,
+    AlbumReviewRequest,
     AlbumSettings,
     AlbumSlot,
+    AlbumWork,
 )
 from app.common.response import DomainError
 from app.models import AlbumCard, Card, CardAlbum, User, new_id, utcnow
@@ -81,6 +85,19 @@ DEFAULT_RESOURCES = [
     },
 ]
 
+# Separate entries can share pixels, never scene permissions or lifecycle.
+DEFAULT_RESOURCES = [
+    {**r, "scene": scene, "id": r["id"] + suffix}
+    for r in DEFAULT_RESOURCES
+    for scene, suffix in (
+        [("SHELF", "")]
+        if r["kind"] == "SHELF"
+        else [("ALBUM_COVER", "")]
+        if r["kind"] == "STICKER"
+        else [("ALBUM_COVER", ""), ("ALBUM_PAGE", "-page"), ("CARD_BACKGROUND", "-cards")]
+    )
+]
+
 
 def resources(db: Session, *, include_offline=False) -> list[dict]:
     custom = {r.id: r for r in db.scalars(select(AlbumResource)).all()}
@@ -90,7 +107,15 @@ def resources(db: Session, *, include_offline=False) -> list[dict]:
         result.append(
             resource_payload(row)
             if row
-            else {**default, "status": "PUBLISHED", "sort_order": len(result)}
+            else {
+                **default,
+                "status": "PUBLISHED",
+                "sort_order": len(result),
+                "membership": "ALL",
+                "locked_preview": True,
+                "published_once": True,
+                "used_once": True,
+            }
         )
     result.extend(resource_payload(row) for row in custom.values())
     return sorted(
@@ -107,6 +132,11 @@ def resource_payload(row: AlbumResource) -> dict:
         "status": row.status,
         "sort_order": row.sort_order,
         "config": row.config,
+        "scene": row.scene,
+        "membership": row.membership,
+        "locked_preview": row.locked_preview,
+        "published_once": row.published_once,
+        "used_once": row.used_once,
         "updated_at": row.updated_at.isoformat(),
     }
 
@@ -142,18 +172,75 @@ def quota(db: Session, user: User) -> dict:
         "max_album_count": config["pro_albums" if pro else "normal_albums"],
         "max_page_per_album": config["pro_pages" if pro else "normal_pages"],
         "max_card_per_page": config["max_card_per_page"],
+        "max_cards_per_work": config["pro_cards" if pro else "normal_cards"],
         "normal_albums": config["normal_albums"],
         "pro_albums": config["pro_albums"],
         "normal_pages": config["normal_pages"],
         "pro_pages": config["pro_pages"],
+        "color_extraction": color_quota(db, user, "PRO" if pro else "NORMAL", config),
     }
 
 
+def color_quota(db: Session, user: User, plan: str, config: dict) -> dict:
+    now = utcnow().astimezone(ZoneInfo("Asia/Shanghai"))
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
+    month = day.astimezone(ZoneInfo("Asia/Shanghai")).replace(day=1).astimezone(UTC)
+    counts = [
+        db.scalar(
+            select(func.count())
+            .select_from(AlbumColorExtraction)
+            .where(
+                AlbumColorExtraction.user_id == user.id, AlbumColorExtraction.created_at >= boundary
+            )
+        )
+        or 0
+        for boundary in (day, month)
+    ]
+    prefix = "pro" if plan == "PRO" else "normal"
+    daily, monthly = config[f"{prefix}_color_daily"], config[f"{prefix}_color_monthly"]
+    return {
+        "daily_limit": daily,
+        "monthly_limit": monthly,
+        "daily_used": counts[0],
+        "monthly_used": counts[1],
+        "daily_remaining": max(0, daily - counts[0]),
+        "monthly_remaining": max(0, monthly - counts[1]),
+        "timezone": "Asia/Shanghai",
+    }
+
+
+def latest_review(db: Session, album_id: str):
+    return db.scalar(
+        select(AlbumReviewRequest)
+        .where(AlbumReviewRequest.album_id == album_id)
+        .order_by(AlbumReviewRequest.created_at.desc(), AlbumReviewRequest.id.desc())
+        .limit(1)
+    )
+
+
+def moderation_state(album: CardAlbum):
+    return (
+        album.moderation_status
+        if album.is_moderated and album.moderation_status != "NORMAL"
+        else "RESTRICTED"
+        if album.is_moderated
+        else "NORMAL"
+    )
+
+
 def preferences(db: Session, user: User) -> dict:
+    from .materials import catalog, snapshot
+
     row = db.get(AlbumPreferences, user.id)
+    resource = catalog(db).get(row.shelf_theme if row else "cream-white")
     return {
         "shelf_theme": row.shelf_theme if row else "cream-white",
         "view_mode": row.view_mode if row else "SHELF",
+        "shelf_snapshot": row.shelf_snapshot
+        if row and row.shelf_snapshot
+        else snapshot(resource)
+        if resource
+        else None,
     }
 
 
@@ -167,12 +254,21 @@ def get_album(db: Session, album_id: str, viewer: User | None, *, edit=False) ->
         raise DomainError("ALBUM_UNAVAILABLE", "作者账号暂不可访问", 403)
     if edit and not is_owner:
         raise DomainError("ALBUM_FORBIDDEN", "只有创建者可以编辑相册", 403)
-    if not is_owner and (not row.is_public or row.status != "PUBLISHED" or row.is_moderated):
+    work = db.get(AlbumWork, album_id)
+    if edit and work and work.mode == "REVIEW":
+        raise DomainError("ALBUM_MIGRATION_REVIEW", "旧作品类型待确认，原设计已归档保留", 409)
+    if not is_owner and (
+        not row.is_public
+        or row.status != "PUBLISHED"
+        or row.is_moderated
+        or row.publication_blocked
+    ):
         raise DomainError("ALBUM_UNAVAILABLE", "相册为私密、未发布或暂不可访问", 403)
     return row
 
 
 def document(db: Session, album: CardAlbum) -> dict:
+    work = db.get(AlbumWork, album.id)
     pages = []
     rows = db.scalars(
         select(AlbumPage).where(AlbumPage.album_id == album.id).order_by(AlbumPage.page_order)
@@ -212,19 +308,26 @@ def document(db: Session, album: CardAlbum) -> dict:
                     "slots": [{"id": row.id, "card_id": row.card_id} for row in chunk],
                 }
             )
+    mode = work.mode if work else (album.card_view_config or {}).get("default_mode", "BOOK")
     return {
         "album_id": album.id,
+        "work_mode": mode,
+        "card_instances": deepcopy(work.instances) if work and mode == "CARDS" else [],
         "name": album.name,
         "description": album.description,
         "display_type": album.display_type,
         "visual_style": album.visual_style,
-        "cover": deepcopy(album.cover_config) or CanvasConfig().model_dump(),
+        "cover": {}
+        if work and mode == "CARDS"
+        else deepcopy(album.cover_config) or CanvasConfig().model_dump(),
         "card_view": deepcopy(album.card_view_config),
-        "pages": pages,
+        "pages": [] if work and mode == "CARDS" else pages,
     }
 
 
 def occupied(doc: dict) -> list[dict]:
+    if doc.get("work_mode") == "CARDS":
+        return doc.get("card_instances", [])
     return [s for p in doc["pages"] for s in p["slots"] if s.get("card_id")]
 
 
@@ -237,7 +340,10 @@ def sync_card_view(doc: dict) -> None:
     else:
         view["card_order"] = slot_ids
     if view.get("featured_slot_id") not in slot_ids:
-        view["featured_slot_id"] = None
+        view["featured_slot_id"] = (
+            view["card_order"][0] if slot_ids and doc.get("work_mode") == "CARDS" else None
+        )
+    view["default_mode"] = doc.get("work_mode", view.get("default_mode", "BOOK"))
     view.setdefault(
         "background", {"type": "GRADIENT", "colors": ["#F4F1FF", "#E5DEFA"], "angle": 90}
     )
@@ -254,7 +360,13 @@ def card_available(card: Card | None) -> bool:
 
 
 def payload(
-    db: Session, album: CardAlbum, viewer: User | None, *, summary=False, published=False
+    db: Session,
+    album: CardAlbum,
+    viewer: User | None,
+    *,
+    summary=False,
+    published=False,
+    document_override=None,
 ) -> dict:
     from app.common.serializers import card_payload
 
@@ -264,6 +376,11 @@ def payload(
         if (published or not owner) and album.published_snapshot
         else document(db, album)
     )
+    from .materials import catalog, hydrate_document
+
+    if document_override is not None:
+        doc = deepcopy(document_override)
+    hydrate_document(doc, catalog(db))
     sync_card_view(doc)
     # Featured front, then ordered fronts. Preserve slot identity and availability.
     slots_by_id = {s["id"]: s for s in occupied(doc)}
@@ -318,8 +435,26 @@ def payload(
         if viewer
         else set()
     )
+    review = latest_review(db, album.id)
+    review_status = review.status if review and owner else "NONE"
+    if review_status == "RESTORED" and album.published_at:
+        published_time = (
+            album.published_at.replace(tzinfo=UTC)
+            if album.published_at.tzinfo is None
+            else album.published_at
+        )
+        reviewed_time = (
+            review.updated_at.replace(tzinfo=UTC)
+            if review.updated_at.tzinfo is None
+            else review.updated_at
+        )
+        if published_time >= reviewed_time:
+            review_status = "NONE"
+    if owner and album.publication_blocked and not album.is_moderated:
+        review_status = "RESTORED"
     result = {
         "id": album.id,
+        "work_mode": doc.get("work_mode", "BOOK"),
         "user_id": album.user_id,
         "author_name": author.display_name if author else "用户",
         "author_avatar_url": author.avatar_url if author else None,
@@ -332,6 +467,12 @@ def payload(
         "status": album.status,
         "revision": album.revision if owner else None,
         "is_moderated": album.is_moderated,
+        "publication_blocked": album.publication_blocked,
+        "moderation_status": moderation_state(album),
+        "moderation_reason": album.moderation_reason if owner else "",
+        "moderation_note": album.moderation_note if owner else "",
+        "review_status": review_status,
+        "published_at": album.published_at.isoformat() if album.published_at else None,
         "page_count": len(doc["pages"]),
         "card_count": len(occupied(doc)),
         "cover": doc["cover"],
@@ -354,12 +495,34 @@ def payload(
         "favorited": "FAVORITE" in mine,
     }
     if not summary:
-        result.update(pages=doc["pages"], card_view=doc["card_view"])
+        result.update(
+            pages=doc["pages"],
+            card_view=doc["card_view"],
+            card_instances=doc.get("card_instances", []),
+        )
     return result
 
 
 def create(db: Session, user: User, data: AlbumCreate) -> CardAlbum:
+    import hashlib
+    import json
+
     lock_quota(db, user)
+    fingerprint = hashlib.sha256(
+        json.dumps(data.model_dump(exclude={"request_id"}), sort_keys=True).encode()
+    ).hexdigest()
+    if data.request_id:
+        existing = db.scalar(
+            select(AlbumWork).where(
+                AlbumWork.user_id == user.id, AlbumWork.request_id == data.request_id
+            )
+        )
+        if existing:
+            if existing.request_fingerprint != fingerprint:
+                raise DomainError(
+                    "ALBUM_CREATE_CONFLICT", "此创建请求已用于另一份作品，请重新创建", 409
+                )
+            return db.get(CardAlbum, existing.album_id)
     capacity = quota(db, user)
     if capacity["album_count"] >= capacity["max_album_count"]:
         raise DomainError(
@@ -371,14 +534,25 @@ def create(db: Session, user: User, data: AlbumCreate) -> CardAlbum:
         user_id=user.id,
         name=data.name.strip(),
         description=data.description,
-        display_type=data.display_type,
-        visual_style=data.visual_style,
+        display_type=data.display_type or "SINGLE",
+        visual_style=data.visual_style or "REALISTIC",
         is_public=False,
         status="DRAFT",
-        cover_config=CanvasConfig().model_dump(),
-        card_view_config={},
+        cover_config=CanvasConfig().model_dump() if data.work_mode == "BOOK" else {},
+        card_view_config={"default_mode": data.work_mode},
     )
     db.add(album)
+    db.flush()
+    db.add(
+        AlbumWork(
+            album_id=album.id,
+            user_id=user.id,
+            mode=data.work_mode,
+            instances=[],
+            request_id=data.request_id,
+            request_fingerprint=fingerprint,
+        )
+    )
     db.flush()
     return album
 
@@ -401,6 +575,9 @@ def claim(db: Session, album: CardAlbum, revision: int) -> None:
 
 
 def validate_document(db: Session, user: User, previous: dict, doc: dict, data: AlbumPatch) -> None:
+    from .work_types import validate_work
+
+    validate_work(db, user, previous, doc, data)
     config = quota(db, user)
     if not doc["name"].strip():
         raise DomainError("INVALID_ALBUM_NAME", "请填写相册名称", 422)
@@ -413,11 +590,22 @@ def validate_document(db: Session, user: User, previous: dict, doc: dict, data: 
             409,
         )
     page_ids = [p["id"] for p in doc["pages"]]
-    slots = [s for p in doc["pages"] for s in p["slots"]]
+    slots = (
+        doc.get("card_instances", [])
+        if doc.get("work_mode") == "CARDS"
+        else [s for p in doc["pages"] for s in p["slots"]]
+    )
     if len(set(page_ids)) != len(page_ids) or len({s["id"] for s in slots}) != len(slots):
         raise DomainError("ALBUM_INVALID_IDS", "页面和卡位 ID 必须唯一", 422)
     old_pages = {p["id"]: p for p in previous["pages"]}
-    old_slots = {s["id"]: s for p in previous["pages"] for s in p["slots"]}
+    old_slots = {
+        s["id"]: s
+        for s in (
+            previous.get("card_instances", [])
+            if previous.get("work_mode") == "CARDS"
+            else [s for p in previous["pages"] for s in p["slots"]]
+        )
+    }
     for page in doc["pages"]:
         existing = db.get(AlbumPage, page["id"])
         if existing and existing.album_id != previous["album_id"]:
@@ -440,20 +628,9 @@ def validate_document(db: Session, user: User, previous: dict, doc: dict, data: 
     for card_id in cover_cards:
         if card_id not in old_cover and not card_available(db.get(Card, card_id)):
             raise DomainError("ALBUM_CARD_UNAVAILABLE", "封面小卡暂不可用", 422)
-    available_stickers = {r["id"] for r in resources(db) if r["kind"] == "STICKER"}
-    old_stickers = {
-        e["content"]
-        for canvas in [previous["cover"], *[p["config"] for p in previous["pages"]]]
-        for e in canvas.get("elements", [])
-        if e["type"] == "STICKER"
-    }
-    for canvas in [doc["cover"], *[p["config"] for p in doc["pages"]]]:
-        for element in canvas.get("elements", []):
-            if (
-                element["type"] == "STICKER"
-                and element["content"] not in available_stickers | old_stickers
-            ):
-                raise DomainError("ALBUM_STICKER_UNAVAILABLE", "该官方贴纸暂不可用", 422)
+    from .materials import validate_materials
+
+    validate_materials(db, user, previous, doc)
     # Removing a populated slot or an entire page must be explicitly confirmed.
     if not data.confirm_removal:
         if set(old_pages) - set(page_ids) or any(
@@ -509,10 +686,10 @@ def persist_pages(db: Session, album: CardAlbum, pages: list[dict]) -> None:
 
 
 def patch(db: Session, album: CardAlbum, user: User, data: AlbumPatch) -> CardAlbum:
+    lock_quota(db, user)
+    db.refresh(album)
     if album.revision != data.revision:
         raise DomainError("ALBUM_REVISION_CONFLICT", "相册已更新，请重新加载；本地草稿会保留", 409)
-    if data.pages is not None:
-        lock_quota(db, user)
     previous = document(db, album)
     doc = deepcopy(previous)
     for key in (
@@ -523,6 +700,7 @@ def patch(db: Session, album: CardAlbum, user: User, data: AlbumPatch) -> CardAl
         "cover",
         "card_view",
         "pages",
+        "card_instances",
     ):
         value = getattr(data, key)
         if value is not None:
@@ -530,11 +708,11 @@ def patch(db: Session, album: CardAlbum, user: User, data: AlbumPatch) -> CardAl
                 value.model_dump()
                 if hasattr(value, "model_dump")
                 else [p.model_dump() for p in value]
-                if key == "pages"
+                if key in {"pages", "card_instances"}
                 else value
             )
     validate_document(db, user, previous, doc, data)
-    if data.visibility == "PUBLIC" and album.status == "PUBLISHED":
+    if data.visibility == "PUBLIC" and not album.is_public and album.status == "PUBLISHED":
         validate_publication(db, album, album.published_snapshot or previous)
     # Reject invalid references before synchronizing removed placements.
     view = doc["card_view"]
@@ -558,6 +736,8 @@ def patch(db: Session, album: CardAlbum, user: User, data: AlbumPatch) -> CardAl
     for key in ("name", "description", "display_type", "visual_style"):
         setattr(album, key, doc[key].strip() if key == "name" else doc[key])
     album.cover_config, album.card_view_config = doc["cover"], doc["card_view"]
+    if data.card_instances is not None:
+        db.get(AlbumWork, album.id).instances = doc["card_instances"]
     if data.visibility is not None:
         album.is_public = data.visibility == "PUBLIC"
     if data.pages is not None:
@@ -586,6 +766,10 @@ def validate_publication(db: Session, album: CardAlbum, doc: dict) -> None:
 
 
 def publish(db: Session, album: CardAlbum, revision: int) -> None:
+    lock_quota(db, db.get(User, album.user_id))
+    db.refresh(album)
+    if album.is_moderated:
+        raise DomainError("ALBUM_MODERATED", "作品仍受公开限制，请先申请运营复核", 403)
     doc = document(db, album)
     if album.is_public:
         validate_publication(db, album, doc)
@@ -593,13 +777,17 @@ def publish(db: Session, album: CardAlbum, revision: int) -> None:
     claim(db, album, revision)
     album.published_snapshot = doc
     album.status = "PUBLISHED"
-    album.published_at = album.published_at or utcnow()
+    album.published_at = utcnow()
+    album.publication_blocked = False
     db.flush()
 
 
 def duplicate_document(doc: dict) -> dict:
     copy = deepcopy(doc)
     mapping = {}
+    for instance in copy.get("card_instances", []):
+        mapping[instance["id"]] = new_id("instance")
+        instance["id"] = mapping[instance["id"]]
     for page in copy["pages"]:
         page["id"] = new_id("page")
         for slot in page["slots"]:

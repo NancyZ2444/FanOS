@@ -52,7 +52,7 @@ def validate_rows(db, rows):
 def create_company(db, actor, row):
     draft = CompanyDraft.model_validate(row["data"])
     fail_fields([{**e, "row": row["row"]} for e in duplicate_errors(db, draft.name)])
-    company = CatalogRecord(kind="companies", data=draft.model_dump())
+    company = CatalogRecord(kind="companies", data={**draft.model_dump(), "enabled": True})
     db.add(company)
     db.flush()
     audit(db, actor, "catalog.companies.save", "companies", company.id, None, row_data(company))

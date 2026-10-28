@@ -277,6 +277,10 @@ class CardAlbum(Base, TimestampMixin):
     published_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_moderated: Mapped[bool] = mapped_column(Boolean, default=False)
+    publication_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    moderation_status: Mapped[str] = mapped_column(String(16), default="NORMAL")
+    moderation_reason: Mapped[str] = mapped_column(String(200), default="")
+    moderation_note: Mapped[str] = mapped_column(String(1000), default="")
 
 
 class AlbumCard(Base, TimestampMixin):
@@ -406,7 +410,7 @@ class DetectedCard(Base, TimestampMixin):
         ForeignKey("scan_sessions.id", ondelete="CASCADE"), index=True
     )
     crop_image_url: Mapped[str | None] = mapped_column(String(500))
-    crop_region: Mapped[dict[str, float]] = mapped_column(JSON)
+    crop_region: Mapped[dict[str, Any]] = mapped_column(JSON)
     recognition_status: Mapped[str] = mapped_column(String(30))
     user_confirmed_card_id: Mapped[str | None] = mapped_column(ForeignKey("cards.id"))
     owned_added_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

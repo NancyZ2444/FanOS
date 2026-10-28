@@ -1,0 +1,28 @@
+.card-duplicate-warning {
+  margin-bottom: var(--space-6);
+}
+.card-duplicate-warning p {
+  margin: var(--space-2) 0;
+}
+.card-duplicate-candidates {
+  display: flex;
+  gap: var(--space-4);
+  max-width: 100%;
+  overflow-x: auto;
+  padding-block: var(--space-2);
+}
+.card-duplicate-candidate {
+  display: flex;
+  flex: 0 0 112px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.card-duplicate-candidate > span:not(.ant-tag),
+.card-duplicate-candidate > strong {
+  max-width: 112px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

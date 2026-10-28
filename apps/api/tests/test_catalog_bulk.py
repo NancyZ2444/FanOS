@@ -8,8 +8,7 @@ from sqlalchemy import select
 
 from app.admin_models import AdminImportTask, ContentMetadata
 from app.core.database import SessionLocal
-from app.core.security import create_token
-from app.models import Group, User
+from app.models import Group
 from app.modules.admin.catalog_service import MODELS
 
 ROOT = "/api/v1/admin/console"
@@ -184,22 +183,16 @@ def test_confirmation_revalidates_and_rolls_back_if_database_changed(client, adm
         assert db.get(AdminImportTask, task["id"]).status == "VALIDATED"
 
 
-def test_import_and_batch_permissions_and_limits(client, admin_headers, auth_headers):
-    with SessionLocal() as db:
-        db.add_all(
-            [
-                User(id="bulk-content", display_name="Content", role="content_operator"),
-                User(id="bulk-ops", display_name="Ops", role="operation_admin"),
-            ]
-        )
-        db.commit()
-    content = {"Authorization": "Bearer " + create_token("bulk-content", "access")}
-    ops = {"Authorization": "Bearer " + create_token("bulk-ops", "access")}
+def test_import_and_batch_permissions_and_limits(
+    client, admin_headers, auth_headers, admin_actor_headers
+):
+    content = admin_actor_headers("content_operator", "bulk-content")
+    ops = admin_actor_headers("operation_admin", "bulk-ops")
     ids = [create(client, content, "groups", "Allowed group")]
     assert batch(client, content, "groups", ids, "submit").status_code == 200
     assert batch(client, content, "groups", ids, "publish").status_code == 403
     assert batch(client, ops, "groups", ids, "archive").status_code == 403
-    assert batch(client, auth_headers, "groups", ids, "archive").status_code == 403
+    assert batch(client, auth_headers, "groups", ids, "archive").status_code == 401
     assert batch(client, admin_headers, "groups", [], "archive").status_code == 422
     assert batch(client, admin_headers, "groups", ["x"] * 101, "archive").status_code == 422
     for endpoint in ["/imports", "/imports/template?kind=groups"]:

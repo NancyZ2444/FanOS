@@ -35,10 +35,12 @@ def test_collection_wishlist_and_album_operations(client, auth_headers):
     removed_like = client.delete("/api/v1/me/wishlist/card-lin-01", headers=auth_headers)
     assert removed_like.json()["data"]["wished"] is False
 
+    legacy = client.post("/api/v1/me/card-albums", headers=auth_headers, json={"name": "旧入口"})
+    assert legacy.status_code == 409
     album = client.post(
-        "/api/v1/me/card-albums",
+        "/api/v1/albums",
         headers=auth_headers,
-        json={"name": "测试卡册"},
+        json={"name": "测试卡册", "work_mode": "BOOK"},
     ).json()["data"]
     updated = client.put(
         f"/api/v1/me/card-albums/{album['id']}/cards",

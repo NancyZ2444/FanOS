@@ -1,6 +1,7 @@
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
+import 'package:fan_os/features/feedback/catalog_contributors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -61,6 +62,8 @@ class CatalogEntityDetailPage extends ConsumerWidget {
         )
         .toList();
     return _EntityScaffold(
+      entityKind: 'albums',
+      entityId: album.id,
       title: album.displayName,
       onFeedback: () =>
           context.push('/catalog-correction?type=albums&id=${album.id}'),
@@ -101,6 +104,8 @@ class CatalogEntityDetailPage extends ConsumerWidget {
         )
         .toList();
     return _EntityScaffold(
+      entityKind: 'events',
+      entityId: event.id,
       title: event.displayName,
       onFeedback: () =>
           context.push('/catalog-correction?type=events&id=${event.id}'),
@@ -136,6 +141,8 @@ class CatalogEntityDetailPage extends ConsumerWidget {
     if (item == null) return _missing('没有找到该其他来源');
     final artistName = data.artistLabel(item.artists, item.artistName);
     return _EntityScaffold(
+      entityKind: 'others',
+      entityId: item.id,
       title: item.name,
       onFeedback: () =>
           context.push('/catalog-correction?type=others&id=${item.id}'),
@@ -183,6 +190,8 @@ class CatalogEntityDetailPage extends ConsumerWidget {
 
 class _EntityScaffold extends StatelessWidget {
   const _EntityScaffold({
+    required this.entityKind,
+    required this.entityId,
     required this.title,
     required this.typeLabel,
     required this.artistName,
@@ -199,6 +208,8 @@ class _EntityScaffold extends StatelessWidget {
     this.frontImageUrl,
   });
   final String title;
+  final String entityKind;
+  final String entityId;
   final String secondaryTitle;
   final String typeLabel;
   final String artistName;
@@ -247,6 +258,7 @@ class _EntityScaffold extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 20),
+              CatalogContributors(kind: entityKind, entityId: entityId),
               if (typeLabel.isNotEmpty) ...[
                 StatusBadge(label: typeLabel),
                 const SizedBox(height: 9),
@@ -288,10 +300,17 @@ class _EntityScaffold extends StatelessWidget {
               if (visibleChips.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 Wrap(
-                  spacing: 7,
-                  runSpacing: 7,
+                  spacing: 8,
+                  runSpacing: 8,
                   children: visibleChips
-                      .map((chip) => Chip(label: Text(chip)))
+                      .map(
+                        (chip) => Chip(
+                          label: Text(chip),
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      )
                       .toList(),
                 ),
               ],

@@ -9,7 +9,6 @@ import {
   BookOutlined,
   CheckCircleOutlined,
   FileImageOutlined,
-  LinkOutlined,
   TeamOutlined,
 } from "@ant-design/icons";
 import { consoleApi } from "../api/client";
@@ -36,7 +35,7 @@ export default function Dashboard() {
     {
       name: "待审核小卡",
       key: "pending",
-      desc: "检查内容与图片版权，完成发布",
+      desc: "检查内容与图片，完成发布",
       to: "/catalog/cards?status=PENDING",
       icon: <AuditOutlined aria-hidden="true" />,
     },
@@ -46,13 +45,6 @@ export default function Dashboard() {
       desc: "补齐正面图片，完善图鉴素材",
       to: "/catalog/cards?missing=true",
       icon: <FileImageOutlined aria-hidden="true" />,
-    },
-    {
-      name: "来源异常",
-      key: "source_issues",
-      desc: "确认来源链接和版权状态",
-      to: "/reviews/sources",
-      icon: <LinkOutlined aria-hidden="true" />,
     },
   ];
   return (
@@ -148,7 +140,7 @@ export default function Dashboard() {
                         : key === "import_errors"
                           ? "/catalog/import"
                           : ["scan_unknown", "contributions"].includes(key)
-                            ? "/catalog/review"
+                            ? "/catalog/additions"
                             : `/catalog/cards?status=${key}`,
                   )
                 }
@@ -269,7 +261,7 @@ export default function Dashboard() {
             {[
               ["1", "建立组合与艺人", "维护组合资料和成员归属"],
               ["2", "录入专辑与来源", "关联专辑、活动或 Other 来源"],
-              ["3", "完善小卡档案", "上传正反面，确认来源与版权"],
+              ["3", "完善小卡档案", "上传正反面，完善关联信息"],
               ["4", "预览、审核与发布", "让收藏内容进入 App 图鉴"],
             ].map(([n, t, d]) => (
               <div key={n}>

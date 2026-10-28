@@ -7,6 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import Response
 from PIL import Image, ImageOps, UnidentifiedImageError
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -32,12 +33,21 @@ router = APIRouter(prefix="/admin/console", tags=["Admin Console"])
 
 @router.get("/me")
 def me(actor: User = Depends(current_admin)) -> dict:
-    return success({"id": actor.id, "name": actor.display_name, "role": actor.role})
+    from .permissions import effective
+
+    return success(
+        {
+            "id": actor.id,
+            "name": actor.display_name,
+            "role": actor.role,
+            "permissions": effective(actor),
+        }
+    )
 
 
 @router.get("/catalog")
 def catalog(actor: User = Depends(current_admin), db: Session = Depends(get_db)) -> dict:
-    # All staff can read catalog choices for notification links / card pools.
+    service.permit(actor, "catalog")
     result = service.all_entities(db)
     result["cards"] = [
         service.admin_card(db, c)
@@ -57,7 +67,9 @@ def create_card(
 
 @router.post("/cards/crop-preview")
 async def card_crop_preview(
-    file: UploadFile = File(...), actor: User = Depends(current_admin)
+    file: UploadFile = File(...),
+    mode: Literal["artwork", "recognition"] = Form("artwork"),
+    actor: User = Depends(current_admin),
 ) -> dict:
     from starlette.concurrency import run_in_threadpool
 
@@ -67,7 +79,7 @@ async def card_crop_preview(
     raw = await file.read(10 * 1024 * 1024 + 1)
     if len(raw) > 10 * 1024 * 1024:
         raise DomainError("FILE_TOO_LARGE", "图片不能超过 10 MB", 413)
-    return success(await run_in_threadpool(crop_preview, raw))
+    return success(await run_in_threadpool(crop_preview, raw, mode))
 
 
 @router.post("/cards/recognize")
@@ -88,6 +100,27 @@ async def recognize_card(
     if len(raw) > 10 * 1024 * 1024:
         raise DomainError("FILE_TOO_LARGE", "图片不能超过 10 MB", 413)
     return success(await run_in_threadpool(recognize, db, actor, raw, crop))
+
+
+class SimilarCardRequest(BaseModel):
+    image_url: str = Field(min_length=1, max_length=2000)
+    exclude_card_id: str | None = Field(default=None, max_length=64)
+
+
+@router.post("/cards/similar")
+async def similar_cards(
+    body: SimilarCardRequest,
+    actor: User = Depends(current_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    from starlette.concurrency import run_in_threadpool
+
+    from .card_recognition import similar_uploaded
+
+    service.permit(actor, "catalog")
+    return success(
+        await run_in_threadpool(similar_uploaded, db, body.image_url, body.exclude_card_id)
+    )
 
 
 @router.put("/cards/{card_id}")
@@ -150,7 +183,7 @@ def card_action(
 def source_history(
     card_id: str, actor: User = Depends(current_admin), db: Session = Depends(get_db)
 ) -> dict:
-    service.permit(actor, "sources")
+    service.permit(actor, "catalog")
     return success(
         {
             "items": [
@@ -291,7 +324,7 @@ def imports(
     actor: User = Depends(current_admin),
     db: Session = Depends(get_db),
 ) -> dict:
-    service.permit(actor, "catalog")
+    service.permit(actor, "catalog", "edit")
     return success(
         {
             "items": [
@@ -312,7 +345,7 @@ def import_template(
     format: Literal["csv", "xlsx"] = "csv",
     actor: User = Depends(current_admin),
 ) -> Response:
-    service.permit(actor, "catalog")
+    service.permit(actor, "catalog", "edit")
     fields = import_service.columns(kind)
     if format == "xlsx":
         from openpyxl import Workbook
@@ -463,6 +496,11 @@ def confirm_import(
             created_id, version_ids, mode = import_service.import_album(db, actor, draft)
             row = {**row, "created_version_ids": version_ids, "import_mode": mode}
         else:
+            if task.kind in {"groups", "idols"} and draft.company and draft.company_ids is None:
+                from .catalog_companies import get_or_create_company
+
+                company, _ = get_or_create_company(db, actor, draft.company)
+                draft.company_ids = [company.id]
             created_id = service.save_entity(db, actor, task.kind, draft)["id"]
         imported_rows.append({**row, "created_id": created_id})
     task.rows = imported_rows
@@ -488,8 +526,7 @@ def confirm_import(
 
 @router.get("/logs")
 def logs(actor: User = Depends(current_admin), db: Session = Depends(get_db)) -> dict:
-    if actor.role != "admin":
-        raise DomainError("PERMISSION_DENIED", "仅管理员可查看操作日志", 403)
+    service.permit(actor, "logs")
     return success(
         {
             "items": [

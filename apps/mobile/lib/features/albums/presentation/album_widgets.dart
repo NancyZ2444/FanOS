@@ -1,9 +1,12 @@
+import 'package:fan_os/core/data/name_preferences.dart';
+
 import 'dart:math' as math;
 
 import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/features/albums/data/album_models.dart';
+import 'package:fan_os/features/albums/data/album_resources.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -59,7 +62,9 @@ class AlbumMaterial extends StatelessWidget {
 }
 
 BoxDecoration albumDecoration(AlbumJson? background, {double radius = 16}) {
-  final bg = background ?? albumBackground();
+  final bg = background == null
+      ? albumBackground()
+      : albumResourceConfig(background);
   final colors = ((bg['colors'] as List?) ?? ['#EDE8FF', '#F9EDF2'])
       .cast<String>()
       .map(albumColor)
@@ -68,7 +73,14 @@ BoxDecoration albumDecoration(AlbumJson? background, {double radius = 16}) {
   return BoxDecoration(
     borderRadius: BorderRadius.circular(radius),
     color: colors.first,
-    gradient: bg['type'] == 'SOLID'
+    image: bg['image_url'] is String && (bg['image_url'] as String).isNotEmpty
+        ? DecorationImage(
+            image: NetworkImage(bg['image_url'] as String),
+            fit: BoxFit.cover,
+            onError: (_, _) {},
+          )
+        : null,
+    gradient: bg['type'] == 'SOLID' || bg['type'] == 'IMAGE'
         ? null
         : LinearGradient(
             begin: Alignment(-math.cos(angle), -math.sin(angle)),
@@ -107,11 +119,15 @@ class _AlbumCardImageState extends State<AlbumCardImage> {
         : (widget.thumbnail
               ? card.thumbnailUrl ?? card.imageUrl
               : card.imageUrl);
-    if (url == null || url.isEmpty) {
+    if (url == null || url.isEmpty || url.startsWith('sample://')) {
       return FanArtwork(
         startColor: Color(card.colorStart),
         endColor: Color(card.colorEnd),
-        label: card.idolName.isEmpty ? 'F' : card.idolName.characters.first,
+        label: widget.back && url?.startsWith('sample://') == true
+            ? '背'
+            : card.idolName.isEmpty
+            ? 'F'
+            : card.idolName.characters.last,
         aspectRatio: 55 / 85,
         showMark: true,
       );
@@ -140,6 +156,7 @@ class AlbumCanvasWidget extends StatelessWidget {
     this.resources = const [],
     this.child,
     this.showName = false,
+    this.showMaterial = true,
     this.radius = 14,
   });
   final AlbumJson config;
@@ -150,6 +167,7 @@ class AlbumCanvasWidget extends StatelessWidget {
   final List<AlbumJson> resources;
   final Widget? child;
   final bool showName;
+  final bool showMaterial;
   final double radius;
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -170,7 +188,8 @@ class AlbumCanvasWidget extends StatelessWidget {
             clipBehavior: Clip.hardEdge,
             fit: StackFit.expand,
             children: [
-              Positioned.fill(child: AlbumMaterial(linen: showName)),
+              if (showMaterial)
+                Positioned.fill(child: AlbumMaterial(linen: showName)),
               if (showName) ...[
                 Positioned(
                   left: 9,
@@ -204,23 +223,29 @@ class AlbumCanvasWidget extends StatelessWidget {
                   ),
               ],
               if (showName && elements.isEmpty && child == null)
-                const Center(
+                Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
                         Icons.photo_outlined,
-                        size: 28,
+                        size: math.min(
+                          28,
+                          constraints.biggest.shortestSide * .5,
+                        ),
                         color: FanColors.textSecondary,
                       ),
-                      SizedBox(height: 8),
-                      Text(
-                        '暂无封面',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: FanColors.textSecondary,
+                      if (constraints.maxHeight >= 100 &&
+                          constraints.maxWidth >= 90) ...[
+                        const SizedBox(height: 8),
+                        const Text(
+                          '暂无封面',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: FanColors.textSecondary,
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                 ),
@@ -281,23 +306,35 @@ class _AlbumElementWidgetState extends State<AlbumElementWidget> {
     final e = widget.element;
     final style = (e['style'] as AlbumJson?) ?? {};
     String content = e['content'] as String;
+    AlbumJson? sticker;
     if (e['type'] == 'STICKER') {
-      final matches = widget.resources.where((r) => r['id'] == content);
-      content = matches.isEmpty
-          ? {
-                  'star': '✦',
-                  'heart': '♡',
-                  'bow': '🎀',
-                  'flower': '✿',
-                  'stay': 'STAY',
-                }[content] ??
-                '✦'
-          : (matches.first['config'] as AlbumJson)['symbol'] as String? ?? '✦';
+      sticker = albumResourceConfig(e, resources: widget.resources);
+      content =
+          sticker['symbol'] as String? ??
+          const {
+            'star': '✦',
+            'heart': '♡',
+            'bow': '🎀',
+            'flower': '✿',
+            'stay': 'STAY',
+          }[content] ??
+          '';
     }
     final body = e['type'] == 'STROKE'
         ? CustomPaint(painter: AlbumStrokePainter(e))
         : e['type'] == 'CARD'
         ? AlbumCardImage(widget.album.card(content))
+        : e['type'] == 'STICKER' && sticker?['image_url'] is String
+        ? FanImage(
+            imageUrl: sticker!['image_url'] as String,
+            fit: BoxFit.contain,
+            fallback: const Icon(Icons.image_not_supported_outlined),
+          )
+        : e['type'] == 'STICKER' && content.isEmpty
+        ? const Tooltip(
+            message: '原贴纸素材暂不可用',
+            child: Icon(Icons.image_not_supported_outlined),
+          )
         : FittedBox(
             fit: e['type'] == 'TEXT' ? BoxFit.contain : BoxFit.scaleDown,
             alignment: Alignment.center,
@@ -656,40 +693,43 @@ class AlbumBinderWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final slots = (page['slots'] as List).cast<AlbumJson>();
+    // The work mode determines presentation. Keep legacy visual_style data
+    // unchanged; BOOK always uses pocket pages, CARDS remains a free-card scene.
+    final physical = !album.opensAsCards;
     return Container(
-      padding: EdgeInsets.all(album.realistic ? 10 : 5),
-      decoration: BoxDecoration(
-        color: album.realistic
-            ? const Color(0xFFE4E0EC)
-            : Colors.white.withValues(alpha: .2),
-        border: Border.all(color: Colors.white, width: album.realistic ? 3 : 1),
-        borderRadius: BorderRadius.circular(15),
-        boxShadow: album.realistic
-            ? [
-                const BoxShadow(
-                  color: Color(0x408D83AA),
-                  blurRadius: 12,
-                  offset: Offset(0, 4),
+      key: physical ? const Key('album-pocket-page') : null,
+      padding: EdgeInsets.all(physical ? 8 : 0),
+      decoration: physical
+          ? BoxDecoration(
+              color: const Color(0xFFF0EEEA),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFDAD8D3)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x14766D62),
+                  blurRadius: 8,
+                  offset: Offset(2, 3),
                 ),
-              ]
-            : [],
-      ),
+              ],
+            )
+          : null,
       child: Row(
         children: [
-          if (showBinding && album.realistic)
+          if (physical && showBinding)
             SizedBox(
-              width: 24,
+              key: const Key('album-page-binding'),
+              width: 20,
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: List.generate(
                   3,
                   (_) => Container(
-                    height: 9,
-                    width: 23,
+                    height: 7,
+                    width: 16,
                     decoration: BoxDecoration(
-                      color: const Color(0xFFBBB6C8),
-                      border: Border.all(color: Colors.white, width: 2),
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(4),
+                      color: const Color(0xFFBEBAB3),
+                      border: Border.all(color: const Color(0xFFF9F8F5)),
                     ),
                   ),
                 ),
@@ -699,6 +739,7 @@ class AlbumBinderWidget extends StatelessWidget {
             child: AlbumCanvasWidget(
               config: page['config'] as AlbumJson,
               album: album,
+              showMaterial: physical,
               resources: resources,
               selectedId: selectedElement,
               onSelect: onSelectElement,
@@ -706,13 +747,14 @@ class AlbumBinderWidget extends StatelessWidget {
               child: LayoutBuilder(
                 builder: (context, c) {
                   final count = slots.length;
+                  if (count == 0) return const SizedBox.shrink();
                   final columns = count <= 3
                       ? count
                       : count == 4
                       ? 2
                       : 3;
                   final rows = (count / columns).ceil();
-                  const gap = 7.0;
+                  const gap = 12.0;
                   final width = math
                       .min(
                         (c.maxWidth - 12 - gap * (columns - 1)) / columns,
@@ -771,35 +813,32 @@ class AlbumBinderWidget extends StatelessWidget {
         : AlbumCardImage(album.card(slot['card_id'] as String));
     Widget body = GestureDetector(
       onTap: onTapSlot == null ? null : () => onTapSlot!(slot),
+      behavior: HitTestBehavior.opaque,
       child: Container(
-        padding: const EdgeInsets.all(3),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: .38),
-          borderRadius: BorderRadius.circular(9),
-          border: Border.all(
-            color: selectedSlot == slot['id']
-                ? FanColors.lavender
-                : Colors.white.withValues(alpha: .75),
-            width: selectedSlot == slot['id'] ? 2 : 1,
-          ),
-        ),
+        key: Key('album-pocket-${slot['id']}'),
+        padding: EdgeInsets.all(album.opensAsCards ? 0 : 4),
+        decoration: album.opensAsCards
+            ? null
+            : BoxDecoration(
+                color: Colors.white.withValues(alpha: .24),
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(color: const Color(0xFFC6C3BC), width: .8),
+              ),
         child: Stack(
           fit: StackFit.expand,
           children: [
             ClipRRect(borderRadius: BorderRadius.circular(6), child: image),
-            if (album.realistic)
-              const IgnorePointer(
+            if (selectedSlot == slot['id'] ||
+                (slot['card_id'] == null && onTapSlot != null))
+              IgnorePointer(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        Color(0x20FFFFFF),
-                        Color(0x00FFFFFF),
-                        Color(0x10FFFFFF),
-                      ],
-                      stops: [0, .45, 1],
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: selectedSlot == slot['id']
+                          ? FanColors.lavender
+                          : FanColors.line,
+                      width: selectedSlot == slot['id'] ? 2 : 1,
                     ),
                   ),
                 ),
@@ -868,6 +907,7 @@ Future<void> showAlbumCardPreview(
   BuildContext context,
   CollectibleCard? card, {
   bool allowDetail = true,
+  NameDisplayMode nameMode = NameDisplayMode.remark,
 }) async {
   if (card == null) {
     showFanToast(context, '小卡暂不可用，卡位仍会保留');
@@ -877,6 +917,7 @@ Future<void> showAlbumCardPreview(
     context: context,
     builder: (dialogContext) => _CardPreview(
       card: card,
+      nameMode: nameMode,
       allowDetail: allowDetail,
       onDetail: () {
         Navigator.pop(dialogContext);
@@ -891,9 +932,11 @@ class _CardPreview extends ConsumerStatefulWidget {
     required this.card,
     required this.allowDetail,
     required this.onDetail,
+    required this.nameMode,
   });
   final CollectibleCard card;
   final bool allowDetail;
+  final NameDisplayMode nameMode;
   final VoidCallback onDetail;
   @override
   ConsumerState<_CardPreview> createState() => _CardPreviewState();
@@ -1035,9 +1078,14 @@ class _CardPreviewState extends ConsumerState<_CardPreview>
                   [
                     entityDisplayName(
                       ref,
-                      'idols',
-                      widget.card.idolId,
-                      widget.card.idolName,
+                      widget.card.hasIndividualIdol ? 'idols' : 'groups',
+                      widget.card.hasIndividualIdol
+                          ? widget.card.idolId
+                          : widget.card.groupId,
+                      widget.card.hasIndividualIdol
+                          ? widget.card.officialIdolName
+                          : widget.card.officialGroupName,
+                      nameMode: widget.nameMode,
                     ),
                     widget.card.source,
                     widget.card.version,

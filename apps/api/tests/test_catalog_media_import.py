@@ -69,7 +69,7 @@ def test_failed_download_backoff_and_admin_retry(client, admin_headers, auth_hea
     )
     assert worker.process_pending() == 0
     url = ROOT + "/media/idols/idol-aria"
-    assert client.get(url, headers=auth_headers).status_code == 403
+    assert client.get(url, headers=auth_headers).status_code == 401
     task = client.get(url, headers=admin_headers).json()["data"]["items"][0]
     assert task["state"] == "retrying" and task["attempts"] == 1
     worker.process_pending()

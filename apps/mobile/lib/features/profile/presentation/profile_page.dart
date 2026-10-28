@@ -1,4 +1,6 @@
+import 'package:url_launcher/url_launcher.dart';
 import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/api/api_client.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/data/profile_models.dart';
 import 'package:fan_os/core/state/app_state.dart';
@@ -27,6 +29,9 @@ class ProfilePage extends ConsumerStatefulWidget {
 }
 
 class _ProfilePageState extends ConsumerState<ProfilePage> {
+  bool get _isSelf =>
+      widget.userId == null ||
+      widget.userId == ref.read(sessionProvider).userId;
   _ProfileTab _activeTab = _ProfileTab.collection;
   late final PageController _pageController;
   final Map<_ProfileTab, _LibraryView> _viewModes = {
@@ -74,7 +79,7 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(sessionProvider);
-    if (widget.isSelf && !session.isLoggedIn) {
+    if (_isSelf && !session.isLoggedIn) {
       return Scaffold(
         appBar: AppBar(title: const Text('我的')),
         body: FanEmptyState(
@@ -87,23 +92,29 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
       );
     }
 
-    final publicProfile = widget.isSelf
+    final publicProfile = _isSelf
         ? null
         : ref.watch(publicUserProfileProvider(widget.userId!));
-    if (!widget.isSelf && publicProfile!.isLoading) {
+    if (!_isSelf && publicProfile!.isLoading) {
       return Scaffold(
         appBar: AppBar(leading: const BackButton(), title: const Text('个人主页')),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
     final other = publicProfile?.asData?.value;
-    if (!widget.isSelf && other == null) {
+    if (!_isSelf && other == null) {
+      final error = publicProfile?.error;
+      final missing = error is ApiException && error.statusCode == 404;
       return Scaffold(
         appBar: AppBar(leading: const BackButton(), title: const Text('个人主页')),
         body: FanEmptyState(
-          icon: Icons.person_off_outlined,
-          title: '该用户不存在或已注销',
-          message: '你可以返回上一页继续浏览。',
+          icon: missing ? Icons.person_off_outlined : Icons.cloud_off_outlined,
+          title: missing ? '该用户不存在或已注销' : '个人主页加载失败',
+          message: missing ? '你可以返回上一页继续浏览。' : '请检查网络后重试。',
+          actionLabel: missing ? null : '重试',
+          onAction: missing
+              ? null
+              : () => ref.invalidate(publicUserProfileProvider(widget.userId!)),
         ),
       );
     }
@@ -113,88 +124,83 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
     final favorites = ref.watch(favoritesProvider);
     final assets = ref.watch(profileAssetProvider);
     final relationships = ref.watch(profileRelationshipProvider);
-    final privacy = widget.isSelf ? session.privacy : other!.privacy;
+    final privacy = _isSelf ? session.privacy : other!.privacy;
     final tabs = <_ProfileTab>[
-      if (widget.isSelf || privacy.collectionVisible) _ProfileTab.collection,
-      if (widget.isSelf || privacy.likesVisible) _ProfileTab.likes,
-      if (widget.isSelf || privacy.albumsVisible) _ProfileTab.albums,
+      if (_isSelf || privacy.collectionVisible) _ProfileTab.collection,
+      if (_isSelf || privacy.likesVisible) _ProfileTab.likes,
+      if (_isSelf || privacy.albumsVisible) _ProfileTab.albums,
       _ProfileTab.contributions,
     ];
     if (tabs.isEmpty) tabs.add(_ProfileTab.collection);
     if (!tabs.contains(_activeTab)) _activeTab = tabs.first;
 
     final profile = _ProfileViewData(
-      id: widget.isSelf ? session.userId : other!.id,
-      displayName: widget.isSelf ? session.displayName : other!.displayName,
-      initial: widget.isSelf
-          ? session.displayName.characters.first
-          : other!.initial,
-      bio: widget.isSelf ? session.bio : other!.bio,
-      avatarPath: widget.isSelf ? session.avatarPath : other!.avatarPath,
-      backgroundPath: widget.isSelf
-          ? session.backgroundPath
-          : other!.backgroundPath,
-      level: widget.isSelf ? session.level : other!.level,
-      experience: widget.isSelf ? session.experience : other!.experience,
-      nextLevelExperience: widget.isSelf
+      id: _isSelf ? session.userId : other!.id,
+      displayName: _isSelf ? session.displayName : other!.displayName,
+      initial: _isSelf ? session.displayName.characters.first : other!.initial,
+      bio: _isSelf ? session.bio : other!.bio,
+      avatarPath: _isSelf ? session.avatarPath : other!.avatarPath,
+      backgroundPath: _isSelf ? session.backgroundPath : other!.backgroundPath,
+      level: _isSelf ? session.level : other!.level,
+      experience: _isSelf ? session.experience : other!.experience,
+      nextLevelExperience: _isSelf
           ? session.nextLevelExperience
           : other!.nextLevelExperience,
-      favoriteIds: widget.isSelf
+      favoriteIds: _isSelf
           ? favorites.selectedIds.toList()
           : other!.favoriteIdolIds,
-      primaryIdolId: widget.isSelf ? favorites.primaryId : other!.primaryIdolId,
-      followingCount: widget.isSelf
+      primaryIdolId: _isSelf ? favorites.primaryId : other!.primaryIdolId,
+      followingCount: _isSelf
           ? relationships.myFollowingCount
           : other!.followingCount,
-      followersCount: widget.isSelf
+      followersCount: _isSelf
           ? relationships.myFollowersCount
           : relationships.followerCountFor(other!),
-      ownedIds: widget.isSelf
-          ? collection.owned.keys.toSet()
-          : other!.ownedCardIds,
-      likedIds: widget.isSelf ? collection.wishlist : other!.likedCardIds,
-      albumCount: widget.isSelf
+      ownedIds: _isSelf ? collection.owned.keys.toSet() : other!.ownedCardIds,
+      likedIds: _isSelf ? collection.wishlist : other!.likedCardIds,
+      albumCount: _isSelf
           ? (ref.watch(albumQuotaProvider).value?.albumCount ??
                 assets.albums.length)
           : other!.albumCount,
-      weiboName: widget.isSelf
-          ? (session.weiboVisible ? '@${session.displayName}' : null)
+      weiboName: _isSelf
+          ? (session.weiboVisible ? session.weiboName : null)
           : other!.weiboName,
+      weiboUrl: _isSelf
+          ? (session.weiboVisible ? session.weiboUrl : null)
+          : other!.weiboUrl,
       privacy: privacy,
     );
 
     return Scaffold(
-      appBar: widget.isSelf
-          ? null
-          : AppBar(leading: const BackButton(), title: const Text('个人主页')),
       body: SafeArea(
-        top: !widget.isSelf,
+        top: false,
         child: NestedScrollView(
           headerSliverBuilder: (context, innerBoxIsScrolled) => [
             SliverToBoxAdapter(
               child: FanContent(
-                padding: const EdgeInsets.only(bottom: 18),
+                padding: const EdgeInsets.only(bottom: 8),
                 child: _ProfileHeader(
                   profile: profile,
-                  isSelf: widget.isSelf,
-                  contributionCount: ref
-                      .watch(
-                        contributionCountProvider(
-                          widget.isSelf ? 'me' : profile.id,
-                        ),
-                      )
-                      .value,
+                  isSelf: _isSelf,
                   catalog: catalog.value,
-                  relationshipStatus: widget.isSelf
+                  relationshipStatus: _isSelf
                       ? null
-                      : relationships.statusFor(profile.id),
+                      : relationships.statusFor(
+                          profile.id,
+                          fallback:
+                              other?.relationStatus ?? UserRelationStatus.none,
+                        ),
                   followBusy: relationships.busyUserIds.contains(profile.id),
                   onEdit: () => context.push('/profile/edit'),
                   onSettings: () => context.push('/profile/edit'),
                   onShare: () => showFanToast(context, '已生成仅含公开字段的分享链接'),
                   onFollow: () => _handleFollow(
                     profile.id,
-                    relationships.statusFor(profile.id),
+                    relationships.statusFor(
+                      profile.id,
+                      fallback:
+                          other?.relationStatus ?? UserRelationStatus.none,
+                    ),
                   ),
                   onOpenLevel: () => context.push(
                     '/profile/level',
@@ -207,12 +213,12 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                   ),
                   onOpenFollowing: () => _openRelations(
                     type: 'following',
-                    isPublic: widget.isSelf || privacy.followingListVisible,
+                    isPublic: _isSelf || privacy.followingListVisible,
                     userId: profile.id,
                   ),
                   onOpenFollowers: () => _openRelations(
                     type: 'followers',
-                    isPublic: widget.isSelf || privacy.followersListVisible,
+                    isPublic: _isSelf || privacy.followersListVisible,
                     userId: profile.id,
                   ),
                   onOpenFavorite: (idolId) => context.push('/idol/$idolId'),
@@ -224,8 +230,21 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
             SliverPersistentHeader(
               pinned: true,
               delegate: _StickyProfileTabs(
+                height: MediaQuery.textScalerOf(context).scale(14) * 1.5 + 30,
                 child: _ProfileLibraryBar(
-                  isSelf: widget.isSelf,
+                  isSelf: _isSelf,
+                  counts: {
+                    _ProfileTab.collection: profile.ownedIds.length,
+                    _ProfileTab.likes: profile.likedIds.length,
+                    _ProfileTab.albums: profile.albumCount,
+                    _ProfileTab.contributions: ref
+                        .watch(
+                          contributionCountProvider(
+                            _isSelf ? 'me' : profile.id,
+                          ),
+                        )
+                        .value,
+                  },
                   tabs: tabs,
                   activeTab: _activeTab,
                   activeView: _activeView,
@@ -256,22 +275,22 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                       key: PageStorageKey(
                         'profile-${profile.id}-digital-albums',
                       ),
-                      userId: widget.isSelf ? null : profile.id,
+                      userId: _isSelf ? null : profile.id,
                     )
                   else if (tab == _ProfileTab.contributions)
-                    ContributionShelf(userId: widget.isSelf ? 'me' : profile.id)
+                    ContributionShelf(userId: _isSelf ? 'me' : profile.id)
                   else
                     _ProfileLibraryPage(
                       key: PageStorageKey('profile-${profile.id}-${tab.name}'),
                       tab: tab,
                       view: _viewModes[tab] ?? _LibraryView.gallery,
                       selectedFilter: _filters[tab] ?? '全部',
-                      isSelf: widget.isSelf,
+                      isSelf: _isSelf,
                       cards: data.cards,
                       ownedIds: profile.ownedIds,
                       likedIds: profile.likedIds,
                       collection: collection,
-                      albums: widget.isSelf
+                      albums: _isSelf
                           ? assets.albums
                           : (useMockApi
                                 ? _demoAlbums(profile.albumCount)
@@ -326,7 +345,26 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
       );
       if (confirmed != true || !mounted) return;
     }
-    await ref.read(profileRelationshipProvider.notifier).toggleFollow(userId);
+    try {
+      await ref
+          .read(profileRelationshipProvider.notifier)
+          .toggleFollow(userId, currentStatus: status);
+    } catch (_) {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('关注状态未更新'),
+          content: const Text('网络或服务暂时不可用，原有关注状态未改变，请重试。'),
+          actions: [
+            TextButton(
+              onPressed: () => context.pop(),
+              child: const Text('知道了'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   List<DigitalCardAlbum> _demoAlbums(int count) => List.generate(
@@ -361,6 +399,7 @@ class _ProfileViewData {
     required this.albumCount,
     required this.privacy,
     this.weiboName,
+    this.weiboUrl,
     this.backgroundPath,
   });
 
@@ -381,6 +420,7 @@ class _ProfileViewData {
   final Set<String> likedIds;
   final int albumCount;
   final String? weiboName;
+  final String? weiboUrl;
   final ProfilePrivacy privacy;
 }
 
@@ -388,7 +428,6 @@ class _ProfileHeader extends StatelessWidget {
   const _ProfileHeader({
     required this.profile,
     required this.isSelf,
-    this.contributionCount,
     required this.catalog,
     required this.relationshipStatus,
     required this.followBusy,
@@ -405,7 +444,6 @@ class _ProfileHeader extends StatelessWidget {
 
   final _ProfileViewData profile;
   final bool isSelf;
-  final int? contributionCount;
   final CatalogBundle? catalog;
   final UserRelationStatus? relationshipStatus;
   final bool followBusy;
@@ -441,7 +479,7 @@ class _ProfileHeader extends StatelessWidget {
               Padding(
                 padding: EdgeInsets.fromLTRB(
                   20,
-                  (isSelf ? MediaQuery.paddingOf(context).top : 0) + 8,
+                  MediaQuery.paddingOf(context).top + 8,
                   20,
                   8,
                 ),
@@ -450,7 +488,19 @@ class _ProfileHeader extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        const Spacer(),
+                        if (!isSelf) ...[
+                          const BackButton(),
+                          const Expanded(
+                            child: Text(
+                              '个人主页',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ] else
+                          const Spacer(),
                         IconButton(
                           tooltip: '分享主页',
                           onPressed: onShare,
@@ -599,22 +649,58 @@ class _ProfileHeader extends StatelessWidget {
                     const SizedBox(height: 15),
                     if (profile.weiboName != null) ...[
                       const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.rss_feed_rounded,
-                            size: 15,
-                            color: FanColors.coral,
+                      TextButton(
+                        style: TextButton.styleFrom(
+                          padding: EdgeInsets.zero,
+                          alignment: Alignment.centerLeft,
+                        ),
+                        onPressed: profile.weiboUrl == null
+                            ? null
+                            : () async {
+                                final uri = Uri.tryParse(profile.weiboUrl!);
+                                if (uri == null ||
+                                    uri.scheme != 'https' ||
+                                    !{
+                                      'weibo.com',
+                                      'www.weibo.com',
+                                      'm.weibo.cn',
+                                      'weibo.cn',
+                                    }.contains(uri.host)) {
+                                  return;
+                                }
+                                try {
+                                  if (!await launchUrl(
+                                    uri,
+                                    mode: LaunchMode.externalApplication,
+                                  )) {
+                                    throw StateError('unavailable');
+                                  }
+                                } catch (_) {
+                                  if (context.mounted) {
+                                    showDialog<void>(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: const Text('暂时无法打开微博主页'),
+                                        content: const Text('请稍后重试。'),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context),
+                                            child: const Text('知道了'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  }
+                                }
+                              },
+                        child: Text(
+                          '微博 · ${profile.weiboName!}',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: FanColors.textSecondary,
                           ),
-                          const SizedBox(width: 5),
-                          Text(
-                            profile.weiboName!,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: FanColors.coral,
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
                     ],
                     const SizedBox(height: 4),
@@ -654,29 +740,6 @@ class _ProfileHeader extends StatelessWidget {
           ),
           const SizedBox(height: 20),
         ],
-        Container(
-          padding: const EdgeInsets.symmetric(vertical: 13),
-          margin: const EdgeInsets.symmetric(horizontal: 20),
-          decoration: const BoxDecoration(
-            border: Border.symmetric(
-              horizontal: BorderSide(color: FanColors.line),
-            ),
-          ),
-          child: Row(
-            children: [
-              if (isSelf || profile.privacy.collectionVisible)
-                _AssetStat(value: profile.ownedIds.length, label: '已拥有'),
-              if (isSelf || profile.privacy.likesVisible)
-                _AssetStat(value: profile.likedIds.length, label: '心愿单'),
-              if (isSelf || profile.privacy.albumsVisible)
-                _AssetStat(value: profile.albumCount, label: '卡册'),
-              _AssetStat(
-                value: contributionCount ?? 0,
-                label: isSelf ? '我的贡献' : 'TA 的贡献',
-              ),
-            ],
-          ),
-        ),
       ],
     );
   }
@@ -751,31 +814,10 @@ class _RelationStat extends StatelessWidget {
   }
 }
 
-class _AssetStat extends StatelessWidget {
-  const _AssetStat({required this.value, required this.label});
-  final int value;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Column(
-        children: [
-          Text(
-            '$value',
-            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
-          ),
-          const SizedBox(height: 2),
-          Text(label, style: Theme.of(context).textTheme.bodySmall),
-        ],
-      ),
-    );
-  }
-}
-
 class _ProfileLibraryBar extends StatelessWidget {
   const _ProfileLibraryBar({
     required this.tabs,
+    required this.counts,
     this.isSelf = true,
     required this.activeTab,
     required this.activeView,
@@ -784,6 +826,7 @@ class _ProfileLibraryBar extends StatelessWidget {
   });
 
   final List<_ProfileTab> tabs;
+  final Map<_ProfileTab, int?> counts;
   final bool isSelf;
   final _ProfileTab activeTab;
   final _LibraryView activeView;
@@ -811,39 +854,50 @@ class _ProfileLibraryBar extends StatelessWidget {
         ),
         child: Row(
           children: [
-            for (final tab in tabs)
-              Expanded(
-                child: InkWell(
-                  onTap: () => onTabChanged(tab),
-                  child: Container(
-                    alignment: Alignment.center,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    decoration: BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(
-                          color: activeTab == tab
-                              ? FanColors.ink
-                              : Colors.transparent,
-                          width: 2,
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (final tab in tabs)
+                      InkWell(
+                        key: ValueKey('profile-tab-${tab.name}'),
+                        onTap: () => onTabChanged(tab),
+                        child: Container(
+                          alignment: Alignment.center,
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 14,
+                            horizontal: 12,
+                          ),
+                          decoration: BoxDecoration(
+                            border: Border(
+                              bottom: BorderSide(
+                                color: activeTab == tab
+                                    ? FanColors.ink
+                                    : Colors.transparent,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                          child: Text(
+                            '${_label(tab)}(${counts[tab] ?? '—'})',
+                            maxLines: 1,
+                            style: TextStyle(
+                              color: activeTab == tab
+                                  ? FanColors.ink
+                                  : FanColors.textSecondary,
+                              fontSize: 14,
+                              fontWeight: activeTab == tab
+                                  ? FontWeight.w800
+                                  : FontWeight.w600,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                    child: Text(
-                      _label(tab),
-                      maxLines: 1,
-                      style: TextStyle(
-                        color: activeTab == tab
-                            ? FanColors.ink
-                            : FanColors.textSecondary,
-                        fontSize: tabs.length == 4 ? 12 : 13,
-                        fontWeight: activeTab == tab
-                            ? FontWeight.w800
-                            : FontWeight.w600,
-                      ),
-                    ),
-                  ),
+                  ],
                 ),
               ),
+            ),
             if (showViewToggle)
               IconButton(
                 key: const Key('profile-view-toggle'),
@@ -855,9 +909,7 @@ class _ProfileLibraryBar extends StatelessWidget {
                       : Icons.grid_view_rounded,
                   size: 20,
                 ),
-              )
-            else
-              const SizedBox(width: 8),
+              ),
           ],
         ),
       ),
@@ -866,13 +918,14 @@ class _ProfileLibraryBar extends StatelessWidget {
 }
 
 class _StickyProfileTabs extends SliverPersistentHeaderDelegate {
-  const _StickyProfileTabs({required this.child});
+  const _StickyProfileTabs({required this.child, required this.height});
   final Widget child;
+  final double height;
 
   @override
-  double get minExtent => 51;
+  double get minExtent => height;
   @override
-  double get maxExtent => 51;
+  double get maxExtent => height;
   @override
   Widget build(
     BuildContext context,

@@ -93,7 +93,7 @@ class _ScanFeedbackHistoryPageState
                     const FanEmptyState(
                       icon: Icons.inbox_outlined,
                       title: '暂时没有反馈记录',
-                      message: '在未识别小卡的扫描结果中点击“主动反馈”。',
+                      message: '在未识别小卡的扫描结果中点击“我要反馈”。',
                     ),
                   for (final record in _items)
                     _FeedbackRecordCard(record: record),
@@ -136,7 +136,11 @@ class _FeedbackRecordCard extends StatelessWidget {
                 id: record.idolId!,
                 officialName: record.idolName ?? '未识别小卡',
               )
-            : Text(record.idolName ?? record.groupName ?? '未识别小卡'),
+            : FanEntityName(
+                kind: record.idolName != null ? 'idols' : 'groups',
+                id: '',
+                officialName: record.idolName ?? record.groupName ?? '未识别小卡',
+              ),
         subtitle: Text('${record.statusLabel} · ${_date(record.createdAt)}'),
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         expandedCrossAxisAlignment: CrossAxisAlignment.start,
@@ -145,7 +149,13 @@ class _FeedbackRecordCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text('提交：${_date(record.createdAt)}'),
           Text('最近更新：${_date(record.updatedAt)}'),
-          if (record.groupName != null) Text('组合：${record.groupName}'),
+          if (record.groupName != null)
+            FanEntityName(
+              kind: 'groups',
+              id: '',
+              officialName: record.groupName!,
+              prefix: '组合：',
+            ),
           if (record.source != null) Text('来源：${record.source}'),
           if (record.sourceName != null) Text('官方来源：${record.sourceName}'),
           if (record.sourceVersionName != null)

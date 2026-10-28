@@ -1,0 +1,21 @@
+Brand symbols from @ant-design/icons-svg 4.6.0 (MIT).
+Source: https://github.com/ant-design/ant-design-icons
+Reused from the existing apps/admin dependency, not AI-generated artwork.
+wechat.svg: inline-svg/filled/wechat.svg
+weibo.svg: inline-svg/outlined/weibo.svg
+qq.svg: inline-svg/outlined/qq.svg
+Only the XML namespace was added; paths and viewBox are unchanged.
+The associated platform names and logos belong to their respective owners.
+
+login-hero.png: generated for Fan OS on 2026-10-28 using the built-in image generation tool.
+No third-party logo, character, text, or artist style was used for this illustration.
+Prompt:
+Use case: stylized-concept
+Asset type: Fan OS 小卡收藏 App 登录页中心插画，单独图片素材，不是整页UI。
+Primary request: 一册精致微微打开的迷你收藏册，旁边三张圆角小卡轻微叠放，小卡是抽象柔和渐变，不含人物照片、字母或文字。
+Style: 高质量柔和半立体纸艺插画，克制细腻，不是粗图标，布纹册封面和细白边纸卡。
+Composition: 横向约3:2，主体居中，占画面65%，完整物体不切边，周围留白。
+Palette: 雾紫 #6D5DD3、淡紫 #EFEBFF、雾蓝与很轻的灰粉渐变，低饱和。
+Background: 接近纯色 #F7F8FC，中心柔和雾紫渐变光晕自然消退到画布边缘，四周边缘统一 #F7F8FC，方便嵌入手机页面。
+Lighting: 左上自然柔光，轻接触阴影，无厚重投影，无霓虹。
+Constraints: 无文字，无logo，无水印，无按钮，无手机边框，无额外装饰物。

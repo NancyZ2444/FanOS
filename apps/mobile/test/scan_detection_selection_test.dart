@@ -59,7 +59,10 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [scanDetectionRepositoryProvider.overrideWithValue(repo)],
-          child: MaterialApp(theme: FanOsTheme.light, home: const ScanPage()),
+          child: MaterialApp(
+            theme: FanOsTheme.light,
+            home: const ScanPage(originalLocation: false),
+          ),
         ),
       );
       await tester.pump();

@@ -1,4 +1,9 @@
+import '../catalog/presentation/catalog_profile_tab.dart';
+
+import 'package:fan_os/core/widgets/card_geometry.dart';
+
 import 'package:fan_os/core/state/app_state.dart';
+import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/features/scan/presentation/scan_image.dart';
 import 'package:flutter/material.dart';
@@ -14,11 +19,16 @@ class FeedbackMedia extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SizedBox(
     width: width,
-    child: ScanImage(
-      path: url,
-      fallback: const AspectRatio(
-        aspectRatio: .74,
-        child: Icon(Icons.photo_outlined),
+    height: width / photocardAspectRatio,
+    child: ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: ColoredBox(
+        color: FanColors.surface,
+        child: ScanImage(
+          path: url,
+          aspectRatio: photocardAspectRatio,
+          fallback: const Center(child: Icon(Icons.photo_outlined)),
+        ),
       ),
     ),
   );
@@ -80,13 +90,14 @@ class _FeedbackCenterState extends ConsumerState<FeedbackCenterPage> {
     body: Column(
       children: [
         Padding(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
           child: Wrap(
             spacing: 8,
             children: [
               for (final entry in const {
                 '': '全部',
                 'MISSING_CARD': '扫描缺失',
+                'MISSING_CATALOG': '图鉴补充',
                 'CORRECTION': '数据纠错',
               }.entries)
                 ChoiceChip(
@@ -106,7 +117,7 @@ class _FeedbackCenterState extends ConsumerState<FeedbackCenterPage> {
           child: RefreshIndicator(
             onRefresh: _load,
             child: ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
                 if (_error != null)
@@ -122,15 +133,23 @@ class _FeedbackCenterState extends ConsumerState<FeedbackCenterPage> {
                   const FanEmptyState(
                     icon: Icons.feedback_outlined,
                     title: '还没有反馈记录',
-                    message: '扫描缺失反馈和图鉴纠错的处理进度会显示在这里。',
+                    message: '',
                   ),
                 for (final row in _items)
                   Card(
                     child: ListTile(
                       leading: FeedbackMedia(row['image_url'], width: 45),
-                      title: Text(row['name'] ?? '图鉴反馈'),
+                      title: FanEntityName(
+                        kind: row['entity_type'] ?? '',
+                        id: row['entity_id'] ?? '',
+                        officialName: row['name'] ?? '图鉴反馈',
+                      ),
                       subtitle: Text(
-                        '${row['kind'] == 'MISSING_CARD' ? '扫描缺失' : '数据纠错'} · ${row['status_label']}\n${feedbackDate(row['created_at'])}',
+                        '${row['kind'] == 'MISSING_CARD'
+                            ? '扫描缺失'
+                            : row['kind'] == 'MISSING_CATALOG'
+                            ? '图鉴补充'
+                            : '数据纠错'} · ${row['status_label']}\n${feedbackDate(row['created_at'])}',
                       ),
                       isThreeLine: true,
                       trailing: const Icon(Icons.chevron_right),
@@ -190,6 +209,8 @@ class _FeedbackDetailState extends ConsumerState<FeedbackDetailPage> {
   Widget build(BuildContext context) {
     final row = _data;
     final submission = row?['submission'] as Map? ?? {};
+    final frontImage = (row?['image_url'] as String?)?.trim();
+    final backImage = (submission['back']?['image_url'] as String?)?.trim();
     return Scaffold(
       appBar: AppBar(
         title: const Text('反馈进度'),
@@ -219,16 +240,29 @@ class _FeedbackDetailState extends ConsumerState<FeedbackDetailPage> {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 16),
-              Text(row['name']),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  FeedbackMedia(row['image_url'], width: 130),
-                  if (submission['back'] != null)
-                    FeedbackMedia(submission['back']['image_url'], width: 130),
-                ],
+              FanEntityName(
+                kind: row['entity_type'] ?? '',
+                id: row['entity_id'] ?? '',
+                officialName: row['name'],
               ),
+              // Correction details already show submitted image fields below.
+              // A target's (possibly unavailable) cover is not feedback evidence.
+              if (row['kind'] != 'CORRECTION' &&
+                  ((frontImage?.isNotEmpty ?? false) ||
+                      (backImage?.isNotEmpty ?? false)))
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      if (frontImage?.isNotEmpty ?? false)
+                        FeedbackMedia(frontImage, width: 104),
+                      if (backImage?.isNotEmpty ?? false)
+                        FeedbackMedia(backImage, width: 104),
+                    ],
+                  ),
+                ),
               const SizedBox(height: 16),
               if (row['result'] == 'NOT_INCLUDED' &&
                   row['kind'] == 'CORRECTION')
@@ -241,8 +275,65 @@ class _FeedbackDetailState extends ConsumerState<FeedbackDetailPage> {
                     ? row['public_note']
                     : '已收到反馈，等待平台核实。',
               ),
+              if (row['kind'] == 'MISSING_CARD' &&
+                  row['result'] == 'NOT_INCLUDED')
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text('本次反馈无法采用，你提交的图片、信息及处理记录仍保留在这里。'),
+                ),
+              if (row['kind'] == 'MISSING_CARD' &&
+                  row['result'] == 'INCLUDED' &&
+                  row['target_available'] == true)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text('已采用并登记为官方图鉴，可查看收录结果。'),
+                ),
+              if (row['can_resubmit'] == true) ...[
+                const SizedBox(height: 12),
+                const Text('原提交记录已保留，请根据处理说明补充信息后重新提交。'),
+                const SizedBox(height: 8),
+                FilledButton.icon(
+                  key: const Key('supplement-feedback'),
+                  onPressed: () async {
+                    if (row['kind'] == 'CORRECTION') {
+                      await context.push(
+                        Uri(
+                          path: '/catalog-correction',
+                          queryParameters: {
+                            'type': row['entity_type'],
+                            'id': row['entity_id'],
+                          },
+                        ).toString(),
+                        extra: row,
+                      );
+                    } else {
+                      await context.push('/feedback/${row['id']}/supplement');
+                    }
+                    if (mounted) {
+                      ref.invalidate(feedbackInboxProvider);
+                      await _load();
+                    }
+                  },
+                  icon: const Icon(Icons.edit_outlined),
+                  label: const Text('补充信息并重新提交'),
+                ),
+              ],
               if (row['result'] == 'PENDING' && row['status'] == 'PROCESSED')
                 const Text('审核已处理，尚未正式发布。'),
+              if (row['profile_version'] != null &&
+                  row['target_available'] == true)
+                TextButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => CatalogProfileVersion(
+                        kind: row['entity_type'],
+                        entityId: row['entity_id'],
+                        versionId: row['profile_version'],
+                      ),
+                    ),
+                  ),
+                  child: const Text('查看已生效资料修订'),
+                ),
               for (final f in feedbackItems(submission['fields']))
                 Card(
                   child: Padding(
@@ -254,14 +345,20 @@ class _FeedbackDetailState extends ConsumerState<FeedbackDetailPage> {
                           f['label'],
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
-                        const Text('提交时当前值'),
-                        if (f['type'] == 'image')
-                          FeedbackMedia(f['current'])
-                        else
-                          Text(
-                            feedbackValue(f['current_display'] ?? f['current']),
-                          ),
-                        const Text('用户建议'),
+                        if (row['kind'] != 'MISSING_CATALOG') ...[
+                          const Text('提交时当前值'),
+                          if (f['type'] == 'image')
+                            FeedbackMedia(f['current'])
+                          else
+                            Text(
+                              feedbackValue(
+                                f['current_display'] ?? f['current'],
+                              ),
+                            ),
+                        ],
+                        Text(
+                          row['kind'] == 'MISSING_CATALOG' ? '提交内容' : '用户建议',
+                        ),
                         if (f['mode'] == 'SET' && f['type'] == 'image')
                           FeedbackMedia(f['suggested'])
                         else
@@ -315,6 +412,23 @@ class _FeedbackDetailState extends ConsumerState<FeedbackDetailPage> {
               if (row['entity_id'] != null && row['entity_id'] != '') ...[
                 const SizedBox(height: 12),
                 if (row['target_available'] == true &&
+                    row['entity_type'] == 'versions' &&
+                    row['kind'] == 'MISSING_CATALOG')
+                  OutlinedButton(
+                    onPressed: () {
+                      ref.invalidate(catalogProvider);
+                      context.push(
+                        feedbackRoute(
+                          'albums',
+                          (row['target_parent_id'] ??
+                                  (submission['catalog'] as Map)['album_id'])
+                              as String,
+                        ),
+                      );
+                    },
+                    child: const Text('查看所属专辑'),
+                  )
+                else if (row['target_available'] == true &&
                     !['versions', 'companies'].contains(row['entity_type']))
                   OutlinedButton(
                     onPressed: () {
@@ -347,49 +461,6 @@ class _FeedbackDetailState extends ConsumerState<FeedbackDetailPage> {
       ),
     );
   }
-}
-
-class CardContributors extends ConsumerWidget {
-  const CardContributors({required this.cardId, super.key});
-  final String cardId;
-  @override
-  Widget build(BuildContext context, WidgetRef ref) => ref
-      .watch(feedbackCreditsProvider(cardId))
-      .when(
-        loading: () => const SizedBox.shrink(),
-        error: (_, _) => TextButton(
-          onPressed: () => ref.invalidate(feedbackCreditsProvider(cardId)),
-          child: const Text('贡献来源暂未加载，点击重试'),
-        ),
-        data: (items) => items.isEmpty
-            ? const SizedBox.shrink()
-            : Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Wrap(
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  spacing: 4,
-                  children: [
-                    const Text('贡献来源：'),
-                    for (final item in items)
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          TextButton(
-                            onPressed: item['profile_available'] == true
-                                ? () => context.push('/user/${item['user_id']}')
-                                : null,
-                            child: Text(item['name']),
-                          ),
-                          Text(
-                            '用户提交 · ${{'AUTHORIZED': '已授权', 'OFFICIAL_SOURCE': '已核实官方来源'}[item['copyright_status']] ?? '使用状态待核实'}',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-                      ),
-                  ],
-                ),
-              ),
-      );
 }
 
 class ContributionShelf extends ConsumerStatefulWidget {

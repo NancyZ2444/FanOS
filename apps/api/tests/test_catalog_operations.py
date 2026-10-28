@@ -260,12 +260,8 @@ def test_batch_generation_idempotency_and_validation(client, admin_headers):
     )
 
 
-def test_feedback_review_changes_official_data_only_after_acceptance(
-    client, admin_headers, auth_headers
-):
+def test_retired_feedback_cannot_change_official_data(client, admin_headers, auth_headers):
     card = post(client, admin_headers, "/cards", payload())
-    for action in ["submit", "publish"]:
-        post(client, admin_headers, f"/cards/{card['id']}/actions", {"action": action})
     response = client.post(
         "/api/v1/catalog/feedback",
         headers=auth_headers,
@@ -276,36 +272,19 @@ def test_feedback_review_changes_official_data_only_after_acceptance(
             "suggested": {"title": "Corrected"},
         },
     )
-    assert response.status_code == 200, response.text
-    item = response.json()["data"]
-    assert (
-        client.post(
-            ROOT + f"/review-queue/contribution/{item['id']}/actions",
-            headers=auth_headers,
-            json={"action": "accept"},
-        ).status_code
-        == 403
+    assert response.status_code == 404
+    response = client.post(
+        ROOT + "/review-queue/contribution/retired/actions",
+        headers=admin_headers,
+        json={"action": "accept"},
     )
-    post(
-        client,
-        admin_headers,
-        f"/review-queue/contribution/{item['id']}/actions",
-        {"action": "accept"},
-    )
+    assert response.status_code == 404
     with SessionLocal() as db:
-        assert db.get(Card, card["id"]).title == "Corrected"
-    assert (
-        client.post(
-            ROOT + f"/review-queue/contribution/{item['id']}/actions",
-            headers=admin_headers,
-            json={"action": "accept"},
-        ).status_code
-        == 409
-    )
+        assert db.get(Card, card["id"]).title == card["title"]
 
 
 def test_detail_quality_and_index_routes(client, admin_headers):
-    for url in ["/entities/groups/group-lumina/detail", "/quality", "/review-queue", "/scan-index"]:
+    for url in ["/entities/groups/group-lumina/detail", "/scan-index"]:
         response = client.get(ROOT + url, headers=admin_headers)
         assert response.status_code == 200, response.text
     card = post(client, admin_headers, "/cards", payload())
@@ -786,12 +765,13 @@ def test_combined_import_creates_missing_companies_once_and_links_each_entity(
         assert linked[("idols", imported[1]["idol_id"])] == companies["Generated Special Label"].id
 
 
-def test_combined_import_rejects_archived_or_ambiguous_company(client, admin_headers):
+def test_combined_import_rejects_disabled_or_ambiguous_company(client, admin_headers):
     from test_catalog_bulk import preview
 
     archived = record(client, admin_headers, "companies", name="Archived Import Agency")
     with SessionLocal() as db:
-        db.get(CatalogRecord, archived["id"]).status = "ARCHIVED"
+        company = db.get(CatalogRecord, archived["id"])
+        company.data = {**company.data, "enabled": False}
         db.add_all(
             [
                 CatalogRecord(kind="companies", data={"name": "Ambiguous Import Agency"}),
@@ -800,7 +780,7 @@ def test_combined_import_rejects_archived_or_ambiguous_company(client, admin_hea
         )
         db.commit()
     for suffix, company_name, expected in [
-        ("ARCHIVED", "Archived Import Agency", "已归档"),
+        ("DISABLED", "Archived Import Agency", "未开启"),
         ("AMBIGUOUS", "Ambiguous Import Agency", "多个同名公司"),
     ]:
         task = preview(
@@ -1046,7 +1026,7 @@ def test_solo_import_distinguishes_artists_and_rechecks_duplicates(client, admin
     assert duplicate["errors"][0]["field"] == "name"
 
 
-def test_missing_content_feedback_publishes_in_same_review(client, auth_headers, admin_headers):
+def test_retired_missing_content_submission_requires_current_feedback_api(client, auth_headers):
     response = client.post(
         "/api/v1/catalog/feedback",
         headers=auth_headers,
@@ -1059,24 +1039,4 @@ def test_missing_content_feedback_publishes_in_same_review(client, auth_headers,
             },
         },
     )
-    assert response.status_code == 200, response.text
-    item_id = response.json()["data"]["id"]
-    post(
-        client, admin_headers, f"/review-queue/contribution/{item_id}/actions", {"action": "accept"}
-    )
-    queue = client.get(ROOT + "/review-queue", headers=admin_headers).json()["data"]["items"]
-    row = next(r for r in queue if r["id"] == item_id)
-    assert row["entity_id"]
-    detail = client.get(
-        ROOT + f"/entities/albums/{row['entity_id']}/detail", headers=admin_headers
-    ).json()["data"]
-    assert detail["entity"]["status"] == "PUBLISHED"
-    assert client.get("/api/v1/catalog/albums/" + row["entity_id"]).status_code == 200
-    assert (
-        client.post(
-            ROOT + f"/review-queue/contribution/{item_id}/actions",
-            headers=admin_headers,
-            json={"action": "accept"},
-        ).status_code
-        == 409
-    )
+    assert response.status_code == 404

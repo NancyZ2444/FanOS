@@ -31,6 +31,8 @@ def _membership_maps(
     former_by_group: dict[str, list[str]] = {}
     groups_by_idol: dict[str, list[str]] = {}
     for membership in memberships:
+        if membership.status == "void":
+            continue
         target = (
             current_by_group if membership.status in {"active", "inactive"} else former_by_group
         )
@@ -218,6 +220,14 @@ def bootstrap(db: Session) -> dict[str, list[dict[str, object]]]:
     for kind, items in result.items():
         for item in items:
             data = metadata.get((kind, item["id"]), {})
+            if kind == "idols":
+                item["debut_date"] = data.get("debut_date", "")
+            if kind == "idols" and "career_text" in data:
+                item["careers"] = (
+                    [{"period": "", "title": "从艺历程", "subtitle": data["career_text"]}]
+                    if data["career_text"]
+                    else []
+                )
             for field in (
                 "artists",
                 "artist_name",
@@ -264,6 +274,7 @@ def bootstrap(db: Session) -> dict[str, list[dict[str, object]]]:
                         for r in operational
                         if r.kind == "memberships"
                         and r.entity_id == item["id"]
+                        and r.status != "ARCHIVED"
                         and r.data.get("is_primary")
                         and r.data.get("status") in {"active", "inactive"}
                     ),
@@ -280,14 +291,18 @@ def bootstrap(db: Session) -> dict[str, list[dict[str, object]]]:
                         "end_date": m.end_date.isoformat() if m.end_date else None,
                     }
                     for m in db.scalars(
-                        select(GroupMembership).where(GroupMembership.idol_id == item["id"])
+                        select(GroupMembership).where(
+                            GroupMembership.idol_id == item["id"], GroupMembership.status != "void"
+                        )
                     ).all()
                 ]
             if kind in {"groups", "idols"}:
                 relations = [
                     r
                     for r in operational
-                    if r.kind == "company_relations" and r.entity_id == item["id"]
+                    if r.kind == "company_relations"
+                    and r.entity_id == item["id"]
+                    and r.status != "ARCHIVED"
                 ]
                 item["company_history"] = [{"id": r.id, **r.data} for r in relations]
                 current = [
@@ -297,7 +312,9 @@ def bootstrap(db: Session) -> dict[str, list[dict[str, object]]]:
                     and (not r.data.get("start_date") or r.data["start_date"] <= today)
                     and (not r.data.get("end_date") or r.data["end_date"] >= today)
                 ]
-                if current:
+                if relations or any(
+                    r.kind == "company_relations" and r.entity_id == item["id"] for r in operational
+                ):
                     item["company"] = " / ".join(current)
             source = item.get("image_url") or item.get("cover_image")
             item["thumbnail_url"] = managed_thumbnail(data, source) or item.get("thumbnail_url")

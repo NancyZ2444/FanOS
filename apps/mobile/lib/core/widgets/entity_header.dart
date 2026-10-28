@@ -25,9 +25,11 @@ class _EntityProfileSliverState extends State<EntityProfileSliver> {
   @override
   Widget build(BuildContext context) => SliverAppBar(
     pinned: true,
-    expandedHeight: kToolbarHeight + 32 + _height,
+    expandedHeight: kToolbarHeight + _height,
     foregroundColor: FanColors.ink,
     backgroundColor: FanColors.canvas,
+    surfaceTintColor: Colors.transparent,
+    scrolledUnderElevation: 0,
     actions: widget.actions,
     flexibleSpace: LayoutBuilder(
       builder: (context, bounds) {
@@ -45,7 +47,7 @@ class _EntityProfileSliverState extends State<EntityProfileSliver> {
                   child: ColoredBox(color: FanColors.canvas),
                 ),
               Positioned(
-                top: safeTop + kToolbarHeight + 32,
+                top: safeTop + kToolbarHeight,
                 left: 0,
                 right: 0,
                 child: _MeasureIdentity(
@@ -126,12 +128,14 @@ class EntityIdentity extends StatelessWidget {
     this.details = const [],
     this.description = '',
     this.actions = const [],
+    this.contribution,
     super.key,
   });
   final String name, subtitle, description;
   final Widget avatar;
   final List<String> details;
   final List<Widget> actions;
+  final Widget? contribution;
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
@@ -194,6 +198,7 @@ class EntityIdentity extends StatelessWidget {
             children: actions,
           ),
         ],
+        ?contribution,
       ],
     ),
   );

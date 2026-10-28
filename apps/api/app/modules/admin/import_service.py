@@ -120,7 +120,7 @@ COMBINED_COLUMNS = [
 COMBINED_GROUP_PROFILE_FIELDS = ["group_id", *COMBINED_GROUP_FIELDS]
 
 
-def columns(kind: str) -> list[str]:
+def _legacy_columns(kind: str) -> list[str]:
     if kind == "others":
         return [
             "name",
@@ -165,6 +165,18 @@ def columns(kind: str) -> list[str]:
     return ["name", *extras, *ENTITY_COLUMNS[1:]]
 
 
+def columns(kind: str) -> list[str]:
+    # Keep legacy parsing compatible, but no longer request provenance input.
+    return [
+        key
+        for key in _legacy_columns(kind)
+        if not any(
+            key.endswith(suffix)
+            for suffix in ("source_type", "source_url", "copyright_status", "copyright_note")
+        )
+    ]
+
+
 def read_sheet(filename: str, raw: bytes, kind: str) -> list[dict]:
     if len(raw) > 5 * 1024 * 1024:
         raise DomainError("FILE_TOO_LARGE", "导入文件不能超过 5 MB", 413)
@@ -194,7 +206,7 @@ def read_sheet(filename: str, raw: bytes, kind: str) -> list[dict]:
         raise DomainError("INVALID_HEADERS", "列名不能为空或重复，请下载对应类型模板", 422)
     if kind == "groups_idols":
         required = {"group_code", "group_name", "idol_name"}
-        if not required.issubset(fields) or set(fields) - set(columns(kind)):
+        if not required.issubset(fields) or set(fields) - set(_legacy_columns(kind)):
             raise DomainError("INVALID_HEADERS", "请使用组合 + 艺人联合导入模板", 422)
         if not records or len(records) > 2000:
             raise DomainError("INVALID_ROW_COUNT", "每次请导入 1–2000 行", 422)
@@ -215,9 +227,11 @@ def read_sheet(filename: str, raw: bytes, kind: str) -> list[dict]:
         raise DomainError(
             "INVALID_HEADERS", "缺少列：" + "、".join(sorted(required - set(fields))), 422
         )
-    allowed = set(columns(kind)) | set((CardDraft if kind == "cards" else EntityDraft).model_fields)
+    allowed = set(_legacy_columns(kind)) | set(
+        (CardDraft if kind == "cards" else EntityDraft).model_fields
+    )
     if kind in {"companies", "others"}:
-        allowed = set(columns(kind))
+        allowed = set(_legacy_columns(kind))
     if kind == "albums":
         allowed |= {"version", "idol_names", "idol_ids"}
     if set(fields) - allowed:
@@ -260,6 +274,11 @@ def relation_errors(db: Session, kind: str, payload: EntityDraft) -> list[dict]:
                 "message": exc.message,
             }
         )
+    if kind in {"groups", "idols"} and payload.company and payload.company_ids is None:
+        try:
+            resolve_company_name(db, payload.company)
+        except DomainError as exc:
+            errors.append({"field": "company", "message": exc.message})
     if kind != "groups":
         if payload.group_id and not db.get(Group, payload.group_id):
             errors.append({"field": "group_id", "message": "组合不存在，请先导入组合或修正 ID"})
@@ -934,9 +953,9 @@ def import_combined(
     )
     membership_operation = "existing"
     if not membership:
-        membership = GroupMembership(group_id=group.id, idol_id=idol.id)
-        db.add(membership)
-        db.flush()
+        from .catalog_memberships import create_undated_membership
+
+        membership = create_undated_membership(db, group.id, idol.id)
         membership_operation = "created"
         service.audit(
             db,

@@ -108,6 +108,7 @@ export default function CardRecognition() {
       {file && (
         <CardImageCrop
           file={file}
+          mode="recognition"
           busy={busy}
           confirmLabel="确认裁剪并识别"
           onCancel={() => setFile(undefined)}

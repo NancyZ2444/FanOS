@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from app.common.response import DomainError
 from app.integrations.card_matcher.adapter import CardMatcherAdapter
+from app.integrations.card_matcher.portrait_detector import PortraitDetectorUnavailable
 
 
 class CropPoint(BaseModel):
@@ -63,7 +64,7 @@ def load_image(raw: bytes) -> Image.Image:
         ) from exc
 
 
-def crop_preview(raw: bytes) -> dict:
+def crop_preview(raw: bytes, mode: str = "artwork") -> dict:
     image = load_image(raw)
     # Detect on a bounded copy; suggestions use normalized, orientation-correct
     # coordinates and the final crop is applied to the original-resolution image.
@@ -72,8 +73,14 @@ def crop_preview(raw: bytes) -> dict:
     buffer = io.BytesIO()
     detection.save(buffer, format="PNG")
     try:
-        regions = CardMatcherAdapter.detect(buffer.getvalue(), require_person=False)
+        # Upload recognition uses the same portrait, geometry proposals and boundary
+        # refinement path as the App. Plain image editing still accepts card backs.
+        regions = CardMatcherAdapter.detect(buffer.getvalue(), require_person=mode == "recognition")
         choices = [{"points": r.corners} for r in regions if r.corners]
+    except PortraitDetectorUnavailable as exc:
+        raise DomainError(
+            "SCAN_DETECTOR_UNAVAILABLE", "人物检测服务暂未就绪，请稍后重试", 503
+        ) from exc
     except (OverflowError, cv2.error):
         choices = []  # Crowded/undetectable photo: allow manual isolation.
     preview = image.copy()

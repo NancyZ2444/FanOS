@@ -9,10 +9,12 @@ import 'package:go_router/go_router.dart';
 
 import 'feedback_center.dart';
 import 'feedback_data.dart';
+import 'feedback_crop_page.dart';
 
 class MissingCardFeedbackPage extends ConsumerStatefulWidget {
-  const MissingCardFeedbackPage({required this.args, super.key});
+  const MissingCardFeedbackPage({this.args, this.feedbackId, super.key});
   final ScanFeedbackRouteArgs? args;
+  final String? feedbackId;
   @override
   ConsumerState<MissingCardFeedbackPage> createState() =>
       _MissingCardFeedbackState();
@@ -23,12 +25,16 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
   ScanFeedbackSourceOption? _source;
   List<ScanFeedbackSourceOption> _options = [];
   FeedbackJson? _front, _back;
+  FeedbackJson? _record;
+  bool _loadingRecord = false;
+  String? _recordError;
   bool _groupCard = false,
       _double = false,
       _missing = false,
       _busy = false,
       _optionsBusy = false;
   String? _optionsError;
+  String? _formError, _linksError;
   final _missingName = TextEditingController(),
       _notes = TextEditingController(),
       _links = TextEditingController();
@@ -37,11 +43,74 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
   @override
   void initState() {
     super.initState();
+    if (widget.feedbackId != null) {
+      _loadRecord();
+      return;
+    }
     final candidate = widget.args?.detectedCard.candidates.firstOrNull?.card;
     if (candidate != null) {
       _groupId = candidate.groupId.isEmpty ? null : candidate.groupId;
       _idolId = candidate.idolId.isEmpty ? null : candidate.idolId;
       _groupCard = candidate.isGroupCard;
+    }
+  }
+
+  FeedbackJson get _submission =>
+      Map<String, dynamic>.from(_record?['submission'] as Map? ?? {});
+  FeedbackJson get _scan =>
+      Map<String, dynamic>.from(_submission['scan'] as Map? ?? {});
+  String? get _detectedId =>
+      widget.args?.detectedCard.id ?? _scan['detected_card_id'] as String?;
+  String? get _cropUrl =>
+      widget.args?.detectedCard.cropImagePath ??
+      _scan['crop_image_url'] as String?;
+  String? get _originalUrl =>
+      widget.args?.session.originalImagePath ??
+      _scan['original_image_url'] as String?;
+
+  Future<void> _loadRecord() async {
+    setState(() {
+      _loadingRecord = true;
+      _recordError = null;
+    });
+    try {
+      final record = await ref
+          .read(feedbackRepositoryProvider)
+          .get('/records/${widget.feedbackId}');
+      if (!mounted) return;
+      final submission = Map<String, dynamic>.from(
+        record['submission'] as Map? ?? {},
+      );
+      final missing = Map<String, dynamic>.from(
+        submission['missing'] as Map? ?? {},
+      );
+      setState(() {
+        _record = record;
+        _groupId = missing['group_id'] as String?;
+        _idolId = missing['idol_id'] as String?;
+        _groupCard = missing['is_group_pc'] == true;
+        _double = missing['is_double_sided'] == true;
+        _sourceType = missing['source_entity_type'] as String?;
+        _missingName.text = missing['missing_source_name'] as String? ?? '';
+        _missing = (missing['source_entity_id'] as String?)?.isNotEmpty != true;
+        _front = submission['front'] is Map
+            ? Map<String, dynamic>.from(submission['front'] as Map)
+            : null;
+        _back = submission['back'] is Map
+            ? Map<String, dynamic>.from(submission['back'] as Map)
+            : null;
+        _notes.text = submission['notes'] as String? ?? '';
+        _links.text = (submission['links'] as List? ?? []).join('\n');
+      });
+      await _optionsLoad(
+        restoreSourceId: missing['source_entity_id'] as String?,
+        restoreVersionId: missing['source_version_id'] as String?,
+        restoreVersionName: missing['source_version_name'] as String?,
+      );
+    } catch (e) {
+      if (mounted) setState(() => _recordError = feedbackError(e));
+    } finally {
+      if (mounted) setState(() => _loadingRecord = false);
     }
   }
 
@@ -53,7 +122,11 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
     super.dispose();
   }
 
-  Future<void> _optionsLoad() async {
+  Future<void> _optionsLoad({
+    String? restoreSourceId,
+    String? restoreVersionId,
+    String? restoreVersionName,
+  }) async {
     final generation = ++_generation;
     setState(() {
       _source = null;
@@ -73,7 +146,29 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
             idolId: _groupCard ? null : _idolId,
           );
       if (mounted && generation == _generation) {
-        setState(() => _options = options);
+        setState(() {
+          _options = options;
+          if (restoreSourceId != null) {
+            _source = options.where((o) => o.id == restoreSourceId).firstOrNull;
+            _version =
+                _source?.versions.any((v) => v.id == restoreVersionId) == true
+                ? restoreVersionId
+                : null;
+            // Older feedback can still refer to a read-only version ID that
+            // became a canonical record while an operator saved the draft.
+            // Only a unique name within the same album may bridge that change.
+            if (_version == null && restoreVersionName?.isNotEmpty == true) {
+              String normalize(String name) =>
+                  name.trim().replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
+              final matches = _source?.versions
+                  .where(
+                    (v) => normalize(v.name) == normalize(restoreVersionName!),
+                  )
+                  .toList();
+              if (matches?.length == 1) _version = matches!.single.id;
+            }
+          }
+        });
       }
     } catch (e) {
       if (mounted && generation == _generation) {
@@ -87,10 +182,64 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
   }
 
   Future<void> _picture(bool back) async {
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       final image = await ref.read(feedbackRepositoryProvider).pickImage();
-      if (mounted && image != null) {
+      if (!mounted || image == null) return;
+      final url = image['image_url'] as String?;
+      if (url == null || url.isEmpty) {
+        throw StateError('Missing uploaded image');
+      }
+      final bounds = await Navigator.of(context).push<List<double>>(
+        MaterialPageRoute(
+          builder: (_) => FeedbackCropPage(url: url, side: back ? '背面' : '正面'),
+        ),
+      );
+      if (!mounted || bounds == null) return;
+      final cropped = await ref.read(feedbackRepositoryProvider).post(
+        '/images/crop',
+        {'image_id': image['id'], 'crop': bounds},
+      );
+      if (mounted) {
+        setState(() {
+          if (back) {
+            _back = cropped;
+          } else {
+            _front = cropped;
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) showFanToast(context, feedbackError(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _crop(bool back) async {
+    final current = back ? _back : _front;
+    final url = current?['image_url'] as String? ?? (back ? null : _cropUrl);
+    if (_busy || url == null) return;
+    final bounds = await Navigator.of(context).push<List<double>>(
+      MaterialPageRoute(
+        builder: (_) => FeedbackCropPage(url: url, side: back ? '背面' : '正面'),
+      ),
+    );
+    if (bounds == null || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final image = await ref.read(feedbackRepositoryProvider).post(
+        '/images/crop',
+        {
+          if (current?['id'] != null)
+            'image_id': current!['id']
+          else
+            'detected_card_id': _detectedId,
+          'crop': bounds,
+        },
+      );
+      if (mounted) {
         setState(() {
           if (back) {
             _back = image;
@@ -106,52 +255,36 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
     }
   }
 
-  Future<void> _crop() async {
-    final args = widget.args;
-    if (args == null) return;
-    final bounds = await showModalBottomSheet<List<double>>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (_) => _FeedbackCrop(url: args.detectedCard.cropImagePath),
-    );
-    if (bounds == null || !mounted) return;
-    setState(() => _busy = true);
-    try {
-      final image = await ref.read(feedbackRepositoryProvider).post(
-        '/images/crop',
-        {'detected_card_id': args.detectedCard.id, 'crop': bounds},
-      );
-      if (mounted) setState(() => _front = image);
-    } catch (e) {
-      if (mounted) showFanToast(context, feedbackError(e));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
   Future<void> _submit() async {
     final args = widget.args;
-    if (args == null || _busy) return;
+    if ((args == null && _record == null) || _busy) return;
+    FocusManager.instance.primaryFocus?.unfocus();
     if (_groupId == null || !_groupCard && _idolId == null) {
-      showFanToast(context, '请选择组合及艺人；团体小卡可免选艺人');
+      setState(() => _formError = '请选择组合及艺人；团体小卡可免选艺人');
       return;
     }
     if (_sourceType == null ||
         (!_missing && _source == null) ||
         (_missing && _missingName.text.trim().isEmpty)) {
-      showFanToast(context, '请选择来源，或填写缺失的来源名称');
+      setState(() => _formError = '请选择来源，或填写缺失的来源名称');
       return;
     }
     if (_double && _back == null) {
-      showFanToast(context, '双面小卡必须补充背面图片');
+      setState(() => _formError = '双面小卡必须补充背面图片');
+      return;
+    }
+    final linkError = feedbackLinkError(_links.text);
+    setState(() => _linksError = linkError);
+    if (linkError != null) {
+      setState(() => _formError = linkError);
       return;
     }
     final body = <String, dynamic>{
       'kind': 'MISSING_CARD',
       'missing': {
-        'scan_session_id': args.session.id,
-        'detected_card_id': args.detectedCard.id,
+        ...Map<String, dynamic>.from(_submission['missing'] as Map? ?? {}),
+        'scan_session_id': args?.session.id ?? _scan['scan_session_id'],
+        'detected_card_id': _detectedId,
         'group_id': _groupId,
         'idol_id': _groupCard ? null : _idolId,
         'is_group_pc': _groupCard,
@@ -164,24 +297,45 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
         'back_image_id': _back?['id'],
       },
       'notes': _notes.text.trim(),
+      if (_record != null) 'revision': _record!['revision'],
+      if (_record != null)
+        'evidence_ids': feedbackItems(_submission['evidence'])
+            .map((e) => e['id'])
+            .whereType<String>()
+            .toList(),
       'links': _links.text
           .split('\n')
           .map((s) => s.trim())
           .where((s) => s.isNotEmpty)
           .toList(),
     };
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _formError = null;
+    });
     try {
-      final row = await ref.read(feedbackRepositoryProvider).post('', {
-        ...body,
-        'request_key': _key.forPayload(body),
-      });
+      final row = await ref.read(feedbackRepositoryProvider).post(
+        _record == null ? '' : '/records/${widget.feedbackId}/resubmit',
+        {...body, 'request_key': _key.forPayload(body)},
+      );
       if (mounted) {
-        showFanToast(context, '反馈已提交，可查看处理进度');
-        context.pushReplacement('/feedback/${row['id']}');
+        if (args?.returnToResult == true && _record == null) {
+          showFanToast(context, '反馈已提交');
+          Navigator.of(context).pop(true);
+          return;
+        }
+        showFanToast(
+          context,
+          _record == null ? '反馈已提交，可查看处理进度' : '补充信息已提交，等待平台重新核实',
+        );
+        if (_record != null && context.canPop()) {
+          context.pop(true);
+        } else {
+          context.pushReplacement('/feedback/${row['id']}');
+        }
       }
     } catch (e) {
-      if (mounted) showFanToast(context, feedbackError(e));
+      if (mounted) setState(() => _formError = feedbackError(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -190,9 +344,33 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
   @override
   Widget build(BuildContext context) {
     final args = widget.args;
-    if (args == null) {
+    if (_loadingRecord || _recordError != null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('小卡缺失反馈')),
+        appBar: AppBar(title: const Text('补充小卡信息')),
+        body: _loadingRecord
+            ? const Center(child: CircularProgressIndicator())
+            : FanEmptyState(
+                icon: Icons.cloud_off_outlined,
+                title: '反馈加载失败',
+                message: _recordError!,
+                actionLabel: '重试',
+                onAction: _loadRecord,
+              ),
+      );
+    }
+    if (_record != null && _record!['can_resubmit'] != true) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('补充小卡信息')),
+        body: const FanEmptyState(
+          icon: Icons.info_outline,
+          title: '当前反馈无需补充',
+          message: '反馈状态已更新，请返回反馈进度查看最新结果。',
+        ),
+      );
+    }
+    if (args == null && _record == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('我要反馈')),
         body: const FanEmptyState(
           icon: Icons.feedback_outlined,
           title: '扫描信息已失效',
@@ -201,7 +379,44 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
       );
     }
     return Scaffold(
-      appBar: AppBar(title: const Text('小卡缺失反馈')),
+      appBar: AppBar(title: Text(_record == null ? '我要反馈' : '补充小卡信息')),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (_formError != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    _formError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              SizedBox(
+                height: 48,
+                child: FilledButton(
+                  key: const Key('submit-missing-feedback'),
+                  onPressed: _busy ? null : _submit,
+                  child: Text(
+                    _busy
+                        ? '处理中…'
+                        : _record == null
+                        ? '确认提交反馈'
+                        : '重新提交信息',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
       body: ref
           .watch(catalogProvider)
           .when(
@@ -230,7 +445,16 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
               return ListView(
                 padding: const EdgeInsets.all(20),
                 children: [
-                  const Text('未匹配不一定是图鉴缺失，平台会先核对是否已有对应小卡。'),
+                  if (_record != null) ...[
+                    Text(
+                      '平台需要你补充：${_record!['public_note'] ?? '请补充可核实的图片或来源信息'}',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 12),
+                    const Text('原提交记录与图片已保留，修改后可重新提交审核。'),
+                    const SizedBox(height: 12),
+                  ],
+                  const Text('将附带扫描原图、裁剪图及候选信息'),
                   const SizedBox(height: 12),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -239,18 +463,24 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
                         child: Column(
                           children: [
                             const Text('正面图片（必填）'),
-                            FeedbackMedia(
-                              _front?['image_url'] ??
-                                  args.detectedCard.cropImagePath,
-                              width: 140,
+                            Semantics(
+                              button: true,
+                              label: '点击更换正面图片',
+                              child: InkWell(
+                                key: const Key('missing-upload-front'),
+                                onTap: _busy ? null : () => _picture(false),
+                                borderRadius: BorderRadius.circular(12),
+                                child: FeedbackMedia(
+                                  _front?['image_url'] ?? _cropUrl,
+                                  key: const Key('missing-front-preview'),
+                                  width: 140,
+                                ),
+                              ),
                             ),
                             TextButton(
-                              onPressed: _busy ? null : () => _picture(false),
-                              child: const Text('更换正面'),
-                            ),
-                            TextButton(
-                              onPressed: _busy ? null : _crop,
-                              child: const Text('调整检测图裁剪'),
+                              key: const Key('missing-crop-front'),
+                              onPressed: _busy ? null : () => _crop(false),
+                              child: const Text('裁剪正面'),
                             ),
                           ],
                         ),
@@ -259,11 +489,26 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
                         child: Column(
                           children: [
                             Text(_double ? '背面图片（必填）' : '背面图片（选填）'),
-                            FeedbackMedia(_back?['image_url'], width: 140),
-                            TextButton(
-                              onPressed: _busy ? null : () => _picture(true),
-                              child: const Text('补充背面'),
+                            Semantics(
+                              button: true,
+                              label: '点击更换背面图片',
+                              child: InkWell(
+                                key: const Key('missing-upload-back'),
+                                onTap: _busy ? null : () => _picture(true),
+                                borderRadius: BorderRadius.circular(12),
+                                child: FeedbackMedia(
+                                  _back?['image_url'],
+                                  key: const Key('missing-back-preview'),
+                                  width: 140,
+                                ),
+                              ),
                             ),
+                            if (_back != null)
+                              TextButton(
+                                key: const Key('missing-crop-back'),
+                                onPressed: _busy ? null : () => _crop(true),
+                                child: const Text('裁剪背面'),
+                              ),
                           ],
                         ),
                       ),
@@ -272,7 +517,7 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
                   ExpansionTile(
                     title: const Text('扫描原图与检测上下文'),
                     children: [
-                      FeedbackMedia(args.session.originalImagePath, width: 210),
+                      FeedbackMedia(_originalUrl, width: 210),
                       const Text('原图、检测区域、候选结果会自动保留给审核人员。'),
                     ],
                   ),
@@ -342,6 +587,7 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
                     ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
+                    key: const Key('missing-feedback-source-type'),
                     initialValue: _sourceType,
                     decoration: const InputDecoration(labelText: '来源类型 *'),
                     items: const [
@@ -430,6 +676,7 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
                   ],
                   const SizedBox(height: 16),
                   TextField(
+                    key: const Key('missing-feedback-notes'),
                     controller: _notes,
                     maxLength: 2000,
                     maxLines: 3,
@@ -439,136 +686,27 @@ class _MissingCardFeedbackState extends ConsumerState<MissingCardFeedbackPage> {
                     ),
                   ),
                   TextField(
+                    key: const Key('missing-feedback-links'),
                     controller: _links,
                     maxLines: 2,
-                    decoration: const InputDecoration(
+                    onChanged: (_) {
+                      if (_linksError != null) {
+                        setState(
+                          () => _linksError = feedbackLinkError(_links.text),
+                        );
+                      }
+                    },
+                    decoration: InputDecoration(
                       labelText: '来源链接（选填，最多6条，每行一条）',
+                      errorText: _linksError,
+                      errorMaxLines: 3,
                     ),
                   ),
                   const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: _busy ? null : _submit,
-                    child: Text(_busy ? '处理中…' : '确认提交反馈'),
-                  ),
-                  TextButton(
-                    onPressed: () =>
-                        context.push('/feedback?kind=MISSING_CARD'),
-                    child: const Text('查看我的反馈进度'),
-                  ),
                 ],
               );
             },
           ),
     );
   }
-}
-
-class _FeedbackCrop extends StatefulWidget {
-  const _FeedbackCrop({this.url});
-  final String? url;
-  @override
-  State<_FeedbackCrop> createState() => _FeedbackCropState();
-}
-
-class _FeedbackCropState extends State<_FeedbackCrop> {
-  RangeValues _x = const RangeValues(0, 1), _y = const RangeValues(0, 1);
-  double _ratio = .74;
-  ImageStream? _stream;
-  late final ImageStreamListener _listener;
-  @override
-  void initState() {
-    super.initState();
-    _listener = ImageStreamListener((image, _) {
-      if (mounted) {
-        setState(() => _ratio = image.image.width / image.image.height);
-      }
-    });
-    if (widget.url?.startsWith('http') == true) {
-      _stream = NetworkImage(widget.url!).resolve(ImageConfiguration.empty);
-      _stream!.addListener(_listener);
-    }
-  }
-
-  @override
-  void dispose() {
-    _stream?.removeListener(_listener);
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => SingleChildScrollView(
-    child: Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Text('调整裁剪范围'),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: 220,
-            child: AspectRatio(
-              aspectRatio: _ratio,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (widget.url?.startsWith('http') == true)
-                    Image.network(
-                      widget.url!,
-                      fit: BoxFit.contain,
-                      errorBuilder: (_, _, _) =>
-                          const Icon(Icons.broken_image_outlined),
-                    )
-                  else
-                    FeedbackMedia(widget.url, width: 220),
-                  LayoutBuilder(
-                    builder: (context, size) => Stack(
-                      children: [
-                        Positioned(
-                          left: size.maxWidth * _x.start,
-                          top: size.maxHeight * _y.start,
-                          width: size.maxWidth * (_x.end - _x.start),
-                          height: size.maxHeight * (_y.end - _y.start),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              border: Border.all(
-                                color: Colors.deepPurple,
-                                width: 3,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const Text('左右边界'),
-          RangeSlider(
-            values: _x,
-            onChanged: (v) {
-              if (v.end - v.start >= .05) setState(() => _x = v);
-            },
-          ),
-          const Text('上下边界'),
-          RangeSlider(
-            values: _y,
-            onChanged: (v) {
-              if (v.end - v.start >= .05) setState(() => _y = v);
-            },
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, [
-              _x.start,
-              _y.start,
-              _x.end - _x.start,
-              _y.end - _y.start,
-            ]),
-            child: const Text('使用裁剪图'),
-          ),
-        ],
-      ),
-    ),
-  );
 }

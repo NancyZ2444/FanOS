@@ -1,11 +1,13 @@
 """Saved albums are references. Publishing a folder never publishes its source albums."""
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.album_models import AlbumFavoriteGroup, AlbumFavoritePlacement, AlbumReaction
+from app.album_models import AlbumFavoriteGroup, AlbumFavoritePlacement, AlbumReaction, AlbumWork
 from app.common.response import DomainError, success
 from app.core.database import get_db
 from app.core.security import current_user, optional_user
@@ -84,6 +86,7 @@ def public_only(query):
         CardAlbum.is_public.is_(True),
         CardAlbum.status == "PUBLISHED",
         CardAlbum.is_moderated.is_(False),
+        CardAlbum.publication_blocked.is_(False),
         CardAlbum.user_id.in_(select(User.id).where(User.is_active.is_(True))),
     )
 
@@ -167,6 +170,7 @@ def update_group(
 def saved_albums(
     user_id: str,
     group_id: str | None = None,
+    work_mode: Literal["ALL", "BOOK", "CARDS"] = "ALL",
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=50),
     viewer: User | None = Depends(optional_user),
@@ -176,6 +180,10 @@ def saved_albums(
     if not visible:
         return success({"items": [], "next_offset": None})
     query = favorite_query(owner.id)
+    if work_mode != "ALL":
+        query = query.join(AlbumWork, AlbumWork.album_id == AlbumReaction.album_id).where(
+            AlbumWork.mode == work_mode
+        )
     if not is_owner:
         query = public_only(query)
     if group_id == "ungrouped":

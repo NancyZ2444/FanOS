@@ -1,3 +1,4 @@
+import { canPermission } from "../api/permissions";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -25,6 +26,7 @@ import {
 } from "../components/admin";
 import { useConsole } from "../state";
 import FeedbackReview from "./feedback/FeedbackReview";
+import MissingCatalogReview from "./feedback/MissingCatalogReview";
 import {
   kinds,
   resultLabel,
@@ -36,7 +38,11 @@ import {
 } from "./feedback/types";
 import "./feedback/feedback.css";
 
-export default function FeedbackWorkbench({ kind }: { kind: FeedbackKind }) {
+export default function FeedbackWorkbench({
+  kind,
+}: {
+  kind: FeedbackKind | "ADDITIONS";
+}) {
   const { actor } = useConsole();
   const { feedbackId } = useParams();
   const navigate = useNavigate();
@@ -54,10 +60,12 @@ export default function FeedbackWorkbench({ kind }: { kind: FeedbackKind }) {
   const [resetKey, setResetKey] = useState(0);
   const [detailReload, setDetailReload] = useState(0);
   const listRequest = useRef(0);
-  const title = kind === "MISSING_CARD" ? "小卡缺失收录" : "图鉴问题纠错";
-  const base =
-    kind === "MISSING_CARD" ? "/catalog/missing-cards" : "/catalog/corrections";
-  const canEdit = actor.role === "admin" || actor.role === "content_operator";
+  const addition = kind !== "CORRECTION";
+  const title = addition ? "图鉴新增" : "图鉴信息错误";
+  const base = addition ? "/catalog/additions" : "/catalog/corrections";
+  const canEdit =
+    canPermission(actor, "catalog.edit") ||
+    canPermission(actor, "catalog.publish");
   const load = useCallback(async () => {
     const ticket = ++listRequest.current;
     setLoading(true);
@@ -101,7 +109,11 @@ export default function FeedbackWorkbench({ kind }: { kind: FeedbackKind }) {
     void consoleApi<FeedbackRecord>(`/feedback/${feedbackId}`)
       .then((data) => {
         if (!active) return;
-        if (data.kind !== kind) {
+        if (
+          kind === "ADDITIONS"
+            ? !["MISSING_CARD", "MISSING_CATALOG"].includes(data.kind)
+            : data.kind !== kind
+        ) {
           setDetailError("该反馈不属于当前模块，请返回对应列表查看。");
           return;
         }
@@ -163,6 +175,15 @@ export default function FeedbackWorkbench({ kind }: { kind: FeedbackKind }) {
           </Button>
         </>
       );
+    if (item && item.kind === "MISSING_CATALOG")
+      return (
+        <MissingCatalogReview
+          key={`${item.id}-${item.revision}`}
+          item={item}
+          onBack={() => navigate(base)}
+          onSaved={setItem}
+        />
+      );
     return item ? (
       <FeedbackReview
         key={`${item.id}-${item.revision}-${resetKey}`}
@@ -188,9 +209,9 @@ export default function FeedbackWorkbench({ kind }: { kind: FeedbackKind }) {
       <PageHeader
         title={title}
         description={
-          kind === "MISSING_CARD"
-            ? "核对缺失小卡，保存草稿后经发布才计为收录。"
-            : "逐项核对用户建议与平台最新值，发布后更新正式图鉴。"
+          addition
+            ? "核对用户提交的新增申请，提交处理结果后同步用户；已采纳内容需单独发布。"
+            : "逐项核对用户建议，提交处理结果后同步用户；已采纳内容需单独发布。"
         }
       />
       <FilterBar
@@ -225,25 +246,60 @@ export default function FeedbackWorkbench({ kind }: { kind: FeedbackKind }) {
         }
       >
         <Select
-          aria-label="收录结果"
+          aria-label="处理结果"
           allowClear
-          placeholder="全部收录结果"
+          placeholder="全部处理结果"
           value={filters.result}
           onChange={(v) => filter("result", v)}
-          options={["PENDING", "INCLUDED", "NOT_INCLUDED"].map((value) => ({
-            value,
-            label: resultLabel(value, kind),
-          }))}
+          options={["PENDING", "INCLUDED", "NOT_INCLUDED", "NEEDS_INFO"].map(
+            (value) => ({
+              value,
+              label: resultLabel(value, "CORRECTION"),
+            }),
+          )}
         />
-        {kind === "CORRECTION" && (
+        {addition && (
           <Select
             aria-label="对象类型"
             allowClear
             placeholder="全部对象类型"
             value={filters.entity_type}
-            options={kinds}
+            options={kinds.filter((v) => v.value !== "companies")}
             onChange={(v) => filter("entity_type", v)}
           />
+        )}
+        {kind === "CORRECTION" && (
+          <>
+            <Select
+              aria-label="纠错范围"
+              placeholder="全部纠错"
+              allowClear
+              value={filters.profile_only}
+              options={[{ value: "true", label: "资料修订" }]}
+              onChange={(v) => filter("profile_only", v)}
+            />
+            <Select
+              aria-label="资料板块"
+              placeholder="全部资料板块"
+              allowClear
+              value={filters.section_key}
+              options={Object.entries({
+                intro: "简介",
+                basic: "基本资料",
+                career: "从艺历程",
+                honors: "荣誉记录",
+              }).map(([value, label]) => ({ value, label }))}
+              onChange={(v) => filter("section_key", v)}
+            />
+            <Select
+              aria-label="对象类型"
+              allowClear
+              placeholder="全部对象类型"
+              value={filters.entity_type}
+              options={kinds}
+              onChange={(v) => filter("entity_type", v)}
+            />
+          </>
         )}
       </FilterBar>
       {error && (
@@ -294,11 +350,7 @@ export default function FeedbackWorkbench({ kind }: { kind: FeedbackKind }) {
               filtered
                 ? undefined
                 : () =>
-                    navigate(
-                      kind === "MISSING_CARD"
-                        ? "/catalog/cards"
-                        : "/catalog/groups",
-                    )
+                    navigate(addition ? "/catalog/cards" : "/catalog/groups")
             }
             createLabel="查看图鉴"
           />
@@ -356,19 +408,23 @@ export default function FeedbackWorkbench({ kind }: { kind: FeedbackKind }) {
                 ),
               },
               {
-                title: "收录结果",
-                width: 104,
+                title: "处理结果",
+                width: 144,
                 render: (_, r) => (
                   <Tag
                     color={
                       r.result === "INCLUDED"
                         ? "success"
-                        : r.result === "NOT_INCLUDED"
-                          ? "error"
-                          : "default"
+                        : r.review_decision === "ACCEPTED"
+                          ? "processing"
+                          : r.result === "NOT_INCLUDED"
+                            ? "error"
+                            : r.result === "NEEDS_INFO"
+                              ? "warning"
+                              : "default"
                     }
                   >
-                    {resultLabel(r.result, kind)}
+                    {resultLabel(r.result, r.kind, r.review_decision)}
                   </Tag>
                 ),
               },

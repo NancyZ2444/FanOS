@@ -16,34 +16,16 @@ const complete = () => ({
   },
 });
 describe("catalog publication requirements", () => {
-  it("user-submitted image links are optional but copyright checks remain required", () => {
+  it("publishes without manual image provenance or copyright fields", () => {
     const card = {
       ...complete(),
-      front_source: {
-        source_type: "USER_SUBMITTED",
-        source_url: "",
-        copyright_status: "AUTHORIZED",
-      },
+      front_source: undefined,
+      back_source: undefined,
     };
     expect(validateCard(card, true)).toEqual([]);
     expect(
-      validateCard(
-        {
-          ...card,
-          front_source: { ...card.front_source, copyright_status: "UNKNOWN" },
-        },
-        true,
-      ).map((e) => e.field),
-    ).toEqual(["front_source.copyright_status"]);
-    expect(
-      validateCard(
-        {
-          ...card,
-          front_source: { ...card.front_source, source_type: "OFFICIAL" },
-        },
-        true,
-      ).map((e) => e.field),
-    ).toContain("front_source.source_url");
+      validateCard({ ...card, source_entity_id: "" }, true).map((e) => e.field),
+    ).toContain("source_entity_id");
   });
   it("does not require a hand-entered name or serial number", () => {
     expect(
@@ -72,18 +54,16 @@ describe("catalog publication requirements", () => {
       expect.arrayContaining(["back_image_url", "ar_resource"]),
     );
   });
-  it("rejects unknown and restricted image rights independently for each side", () => {
+  it("does not overwrite historical provenance when validating publication", () => {
     const card = {
       ...complete(),
-      back_image_url: "https://example.test/back.webp",
-      back_source: {
+      front_source: {
         source_type: "USER_SUBMITTED",
-        source_url: "https://example.test/back-source",
-        copyright_status: "RESTRICTED",
+        source_url: "",
+        copyright_status: "UNKNOWN",
       },
     };
-    expect(validateCard(card, true).map((e) => e.field)).toEqual([
-      "back_source.copyright_status",
-    ]);
+    expect(validateCard(card, true)).toEqual([]);
+    expect(card.front_source.copyright_status).toBe("UNKNOWN");
   });
 });

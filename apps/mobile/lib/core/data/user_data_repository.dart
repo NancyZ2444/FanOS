@@ -9,6 +9,10 @@ class UserAccountSnapshot {
     required this.displayName,
     required this.bio,
     required this.weiboVisible,
+    this.weiboName,
+    this.weiboUrl,
+    this.onboardingCompleted = true,
+    this.passwordSetupRequired = false,
     required this.level,
     required this.experience,
     required this.nextLevelExperience,
@@ -29,6 +33,10 @@ class UserAccountSnapshot {
   final String userId;
   final String bio;
   final bool weiboVisible;
+  final String? weiboName;
+  final String? weiboUrl;
+  final bool onboardingCompleted;
+  final bool passwordSetupRequired;
   final int level;
   final int experience;
   final int nextLevelExperience;
@@ -214,6 +222,11 @@ class ApiUserDataRepository implements UserDataRepository {
       displayName: (profile['display_name'] as String?) ?? '星河收藏家',
       bio: (profile['bio'] as String?) ?? '',
       weiboVisible: profile['weibo_name'] != null,
+      weiboName: profile['weibo_name'] as String?,
+      weiboUrl:
+          (profile['weibo_profile_url'] ?? profile['weibo_url']) as String?,
+      onboardingCompleted: profile['onboarding_completed'] as bool? ?? true,
+      passwordSetupRequired: profile['password_setup_required'] == true,
       level: (profile['level'] as num?)?.toInt() ?? 1,
       experience: (profile['experience'] as num?)?.toInt() ?? 0,
       nextLevelExperience:

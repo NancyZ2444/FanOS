@@ -89,14 +89,34 @@ def submit(db, user, body):
         if existing.data.get("request_hash") != signature:
             raise DomainError("IDEMPOTENCY_CONFLICT", "同一请求编号不能提交不同内容", 409)
         return existing
+    content = submission_content(db, user, body)
+    row = Feedback(
+        user_id=user.id,
+        request_key=body.request_key,
+        kind=body.kind,
+        entity_type=body.entity_type if body.kind in {"CORRECTION", "MISSING_CATALOG"} else "cards",
+        entity_id=body.entity_id if body.kind == "CORRECTION" else "",
+        data=content,
+        history=[{"at": now(), "status": "PENDING", "result": "PENDING", "note": "已收到反馈"}],
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def submission_content(db, user, body):
     evidence = [{"id": i, "image_url": image_for(db, user, i).image_url} for i in body.evidence_ids]
     content = {
-        "request_hash": signature,
+        "request_hash": digest(body.model_dump()),
         "notes": body.notes,
         "evidence": evidence,
         "links": body.links,
     }
-    if body.kind == "CORRECTION":
+    if body.kind == "MISSING_CATALOG":
+        from app.modules.feedback.missing_catalog import submission
+
+        content.update(submission(db, user, body))
+    elif body.kind == "CORRECTION":
         obj = description(db, body.entity_type, body.entity_id)
         if body.object_version != obj["version"]:
             raise DomainError("OBJECT_CHANGED", "资料已更新，请刷新字段后重新核对", 409)
@@ -104,7 +124,7 @@ def submit(db, user, body):
         if not body.fields or len({f.key for f in body.fields}) != len(body.fields):
             raise DomainError("FIELDS_REQUIRED", "请选择至少一个不重复的问题字段", 422)
         details = []
-        for change in body.fields:
+        for field_index, change in enumerate(body.fields):
             field = by_key.get(change.key)
             if not field:
                 raise DomainError("INVALID_FIELD", "该字段不能反馈", 422)
@@ -118,7 +138,17 @@ def submit(db, user, body):
                     proposed = asset.image_url
                     image_id = asset.id
                 else:
-                    validate_value(db, field, proposed)
+                    try:
+                        validate_value(db, field, proposed)
+                    except DomainError as exc:
+                        exc.details = [
+                            {
+                                "loc": ["body", "fields", field_index, "value"],
+                                "field": change.key,
+                                "msg": exc.message,
+                            }
+                        ]
+                        raise
                 if proposed == field["current"]:
                     raise DomainError("UNCHANGED_VALUE", "建议值与当前值相同，请调整", 422)
             if (
@@ -139,7 +169,30 @@ def submit(db, user, body):
                     "image_id": image_id,
                 }
             )
-        content.update(object=obj, fields=details)
+        if obj.get("profile"):
+            if not body.notes.strip():
+                raise DomainError("REASON_REQUIRED", "请填写修订说明及可核实出处", 422)
+            for detail in details:
+                if detail["mode"] == "CLEAR" and not detail["reason"].strip():
+                    raise DomainError("REASON_REQUIRED", "清空资料须逐项填写原因", 422)
+            pending = db.scalars(
+                select(Feedback).where(
+                    Feedback.user_id == user.id,
+                    Feedback.entity_type == body.entity_type,
+                    Feedback.entity_id == body.entity_id,
+                    Feedback.result == "PENDING",
+                )
+            ).all()
+            from app.modules.catalog.profiles import overlapping_suggestions
+
+            if any(overlapping_suggestions(details, r.data.get("fields", [])) for r in pending):
+                raise DomainError("PROFILE_PENDING", "这些字段已有待处理建议，请先查看原反馈", 409)
+        content.update(
+            object=obj,
+            fields=details,
+            profile=bool(obj.get("profile")),
+            contributor_name=user.display_name,
+        )
     else:
         values = dict(body.missing)
         session = db.get(ScanSession, values.get("scan_session_id"))
@@ -153,17 +206,24 @@ def submit(db, user, body):
             raise DomainError("SCAN_NOT_FOUND", "扫描记录不存在", 404)
         from app.modules.scan.router import _validate_feedback_actors, _validate_source_reference
 
-        if (
+        scan_clue = values.get("feedback_mode") == "SCAN_CLUE"
+        if not scan_clue and (
             not values.get("group_id")
             or not values.get("is_group_pc")
             and not values.get("idol_id")
         ):
             raise DomainError("ACTOR_REQUIRED", "请选择组合及艺人，团体小卡可免选艺人", 422)
-        _validate_feedback_actors(db, values["group_id"], values.get("idol_id"))
+        _validate_feedback_actors(db, values.get("group_id"), values.get("idol_id"))
         source_type = values.get("source_entity_type")
-        if source_type not in {"ALBUM", "EVENT", "OTHER"}:
+        if source_type not in {"ALBUM", "EVENT", "OTHER"} and not (
+            scan_clue and source_type is None
+        ):
             raise DomainError("SOURCE_REQUIRED", "请选择专辑、活动或其他来源", 422)
+        if values.get("source_version_id") and not values.get("source_entity_id"):
+            raise DomainError("SOURCE_REQUIRED", "请先选择版本对应的来源", 422)
         if values.get("source_entity_id"):
+            if source_type not in {"ALBUM", "EVENT", "OTHER"}:
+                raise DomainError("SOURCE_REQUIRED", "请选择对应来源类型", 422)
             resolved = _validate_source_reference(
                 db,
                 {
@@ -173,7 +233,7 @@ def submit(db, user, body):
                 },
             )
             values.update(resolved)
-        elif not str(values.get("missing_source_name", "")).strip():
+        elif not scan_clue and not str(values.get("missing_source_name", "")).strip():
             raise DomainError("SOURCE_REQUIRED", "请选择来源或填写缺失来源名称", 422)
         if values.get("front_image_id"):
             front = image_for(db, user, values["front_image_id"])
@@ -187,6 +247,7 @@ def submit(db, user, body):
         if not front.image_url:
             raise DomainError("FRONT_REQUIRED", "请上传正面图片", 422)
         allowed = {
+            "feedback_mode",
             "group_id",
             "idol_id",
             "is_group_pc",
@@ -222,26 +283,142 @@ def submit(db, user, body):
                 ],
             },
         )
-    row = Feedback(
-        user_id=user.id,
-        request_key=body.request_key,
-        kind=body.kind,
-        entity_type=body.entity_type if body.kind == "CORRECTION" else "cards",
-        entity_id=body.entity_id if body.kind == "CORRECTION" else "",
-        data=content,
-        history=[{"at": now(), "status": "PENDING", "result": "PENDING", "note": "已收到反馈"}],
-    )
-    db.add(row)
+    return content
+
+
+def profiles_relation_conflict(field, latest, operations):
+    old = {r["id"]: r for r in field["current"]}
+    current = {r["id"]: r for r in latest}
+    return any(op.get("id") and old.get(op["id"]) != current.get(op["id"]) for op in operations)
+
+
+def resubmit(db, row, user, body):
+    lock_user(db, user)
+    db.refresh(row)
+    signature = digest(body.model_dump())
+    retries = row.review.get("resubmission_requests", {})
+    if body.request_key in retries:
+        if retries[body.request_key] != signature:
+            raise DomainError("IDEMPOTENCY_CONFLICT", "同一请求编号不能提交不同内容", 409)
+        return row
+    if body.revision != row.revision:
+        raise DomainError("FEEDBACK_CHANGED", "反馈已更新，请刷新后重新补充", 409)
+    if body.kind != row.kind:
+        raise DomainError("INVALID_ACTION", "请补充原反馈类型的资料", 422)
+    if row.result != "NEEDS_INFO":
+        raise DomainError("FEEDBACK_NOT_WAITING", "当前反馈无需补充资料，请查看最新处理结果", 409)
+    if row.kind != "MISSING_CARD" and (
+        body.entity_type != row.entity_type
+        or (row.kind == "CORRECTION" and body.entity_id != row.entity_id)
+    ):
+        raise DomainError("OBJECT_CHANGED", "请针对原对象补充资料", 422)
+    for key in ("scan_session_id", "detected_card_id") if row.kind == "MISSING_CARD" else ():
+        if body.missing.get(key) != row.data.get("scan", {}).get(key):
+            raise DomainError("SCAN_CHANGED", "请针对原扫描记录补充资料", 422)
+    content = submission_content(db, user, body)
+    previous = [
+        *row.data.get("previous_submissions", []),
+        {
+            "at": now(),
+            "requested_note": row.public_note,
+            "submission": {
+                k: v
+                for k, v in row.data.items()
+                if k not in {"request_hash", "previous_submissions"}
+            },
+        },
+    ]
+    # The original request key/hash must stay valid if an initial submission is retried.
+    row.data = {
+        **content,
+        "request_hash": row.data["request_hash"],
+        "previous_submissions": previous,
+    }
+    row.review = {
+        **{
+            k: v
+            for k, v in row.review.items()
+            if k
+            not in {
+                "retry_changes",
+                "decisions",
+                "object_version",
+                "public_note_draft",
+                "review_decision",
+                "review_decision_draft",
+                "approved_payload",
+                "submitted_payload",
+                "approval_target_version",
+                "public_decision",
+                "catalog_draft",
+            }
+        },
+        **(
+            {
+                "previous_catalog_drafts": [
+                    *row.review.get("previous_catalog_drafts", []),
+                    row.review["catalog_draft"],
+                ]
+            }
+            if row.review.get("catalog_draft")
+            else {}
+        ),
+        "submission_changed": True,
+        "resubmission_requests": {**retries, body.request_key: signature},
+    }
+    row.status = "PENDING"
+    row.result = "PENDING"
+    row.public_note = ""
+    row.handler_id = None
+    event(db, row, "已补充信息，等待重新审核", action="resubmit", notify=False)
     db.flush()
     return row
 
 
-def label(row):
+PUBLIC_RESULTS = {"INCLUDED", "NOT_INCLUDED", "NEEDS_INFO"}
+
+
+def accepted(row):
+    return row.result == "PENDING" and row.review.get("review_decision") == "ACCEPTED"
+
+
+def publicly_accepted(row):
+    return row.result == "PENDING" and row.review.get("public_decision") == "ACCEPTED"
+
+
+def label(row, *, admin=False):
+    if accepted(row) if admin else publicly_accepted(row):
+        return "已采纳，待发布"
+    if row.data.get("profile") and row.result in {"INCLUDED", "NOT_INCLUDED", "NEEDS_INFO"}:
+        return {
+            "INCLUDED": "已收录",
+            "NOT_INCLUDED": "已处理 · 未采用",
+            "NEEDS_INFO": "待补充信息",
+        }[row.result]
     if row.result == "INCLUDED":
-        return "已收录"
+        return "已采用"
     if row.result == "NOT_INCLUDED":
-        return "未收录" if row.kind == "MISSING_CARD" else "已处理"
+        return "无法采用"
+    if row.result == "NEEDS_INFO":
+        return "信息缺失待补充"
+    if not admin:
+        return "待处理"
     return {"PENDING": "待处理", "PROCESSING": "处理中", "PROCESSED": "已处理"}[row.status]
+
+
+def public_history(row):
+    # Older releases put draft saves and failed validation into the public timeline.
+    # Preserve those entries for operators, but never expose them as user updates.
+    return [
+        item
+        for index, item in enumerate(row.history or [])
+        if item.get("visibility") != "INTERNAL"
+        and (
+            index == 0
+            or item.get("result") in PUBLIC_RESULTS
+            or item.get("action") in {"resubmit", "decide"}
+        )
+    ]
 
 
 def payload(db, row, admin=False):
@@ -253,26 +430,34 @@ def payload(db, row, admin=False):
             available = True
         except DomainError:
             pass
-    decisions = row.review.get("decisions", [])
+    history = public_history(row)
+    decisions = row.review.get("decisions", []) if admin or row.result in PUBLIC_RESULTS else []
+    public_updated_at = history[-1]["at"] if history else row.created_at.isoformat()
     result = {
         "id": row.id,
         "kind": row.kind,
         "entity_type": row.entity_type,
-        "entity_id": row.entity_id,
-        "status": row.status,
+        "entity_id": row.entity_id if admin or available else "",
+        "status": row.status if admin or row.result in PUBLIC_RESULTS else "PENDING",
         "result": row.result,
-        "status_label": label(row),
+        "status_label": label(row, admin=admin),
         "revision": row.revision,
         "name": obj.get("name") or row.data.get("missing", {}).get("title") or "小卡缺失反馈",
         "image_url": obj.get("image_url") or row.data.get("front", {}).get("image_url"),
         "created_at": row.created_at.isoformat(),
-        "updated_at": row.updated_at.isoformat(),
-        "public_note": row.public_note,
-        "history": row.history,
+        "updated_at": row.updated_at.isoformat() if admin else public_updated_at,
+        "public_note": row.public_note
+        if row.result in PUBLIC_RESULTS or publicly_accepted(row)
+        else "",
+        "history": row.history if admin else history,
+        "can_resubmit": row.kind in {"MISSING_CARD", "CORRECTION"} and row.result == "NEEDS_INFO",
+        "profile_version": row.review.get("profile_version") if row.result == "INCLUDED" else None,
         "target_available": available,
         "submission": {k: v for k, v in row.data.items() if k != "request_hash"},
         "decisions": decisions,
     }
+    if row.kind == "MISSING_CATALOG" and row.entity_type == "versions" and available:
+        result["target_parent_id"] = row.review.get("catalog_draft", {}).get("album_id")
     if admin:
         user = db.get(User, row.user_id)
         result.update(
@@ -280,7 +465,11 @@ def payload(db, row, admin=False):
             internal_note=row.internal_note,
             handler_id=row.handler_id,
             review=row.review,
+            review_decision=row.review.get("review_decision"),
+            can_publish=accepted(row),
         )
+        if row.kind == "MISSING_CATALOG":
+            result["draft"] = row.review.get("catalog_draft")
         if row.entity_id:
             try:
                 _, raw = target(db, row.entity_type, row.entity_id, False)
@@ -295,13 +484,23 @@ def payload(db, row, admin=False):
     return result
 
 
-def event(db, row, note):
+def event(db, row, note, *, public=True, action=None, notify=True):
     row.revision += 1
     row.history = [
         *row.history,
-        {"at": now(), "status": row.status, "result": row.result, "note": note},
+        {
+            "at": now(),
+            "status": row.status,
+            "result": row.result,
+            "note": note,
+            "visibility": "PUBLIC" if public else "INTERNAL",
+            **({"action": action} if action else {}),
+            **(
+                {"review_decision": row.review.get("review_decision")} if action == "decide" else {}
+            ),
+        },
     ]
-    if row.status == "PROCESSED":
+    if public and notify and (row.result in PUBLIC_RESULTS or action == "decide"):
         notice_id = f"{row.id}:{row.revision}"
         db.add(
             FeedbackNotice(
@@ -313,13 +512,20 @@ def event(db, row, note):
                     "body": note[:500],
                     "status": row.status,
                     "result": row.result,
+                    "review_decision": row.review.get("review_decision"),
                 },
             )
         )
 
 
 def deliver_notices(db, user_id=None):
-    query = select(FeedbackNotice).where(FeedbackNotice.delivered.is_(False))
+    query = select(FeedbackNotice).where(
+        FeedbackNotice.delivered.is_(False),
+        (
+            FeedbackNotice.data["result"].as_string().in_(PUBLIC_RESULTS)
+            | (FeedbackNotice.data["review_decision"].as_string() == "ACCEPTED")
+        ),
+    )
     if user_id:
         query = query.where(FeedbackNotice.user_id == user_id)
     ids = list(db.scalars(query.limit(100)))
@@ -396,10 +602,18 @@ def draft_missing(db, row, actor, changes):
     current = {}
     if row.entity_id:
         _, current = target(db, "cards", row.entity_id, False)
-    else:
+    if not row.entity_id or row.review.get("submission_changed"):
         source = row.data["missing"]
-        current = {k: v for k, v in source.items() if k in CardDraft.model_fields}
+        current = {
+            **current,
+            **{k: v for k, v in source.items() if k in CardDraft.model_fields},
+            "is_group_pc": bool(source.get("is_group_pc")),
+            "is_double_sided": bool(source.get("is_double_sided")),
+            "idol_id": source.get("idol_id"),
+        }
+        current["source_entity_id"] = source.get("source_entity_id")
         current["entity_version_id"] = source.get("source_version_id")
+        current["version"] = source.get("source_version_name") or source.get("version") or ""
         if str(current.get("entity_version_id", "")).startswith("legacy_version_"):
             # Legacy source arrays have no editable ID until an operator creates the draft.
             from app.models import CatalogAlbum
@@ -415,7 +629,8 @@ def draft_missing(db, row, actor, changes):
         for field, key in [("image_url", "front"), ("back_image_url", "back")]:
             current[field] = (row.data.get(key) or {}).get("image_url")
             current["front_source" if key == "front" else "back_source"] = {
-                "source_type": "USER_SUBMITTED"
+                "source_type": "USER_SUBMITTED",
+                "copyright_status": "UNKNOWN",
             }
     if current.get("status") == "PUBLISHED":
         raise DomainError("DRAFT_PUBLISHED", "关联草稿已发布，请重新核实该反馈，不能重复创建", 409)
@@ -440,6 +655,10 @@ def draft_missing(db, row, actor, changes):
         submission_id=row.id,
     )
     row.entity_id = saved.id
+    row.review = {
+        **{k: v for k, v in row.review.items() if k != "retry_changes"},
+        "submission_changed": False,
+    }
     # Preserve submission identity even before publication.
     for v in db.scalars(select(CardImageVersion).where(CardImageVersion.card_id == saved.id)):
         key = "front" if v.side == "FRONT" else "back"
@@ -488,6 +707,8 @@ def publish_correction(db, row, actor, body):
     actual = []
     for decision in decisions:
         field = submitted[decision["key"]]
+        if row.entity_type in {"groups", "idols"} and field["key"] == "release_date":
+            field = {**field, "key": "debut_date" if row.entity_type == "groups" else "birth_date"}
         decision = dict(decision)
         if decision["decision"] == "REJECT":
             if not decision.get("reason", "").strip():
@@ -520,6 +741,21 @@ def publish_correction(db, row, actor, body):
             if current_field is None:
                 raise DomainError("FIELD_RETIRED", "该字段已停止接受纠错，请填写原因并不采纳", 422)
             latest = current_field["current"]
+            if (
+                row.entity_type in {"groups", "idols"}
+                and (
+                    field["current"] != latest
+                    if field["type"] != "relations"
+                    else profiles_relation_conflict(field, latest, value)
+                )
+                and decision["decision"] == "ACCEPT"
+                and value != latest
+            ):
+                raise DomainError(
+                    "PROFILE_FIELD_CONFLICT",
+                    "该字段在提交后已更新，请对照最新全文并选择修改后采纳",
+                    409,
+                )
             clearing_legacy_version = (
                 field["key"] == "entity_version_id"
                 and value is None
@@ -563,8 +799,6 @@ def publish_correction(db, row, actor, body):
         for side in adopted:
             key = "front_source" if side == "FRONT" else "back_source"
             info = body.sources.get(key, {})
-            if info.get("copyright_status") not in {"AUTHORIZED", "OFFICIAL_SOURCE"}:
-                raise DomainError("COPYRIGHT_REQUIRED", "请独立确认采用图片的使用状态", 422)
             changes[key] = {**info, "source_type": "USER_SUBMITTED"}
         catalog.transition_card(db, actor, old.id, "offline")
         # Lifecycle transitions change updated_at, so compare the version before transition.
@@ -578,15 +812,28 @@ def publish_correction(db, row, actor, body):
         catalog.transition_card(db, actor, old.id, "submit")
         catalog.transition_card(db, actor, old.id, "publish")
         image_origins(db, row, card, actor, adopted)
+    elif row.entity_type in {"groups", "idols"}:
+        from app.modules.catalog import profiles
+
+        user = db.get(User, row.user_id)
+        version = profiles.publish(
+            db,
+            row.entity_type,
+            row.entity_id,
+            changes,
+            actor=actor,
+            summary=body.public_note,
+            expected=obj["version"],
+            user=user,
+            submission_id=row.id,
+            adjusted=any(d["decision"] == "MODIFY" for d in actual),
+            author_name=row.data.get("contributor_name"),
+        )
+        row.review = {**row.review, "profile_version": version.id}
     elif row.entity_type in {"companies", "versions"}:
-        if adopted and body.sources.get("source_info", {}).get("copyright_status") not in {
-            "AUTHORIZED",
-            "OFFICIAL_SOURCE",
-        }:
-            raise DomainError("COPYRIGHT_REQUIRED", "请确认图片的使用状态", 422)
         if adopted:
             changes["source_info"] = {
-                **body.sources["source_info"],
+                **body.sources.get("source_info", {}),
                 "source_type": "USER_SUBMITTED",
             }
         if not (changes.get("name", raw.get("name")) or "").strip():
@@ -604,14 +851,9 @@ def publish_correction(db, row, actor, body):
         else:
             old.data = {**old.data, **changes}
     else:
-        if adopted and body.sources.get("source_info", {}).get("copyright_status") not in {
-            "AUTHORIZED",
-            "OFFICIAL_SOURCE",
-        }:
-            raise DomainError("COPYRIGHT_REQUIRED", "请确认图片的使用状态", 422)
         if adopted:
             changes["source_info"] = {
-                **body.sources["source_info"],
+                **body.sources.get("source_info", {}),
                 "source_type": "USER_SUBMITTED",
             }
         catalog.transition_entity(db, actor, row.entity_type, old.id, "offline")
@@ -637,7 +879,9 @@ def act(db, row, actor, body):
     catalog.permit(
         actor,
         "catalog",
-        "publish" if body.action in {"publish", "reject", "match", "already_fixed"} else "edit",
+        "publish"
+        if body.action in {"decide", "publish", "reject", "match", "already_fixed", "need_info"}
+        else "edit",
     )
     db.execute(
         update(Feedback)
@@ -655,24 +899,94 @@ def act(db, row, actor, body):
     if row.result != "PENDING":
         raise DomainError("FEEDBACK_COMPLETED", "反馈已完成，不可重复处理", 409)
     if (
-        body.action in {"reject", "match", "already_fixed", "publish"}
+        body.action in {"decide", "reject", "match", "already_fixed", "need_info"}
         and not body.public_note.strip()
     ):
         raise DomainError("REASON_REQUIRED", "请填写面向用户的处理说明", 422)
     row.handler_id = actor.id
-    row.internal_note = body.internal_note
+    if body.action != "publish":
+        row.internal_note = body.internal_note
+    if body.action in {"draft", "review"}:
+        row.review = {
+            **{
+                k: v
+                for k, v in row.review.items()
+                if k
+                not in {
+                    "review_decision",
+                    "approved_payload",
+                    "submitted_payload",
+                    "approval_target_version",
+                }
+            },
+            "review_decision_draft": body.review_decision,
+        }
     if body.action == "start":
         row.status = "PROCESSING"
     elif body.action == "review":
         if row.kind != "CORRECTION":
             raise DomainError("INVALID_ACTION", "缺失收录请保存小卡草稿", 422)
-        row.review = {"decisions": body.decisions, "object_version": body.object_version}
-        row.status = "PROCESSED"
+        row.review = {
+            **row.review,
+            "decisions": body.decisions,
+            "object_version": body.object_version,
+        }
+        row.status = "PROCESSING"
     elif body.action == "draft":
-        if row.kind != "MISSING_CARD":
+        if row.kind == "MISSING_CATALOG":
+            from app.modules.feedback.missing_catalog import save_draft
+
+            save_draft(db, row, actor, body.changes)
+        elif row.kind != "MISSING_CARD":
             raise DomainError("INVALID_ACTION", "纠错不能创建小卡", 422)
-        draft_missing(db, row, actor, body.changes)
+        else:
+            draft_missing(db, row, actor, body.changes)
+        row.status = "PROCESSING"
+    elif body.action == "decide":
+        if body.review_decision is None:
+            raise DomainError("DECISION_REQUIRED", "请选择处理结果", 422)
+        row.review = {
+            **{
+                k: v
+                for k, v in row.review.items()
+                if k
+                not in {
+                    "review_decision_draft",
+                    "approved_payload",
+                    "approval_target_version",
+                }
+            },
+            "review_decision": body.review_decision,
+            "public_decision": body.review_decision,
+            "submitted_payload": {
+                "changes": body.changes,
+                "decisions": body.decisions or row.review.get("decisions", []),
+                "object_version": body.object_version or row.review.get("object_version", ""),
+                "sources": body.sources,
+                "public_note": body.public_note.strip(),
+            },
+            "decisions": body.decisions or row.review.get("decisions", []),
+            "object_version": body.object_version or row.review.get("object_version", ""),
+        }
+        if body.review_decision == "ACCEPTED":
+            # Approval is a public review decision, not an implicit catalog write.
+            # Publication must consume this exact snapshot, even from a list action.
+            row.review = {
+                **row.review,
+                "approved_payload": row.review["submitted_payload"],
+                "approval_target_version": (
+                    digest(target(db, row.entity_type, row.entity_id, False)[1])
+                    if row.entity_id
+                    else None
+                ),
+            }
+            row.status = "PROCESSING"
+        else:
+            row.status = "PROCESSED"
+            row.result = "NOT_INCLUDED" if body.review_decision == "REJECTED" else "NEEDS_INFO"
+    elif body.action == "need_info":
         row.status = "PROCESSED"
+        row.result = "NEEDS_INFO"
     elif body.action == "reject":
         row.status = "PROCESSED"
         row.result = "NOT_INCLUDED"
@@ -687,10 +1001,45 @@ def act(db, row, actor, body):
         row.status = "PROCESSED"
         row.result = "NOT_INCLUDED"
     elif body.action == "publish":
+        if not accepted(row):
+            raise DomainError(
+                "FEEDBACK_DECISION_REQUIRED", "请先提交已采纳的处理结果，再发布图鉴", 409
+            )
+        approved = row.review.get("approved_payload")
+        if approved is None:
+            raise DomainError("FEEDBACK_DECISION_REQUIRED", "请重新核对并提交已采纳的处理结果", 409)
+        expected = row.review.get("approval_target_version")
+        if expected and digest(target(db, row.entity_type, row.entity_id, False)[1]) != expected:
+            raise DomainError("OBJECT_CHANGED", "图鉴内容已变化，请重新核对并提交处理结果", 409)
+        # A caller cannot replace approved values through the publication endpoint.
+        for key in ("changes", "decisions", "object_version", "sources"):
+            value = getattr(body, key)
+            if value and value != approved.get(key):
+                raise DomainError(
+                    "APPROVAL_CHANGED", "填写内容与已采纳结果不同，请重新提交处理结果", 409
+                )
+        publish_body = body.model_copy(update={"public_note": row.public_note, **approved})
         # Nested transaction ensures even publish validation failures leave no partial edits.
         with db.begin_nested(), feedback_publication(db, row.id):
             if row.kind == "MISSING_CARD":
-                card = draft_missing(db, row, actor, body.changes)
+                existing = db.get(Card, row.entity_id) if row.entity_id else None
+                if existing and existing.status == "PENDING":
+                    # Older drafts may already have entered the card review queue.
+                    # Return them to editable state inside this same atomic publish;
+                    # the approval target hash above has already checked concurrency.
+                    catalog.transition_card(
+                        db, actor, existing.id, "reject", "转由图鉴反馈已采纳结果统一发布"
+                    )
+                    if publish_body.changes.get("expected_updated_at"):
+                        publish_body = publish_body.model_copy(
+                            update={
+                                "changes": {
+                                    **publish_body.changes,
+                                    "expected_updated_at": existing.updated_at.isoformat(),
+                                }
+                            }
+                        )
+                card = draft_missing(db, row, actor, publish_body.changes)
                 adopted = {
                     side: row.data[key]
                     for side, key in [("FRONT", "front"), ("BACK", "back")]
@@ -711,20 +1060,50 @@ def act(db, row, actor, body):
                 catalog.transition_card(db, actor, card.id, "publish")
                 image_origins(db, row, card, actor, adopted)
                 row.result = "INCLUDED"
+            elif row.kind == "MISSING_CATALOG":
+                from app.modules.feedback.missing_catalog import publish
+
+                publish(db, row, actor, publish_body.changes)
             else:
-                publish_correction(db, row, actor, body)
+                publish_correction(db, row, actor, publish_body)
         row.status = "PROCESSED"
     else:
         raise DomainError("INVALID_ACTION", "不支持的处理操作", 422)
-    row.public_note = body.public_note or (
-        "正在核实" if body.action == "start" else "审核已处理，待正式发布"
-    )
+    if row.result in PUBLIC_RESULTS:
+        row.review = {
+            **row.review,
+            "review_decision": {
+                "INCLUDED": "ACCEPTED",
+                "NOT_INCLUDED": "REJECTED",
+                "NEEDS_INFO": "NEEDS_INFO",
+            }[row.result],
+        }
+    public = row.result in PUBLIC_RESULTS or body.action == "decide"
+    if public:
+        row.public_note = (
+            "已采纳并发布，图鉴已更新。" if body.action == "publish" else body.public_note.strip()
+        )
+        row.review = {k: v for k, v in row.review.items() if k != "public_note_draft"}
+    else:
+        row.review = {**row.review, "public_note_draft": body.public_note}
     row.action_keys = [*row.action_keys, body.request_key]
     row.review = {
         **row.review,
         "action_hashes": {**action_hashes, body.request_key: digest(body.model_dump())},
     }
-    event(db, row, row.public_note)
+    event(
+        db,
+        row,
+        row.public_note
+        if public
+        else {
+            "start": "已开始内部核实",
+            "review": "已保存内部审核草稿",
+            "draft": "已保存内部收录草稿",
+        }[body.action],
+        public=public,
+        action=body.action,
+    )
     catalog.audit(
         db,
         actor,
@@ -749,7 +1128,7 @@ def feedback_publication(db, feedback_id):
 
 
 def catalog_card_published(db, card, actor):
-    """Also reconcile linked feedback when an operator publishes in the full editor."""
+    """Prevent full-editor publication from bypassing a pending feedback review."""
     rows = db.scalars(
         select(Feedback).where(
             Feedback.kind == "MISSING_CARD",
@@ -760,55 +1139,19 @@ def catalog_card_published(db, card, actor):
     for row in rows:
         if row.id == db.info.get("active_feedback_publication"):
             continue
-        adopted = {
-            side: row.data[key]
-            for side, key in [("FRONT", "front"), ("BACK", "back")]
-            if row.data.get(key)
-            and (card.image_url if side == "FRONT" else card.admin_data.get("back_image_url"))
-            == row.data[key]["image_url"]
-        }
-        if not adopted:
-            continue
-        check_images_accessible(adopted)
-        image_origins(db, row, card, actor, adopted)
-        row.status, row.result, row.handler_id = "PROCESSED", "INCLUDED", actor.id
-        row.public_note = "提交图片已采用，小卡已正式发布，感谢你的贡献。"
-        event(db, row, row.public_note)
-        catalog.audit(
-            db,
-            actor,
-            "feedback.publish_from_editor",
-            "feedback",
-            row.id,
-            None,
-            {"card_id": card.id, "result": "INCLUDED"},
+        # A pending submission must go through its explicit approval/publication
+        # action so a separate editor cannot publish unreviewed draft content.
+        raise DomainError(
+            "FEEDBACK_PUBLICATION_REQUIRED",
+            "该小卡关联用户反馈，请在图鉴新增中提交已采纳结果后发布",
+            409,
         )
 
 
 def credits(db, card_id):
-    rows = db.scalars(
-        select(CardContribution)
-        .where(CardContribution.card_id == card_id)
-        .order_by(CardContribution.created_at)
-    ).all()
-    users = {}
-    for row in rows:
-        user = db.get(User, row.user_id)
-        version = db.get(CardImageVersion, row.image_version_id)
-        users.setdefault(
-            row.user_id,
-            {
-                "user_id": row.user_id if user and user.is_active else None,
-                "name": user.display_name if user and user.is_active else "已注销用户",
-                "profile_available": bool(user and user.is_active),
-                "included_at": row.created_at.isoformat(),
-                "source_type": "USER_SUBMITTED",
-                "copyright_status": version.data.get("copyright_status", "UNKNOWN")
-                if version
-                else "UNKNOWN",
-            },
-        )
-    return list(users.values())
+    from app.modules.feedback.credits import catalog_credits
+
+    return catalog_credits(db, "cards", card_id)
 
 
 def contributions(db, user_id, offset, limit):

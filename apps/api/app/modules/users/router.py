@@ -135,11 +135,16 @@ def search_users(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
+    keyword = q.strip()
+    if not keyword:
+        return success({"items": []})
     users = db.scalars(
         select(User)
         .where(
-            User.display_name.ilike(f"%{q}%"), User.discoverable.is_(True), User.is_active.is_(True)
+            User.display_name.icontains(keyword, autoescape=True),
+            User.discoverable.is_(True), User.is_active.is_(True)
         )
+        .order_by(User.display_name, User.id)
         .limit(30)
     ).all()
     return success({"items": [profile_payload(db, item, user) for item in users]})

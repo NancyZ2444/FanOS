@@ -52,6 +52,7 @@ class _Albums extends MockAlbumRepository {
     int offset = 0,
     bool favorites = false,
     String status = 'ALL',
+    String workMode = 'ALL',
     String? userId,
   }) async => AlbumShelfData(rows);
   @override

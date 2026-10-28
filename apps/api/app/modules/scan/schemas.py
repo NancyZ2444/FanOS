@@ -31,6 +31,13 @@ class ConfirmedCard(BaseModel):
     card_id: str
     selected: bool = True
     add_to_wishlist: bool = False
+    ensure_owned: bool = False
+
+    @model_validator(mode="after")
+    def unambiguous_ownership_action(self):
+        if self.ensure_owned and self.selected:
+            raise ValueError("Ensure owned cannot also increment ownership")
+        return self
 
 
 class ScanSelectionRequest(BaseModel):

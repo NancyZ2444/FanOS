@@ -7,7 +7,7 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Uni
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models import TimestampMixin, new_id
+from app.models import TimestampMixin, new_id, utcnow
 
 
 class AlbumPage(Base, TimestampMixin):
@@ -19,6 +19,20 @@ class AlbumPage(Base, TimestampMixin):
     page_order: Mapped[int] = mapped_column(Integer)
     grid_count: Mapped[int] = mapped_column(Integer, default=9)
     page_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class AlbumWork(Base):
+    """Immutable work identity; card instances never use book pages/slots."""
+
+    __tablename__ = "digital_album_works"
+    __table_args__ = (UniqueConstraint("user_id", "request_id"),)
+    album_id: Mapped[str] = mapped_column(ForeignKey("card_albums.id"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    mode: Mapped[str] = mapped_column(String(10))
+    instances: Mapped[list] = mapped_column(JSON, default=list)
+    request_id: Mapped[str | None] = mapped_column(String(100))
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    migration_archive: Mapped[dict | None] = mapped_column(JSON)
 
 
 class AlbumSlot(Base, TimestampMixin):
@@ -46,6 +60,7 @@ class AlbumPreferences(Base, TimestampMixin):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
     shelf_theme: Mapped[str] = mapped_column(String(40), default="cream-white")
     view_mode: Mapped[str] = mapped_column(String(10), default="SHELF")
+    shelf_snapshot: Mapped[dict | None] = mapped_column(JSON)
 
 
 class AlbumFavoriteGroup(Base, TimestampMixin):
@@ -88,3 +103,28 @@ class AlbumResource(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(12), default="PUBLISHED")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    scene: Mapped[str] = mapped_column(String(24), default="ALBUM_COVER")
+    membership: Mapped[str] = mapped_column(String(10), default="ALL")
+    locked_preview: Mapped[bool] = mapped_column(Boolean, default=True)
+    published_once: Mapped[bool] = mapped_column(Boolean, default=False)
+    used_once: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AlbumReviewRequest(Base, TimestampMixin):
+    __tablename__ = "digital_album_review_requests"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("areview"))
+    album_id: Mapped[str] = mapped_column(ForeignKey("card_albums.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING")
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    reason: Mapped[str] = mapped_column(String(500), default="")
+
+
+class AlbumColorExtraction(Base):
+    __tablename__ = "digital_album_color_extractions"
+    __table_args__ = (UniqueConstraint("user_id", "request_id"),)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("color"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    request_id: Mapped[str] = mapped_column(String(100))
+    colors: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

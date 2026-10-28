@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -13,7 +14,8 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.integrations.card_matcher.adapter import CardMatcherAdapter
-from app.models import Card, ScanFeedback, UserCollectionItem
+from app.models import Card, UserCollectionItem
+from app.modules.feedback.models import Feedback
 
 
 def upload(client, headers, image):
@@ -142,25 +144,28 @@ def test_unknown_feedback_and_wishlist_only(client, auth_headers, scan_index):
     assert manual["candidates"][0]["card"]["id"] == "card-lin-01"
     assert manual["candidates"][0]["similarity"] == 0
     feedback = client.post(
-        "/api/v1/scan/feedback",
+        "/api/v1/feedback",
         headers=auth_headers,
-        data={
-            "metadata": json.dumps(
-                {
-                    "scan_session_id": session["session_id"],
-                    "detected_card_id": detected["detected_card_id"],
-                    "user_id": "forged",
-                    "ai_candidates": [{"card_id": "fake", "similarity": 1}],
-                }
-            )
+        json={
+            "kind": "MISSING_CARD",
+            "request_key": str(uuid4()),
+            "missing": {
+                "scan_session_id": session["session_id"],
+                "detected_card_id": detected["detected_card_id"],
+                "feedback_mode": "SCAN_CLUE",
+                "user_id": "forged",
+                "ai_candidates": json.dumps([{"card_id": "fake", "similarity": 1}]),
+            },
         },
     )
-    assert feedback.status_code == 200
+    assert feedback.status_code == 200, feedback.text
     with SessionLocal() as db:
-        saved = db.scalar(select(ScanFeedback))
-        assert saved.payload["user_id"] == "current-user"
-        assert saved.payload["ai_candidates"] == []
-        assert saved.payload["crop_image_url"]
+        saved = db.get(Feedback, feedback.json()["data"]["id"])
+        assert saved.user_id == "current-user"
+        # Manual wishlist selection must not become a fabricated AI recognition result.
+        assert saved.data["scan"]["candidates"] == []
+        assert saved.data["scan"]["crop_image_url"]
+        assert not {"user_id", "ai_candidates"} & saved.data["missing"].keys()
         assert (
             db.scalar(
                 select(UserCollectionItem).where(
@@ -173,14 +178,14 @@ def test_unknown_feedback_and_wishlist_only(client, auth_headers, scan_index):
 
 
 def test_validation_hidden_cards_ownership_and_atomic_batch(
-    client, auth_headers, admin_headers, scan_index
+    client, auth_headers, second_app_headers, scan_index
 ):
     session = upload(client, auth_headers, scan_index["card-aria-01"]).json()["data"]
     item = {
         "detected_card_id": session["detected_cards"][0]["detected_card_id"],
         "card_id": "card-aria-01",
     }
-    assert confirm(client, admin_headers, session, [item]).status_code == 404
+    assert confirm(client, second_app_headers, session, [item]).status_code == 404
     assert confirm(client, auth_headers, session, [item, item]).status_code == 422
     assert (
         confirm(
@@ -204,7 +209,8 @@ def test_validation_hidden_cards_ownership_and_atomic_batch(
     assert historical.status_code == 200
     assert historical.json()["data"]["availability_notice"]
     assert (
-        client.get("/api/v1/catalog/cards/card-aria-01", headers=admin_headers).status_code == 404
+        client.get("/api/v1/catalog/cards/card-aria-01", headers=second_app_headers).status_code
+        == 404
     )
     assert confirm(client, auth_headers, session, [item]).status_code == 200
     with SessionLocal() as db:
@@ -263,13 +269,37 @@ def test_stale_index_and_request_limits(client, auth_headers, scan_index, monkey
     assert response.json()["error_code"] == "EMPTY_FILE"
 
 
-@pytest.mark.parametrize("metadata", ["[]", '{"scan_session_id": []}', "not json"])
-def test_invalid_feedback_is_rejected(client, auth_headers, metadata):
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[]",
+        "not json",
+        json.dumps(
+            {
+                "kind": "MISSING_CARD",
+                "request_key": "invalid-scan-body",
+                "missing": {"scan_session_id": []},
+            }
+        ),
+        json.dumps(
+            {
+                "kind": "MISSING_CARD",
+                "request_key": "invalid-scan-body",
+                "user_id": "forged",
+            }
+        ),
+    ],
+)
+def test_invalid_feedback_is_rejected(client, auth_headers, body):
     response = client.post(
-        "/api/v1/scan/feedback", headers=auth_headers, data={"metadata": metadata}
+        "/api/v1/feedback",
+        headers={**auth_headers, "Content-Type": "application/json"},
+        content=body,
     )
-    assert response.status_code == 400
-    assert response.json()["error_code"] == "INVALID_FEEDBACK"
+    assert response.status_code == 422, response.text
+    assert response.json()["error_code"] == "VALIDATION_ERROR"
+    with SessionLocal() as db:
+        assert db.scalars(select(Feedback)).all() == []
 
 
 def test_card_count_limit(client, auth_headers, scan_index, monkeypatch):

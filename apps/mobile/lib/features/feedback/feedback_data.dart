@@ -22,6 +22,30 @@ String feedbackValue(dynamic value) => value == null || value == ''
     : '$value';
 String feedbackError(Object e) =>
     e is ApiException ? e.message : '暂时无法连接，请稍后重试';
+
+/// Mirrors feedback API link constraints before a preview/submission request.
+String? feedbackLinkError(String raw) {
+  final links = raw
+      .split('\n')
+      .map((v) => v.trim())
+      .where((v) => v.isNotEmpty)
+      .toList();
+  if (links.length > 6) return '最多填写6条参考链接，每行一条';
+  for (var index = 0; index < links.length; index++) {
+    final value = links[index];
+    final uri = Uri.tryParse(value);
+    if (value.length > 800) return '第${index + 1}条链接不能超过800字符';
+    if (uri == null ||
+        !['http', 'https'].contains(uri.scheme) ||
+        uri.host.isEmpty ||
+        RegExp(r'\s').hasMatch(value) ||
+        uri.userInfo.isNotEmpty) {
+      return '第${index + 1}条请填写完整的 http:// 或 https:// 链接；没有链接可留空';
+    }
+  }
+  return null;
+}
+
 String feedbackDate(dynamic value) =>
     '${value ?? ''}'.replaceFirst('T', ' ').split('.').first;
 String feedbackRoute(String kind, String id) =>
@@ -104,6 +128,17 @@ final feedbackCreditsProvider = FutureProvider.autoDispose
         (await ref
             .watch(feedbackRepositoryProvider)
             .get('/cards/$id/contributors'))['items'],
+      );
+    });
+typedef CatalogCreditTarget = ({String kind, String id});
+
+final catalogCreditsProvider = FutureProvider.autoDispose
+    .family<List<FeedbackJson>, CatalogCreditTarget>((ref, target) async {
+      if (useMockApi) return [];
+      return feedbackItems(
+        (await ref
+            .watch(feedbackRepositoryProvider)
+            .get('/objects/${target.kind}/${target.id}/contributors'))['items'],
       );
     });
 final feedbackInboxProvider = FutureProvider.autoDispose<List<FeedbackJson>>((

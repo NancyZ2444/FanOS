@@ -8,6 +8,7 @@ import 'package:fan_os/core/data/repositories.dart';
 import 'package:fan_os/core/data/scan_feedback_models.dart';
 import 'package:fan_os/core/data/scan_feedback_repository.dart';
 import 'package:fan_os/core/state/app_state.dart';
+import 'package:fan_os/features/feedback/feedback_data.dart';
 import 'package:fan_os/features/scan/presentation/catalog_missing_feedback_page.dart';
 import 'package:fan_os/features/scan/presentation/scan_feedback_page.dart';
 import 'package:fan_os/features/scan/state/scan_feedback_state.dart';
@@ -331,18 +332,18 @@ void main() {
         find.byKey(const Key('submit-catalog-missing-feedback')),
       );
       await tester.pumpAndSettle();
-      final contribution = fixture.options.missing.single;
-      expect(contribution.entityType, 'albums');
-      expect(contribution.entityId, 'album-starlit');
-      expect(contribution.suggested['missing_kind'], 'ALBUM_VERSION');
-      expect(contribution.suggested['scan_session_id'], 'feedback-scan');
-      expect(contribution.suggested['detected_card_id'], 'feedback-region');
-      expect(contribution.suggested['crop_region'], {
-        'x': .1,
-        'y': .2,
-        'width': .3,
-        'height': .4,
-      });
+      final contribution = fixture.feedbacks.submissions.single;
+      expect(contribution['kind'], 'MISSING_CATALOG');
+      expect(contribution['entity_type'], 'versions');
+      expect(
+        feedbackItems(contribution['fields'])
+            .where((v) => v['key'] == 'album_id')
+            .single['value'],
+        'album-starlit',
+      );
+      expect(contribution['missing']['scan_session_id'], 'feedback-scan');
+      expect(contribution['missing']['detected_card_id'], 'feedback-region');
+      expect(fixture.options.missing, isEmpty);
       expect(find.byType(CatalogMissingFeedbackPage), findsNothing);
       expect(find.text('Starlit'), findsOneWidget);
       expect(
@@ -371,22 +372,22 @@ ScanFeedbackRouteArgs _args() {
   );
 }
 
-Future<({_Scans scans, _Options options})> _mount(
-  WidgetTester tester, {
-  _Options? options,
-}) async {
+Future<({_Scans scans, _Options options, _MissingCatalogRepository feedbacks})>
+_mount(WidgetTester tester, {_Options? options}) async {
   tester.view.physicalSize = const Size(390, 844);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   final scans = _Scans();
   final sources = options ?? _Options();
+  final feedbacks = _MissingCatalogRepository();
   final container = ProviderContainer(
     overrides: [
       authRepositoryProvider.overrideWithValue(_Auth()),
       catalogRepositoryProvider.overrideWithValue(_Catalog()),
       scanRepositoryProvider.overrideWithValue(scans),
       scanFeedbackOptionsRepositoryProvider.overrideWithValue(sources),
+      feedbackRepositoryProvider.overrideWithValue(feedbacks),
     ],
   );
   addTearDown(container.dispose);
@@ -412,7 +413,30 @@ Future<({_Scans scans, _Options options})> _mount(
     ),
   );
   await tester.pumpAndSettle();
-  return (scans: scans, options: sources);
+  return (scans: scans, options: sources, feedbacks: feedbacks);
+}
+
+class _MissingCatalogRepository extends FeedbackRepository {
+  _MissingCatalogRepository() : super(ApiClient());
+  final submissions = <FeedbackJson>[];
+  @override
+  Future<FeedbackJson> get(String path, {FeedbackJson? query}) async => {
+    'fields': [
+      {'key': 'name', 'label': '版本名称', 'type': 'text', 'required': true},
+      {
+        'key': 'album_id',
+        'label': '所属专辑',
+        'type': 'reference',
+        'reference': 'albums',
+        'required': true,
+      },
+    ],
+  };
+  @override
+  Future<FeedbackJson> post(String path, FeedbackJson body) async {
+    submissions.add(body);
+    return {'id': 'catalog-feedback-test'};
+  }
 }
 
 Future<void> _selectSource(
@@ -480,7 +504,11 @@ class _Client extends ApiClient {
   Map<String, dynamic>? query;
   Object? payload;
   @override
-  Future<dynamic> getData(String path, {Map<String, dynamic>? query}) async {
+  Future<dynamic> getData(
+    String path, {
+    Map<String, dynamic>? query,
+    bool authenticated = true,
+  }) async {
     this.path = path;
     this.query = query;
     return {
@@ -502,6 +530,8 @@ class _Client extends ApiClient {
     String path, {
     Object? data,
     Duration? receiveTimeout,
+    bool authenticated = true,
+    String? idempotencyKey,
   }) async {
     this.path = path;
     payload = data;

@@ -43,12 +43,14 @@ function validCrop({ points: p }: CardCrop) {
 // preview detection does not persist media or create catalog records.
 export default function CardImageCrop({
   file,
+  mode = "artwork",
   busy,
   confirmLabel,
   onCancel,
   onConfirm,
 }: {
   file: File;
+  mode?: "artwork" | "recognition";
   busy: boolean;
   confirmLabel: string;
   onCancel: () => void;
@@ -58,7 +60,7 @@ export default function CardImageCrop({
   const [crop, setCrop] = useState<CardCrop>(fullImage);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const [region, setRegion] = useState(0);
+  const [region, setRegion] = useState<number>();
   const surface = useRef<SVGSVGElement>(null);
   const drag = useRef<
     { index: number; start: Point; points: Point[] } | undefined
@@ -67,6 +69,7 @@ export default function CardImageCrop({
     const abort = new AbortController();
     const form = new FormData();
     form.append("file", file);
+    form.append("mode", mode);
     consoleApi<Preview>("/cards/crop-preview", {
       method: "POST",
       body: form,
@@ -75,15 +78,23 @@ export default function CardImageCrop({
       .then((data) => {
         if (abort.signal.aborted) return;
         setPreview(data);
-        setCrop(data.regions[0] || fullImage);
+        setRegion(data.regions.length === 1 ? 0 : undefined);
+        setCrop(data.regions.length === 1 ? data.regions[0] : fullImage);
       })
       .catch((e: Error) => {
         if (!abort.signal.aborted) setError(e.message);
       });
     return () => abort.abort();
-  }, [file, attempt]);
+  }, [file, attempt, mode]);
+  const needsSelection =
+    !!preview && preview.regions.length > 1 && region === undefined;
+  const selectRegion = (index: number) => {
+    if (busy || !preview) return;
+    setRegion(index);
+    setCrop(preview.regions[index]);
+  };
   const update = (index: number, point: Partial<Point>) => {
-    if (busy) return;
+    if (busy || needsSelection) return;
     setCrop((current) => ({
       points: current.points.map((p, i) =>
         i === index ? { ...p, ...point } : p,
@@ -98,7 +109,7 @@ export default function CardImageCrop({
     };
   };
   const start = (e: ReactPointerEvent<SVGElement>, index: number) => {
-    if (busy) return;
+    if (busy || needsSelection) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
     drag.current = { index, start: position(e), points: crop.points };
@@ -134,7 +145,7 @@ export default function CardImageCrop({
     .join(" ");
   return (
     <Modal
-      title="裁剪小卡图片"
+      title={needsSelection ? "选择本次新增的小卡" : "裁剪小卡图片"}
       open
       width={960}
       onCancel={onCancel}
@@ -148,7 +159,7 @@ export default function CardImageCrop({
           </Button>
           <Button
             type="primary"
-            disabled={!preview || !valid}
+            disabled={!preview || !valid || needsSelection}
             loading={busy}
             onClick={() => onConfirm(crop)}
           >
@@ -190,7 +201,11 @@ export default function CardImageCrop({
                   ? "已自动框选小卡，请确认完整保留卡片边缘。"
                   : "未检测到清晰边缘，已保留整张图片，请手动调整。"
             }
-            description="拖动四个角贴合小卡边缘，也可拖动框内移动范围。确认后会裁去背景并校正透视。"
+            description={
+              needsSelection
+                ? "点击照片中的卡框或右侧下拉选择一张，再确认裁剪范围；其余卡片不会用于本次新增。"
+                : "拖动四个角贴合小卡边缘，也可拖动框内移动范围。确认后会裁去背景并校正透视。"
+            }
           />
           <div className="card-crop-layout">
             <div className="card-crop-stage">
@@ -217,61 +232,116 @@ export default function CardImageCrop({
                   height={height}
                   preserveAspectRatio="none"
                 />
-                <path
-                  d={`M0,0 H${width} V${height} H0 Z M${crop.points.map((p) => `${p.x * width},${p.y * height}`).join(" L")} Z`}
-                  fill="rgba(15,23,42,.64)"
-                  fillRule="evenodd"
-                  pointerEvents="none"
-                />
-                <polygon
-                  points={points}
-                  fill="transparent"
-                  stroke={valid ? "#ad8cff" : "#ff7875"}
-                  strokeWidth={3}
-                  vectorEffect="non-scaling-stroke"
-                  onPointerDown={(e) => start(e, -1)}
-                  style={{ cursor: "move" }}
-                />
-                {crop.points.map((p, i) => (
-                  <circle
-                    key={i}
-                    cx={p.x * width}
-                    cy={p.y * height}
-                    r={Math.max(width, height) * 0.018}
-                    fill="#fff"
-                    stroke="#8762da"
-                    strokeWidth={3}
-                    vectorEffect="non-scaling-stroke"
-                    role="button"
-                    tabIndex={busy ? -1 : 0}
-                    aria-label={`调整${labels[i]}角`}
-                    style={{ cursor: "grab" }}
-                    onPointerDown={(e) => start(e, i)}
-                    onKeyDown={(e) => {
-                      if (!e.key.startsWith("Arrow")) return;
-                      e.preventDefault();
-                      const amount = e.shiftKey ? 0.01 : 0.001;
-                      update(i, {
-                        x: clamp(
-                          p.x +
-                            (e.key === "ArrowLeft"
-                              ? -amount
-                              : e.key === "ArrowRight"
-                                ? amount
-                                : 0),
-                        ),
-                        y: clamp(
-                          p.y +
-                            (e.key === "ArrowUp"
-                              ? -amount
-                              : e.key === "ArrowDown"
-                                ? amount
-                                : 0),
-                        ),
-                      });
-                    }}
-                  />
-                ))}
+                {preview.regions.length > 1 &&
+                  preview.regions.map((candidate, index) => (
+                    <g key={index}>
+                      <polygon
+                        points={candidate.points
+                          .map((p) => `${p.x * width},${p.y * height}`)
+                          .join(" ")}
+                        fill={
+                          region === index
+                            ? "rgba(135,98,218,.24)"
+                            : "rgba(255,255,255,.08)"
+                        }
+                        stroke={region === index ? "#ad8cff" : "#fff"}
+                        strokeWidth={3}
+                        vectorEffect="non-scaling-stroke"
+                        role="button"
+                        tabIndex={busy ? -1 : 0}
+                        aria-label={`选择小卡 ${index + 1}`}
+                        aria-pressed={region === index}
+                        onClick={() => selectRegion(index)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            selectRegion(index);
+                          }
+                        }}
+                        style={{ cursor: busy ? "wait" : "pointer" }}
+                      />
+                      <text
+                        x={
+                          ((candidate.points[0].x + candidate.points[2].x) *
+                            width) /
+                          2
+                        }
+                        y={
+                          ((candidate.points[0].y + candidate.points[2].y) *
+                            height) /
+                          2
+                        }
+                        textAnchor="middle"
+                        fill="#fff"
+                        stroke="#18263b"
+                        strokeWidth={2}
+                        paintOrder="stroke"
+                        fontSize={28}
+                        pointerEvents="none"
+                      >
+                        {index + 1}
+                      </text>
+                    </g>
+                  ))}
+                {!needsSelection && (
+                  <>
+                    <path
+                      d={`M0,0 H${width} V${height} H0 Z M${crop.points.map((p) => `${p.x * width},${p.y * height}`).join(" L")} Z`}
+                      fill="rgba(15,23,42,.64)"
+                      fillRule="evenodd"
+                      pointerEvents="none"
+                    />
+                    <polygon
+                      points={points}
+                      fill="transparent"
+                      stroke={valid ? "#ad8cff" : "#ff7875"}
+                      strokeWidth={3}
+                      vectorEffect="non-scaling-stroke"
+                      onPointerDown={(e) => start(e, -1)}
+                      style={{ cursor: "move" }}
+                    />
+                    {crop.points.map((p, i) => (
+                      <circle
+                        key={i}
+                        cx={p.x * width}
+                        cy={p.y * height}
+                        r={Math.max(width, height) * 0.018}
+                        fill="#fff"
+                        stroke="#8762da"
+                        strokeWidth={3}
+                        vectorEffect="non-scaling-stroke"
+                        role="button"
+                        tabIndex={busy ? -1 : 0}
+                        aria-label={`调整${labels[i]}角`}
+                        style={{ cursor: "grab" }}
+                        onPointerDown={(e) => start(e, i)}
+                        onKeyDown={(e) => {
+                          if (!e.key.startsWith("Arrow")) return;
+                          e.preventDefault();
+                          const amount = e.shiftKey ? 0.01 : 0.001;
+                          update(i, {
+                            x: clamp(
+                              p.x +
+                                (e.key === "ArrowLeft"
+                                  ? -amount
+                                  : e.key === "ArrowRight"
+                                    ? amount
+                                    : 0),
+                            ),
+                            y: clamp(
+                              p.y +
+                                (e.key === "ArrowUp"
+                                  ? -amount
+                                  : e.key === "ArrowDown"
+                                    ? amount
+                                    : 0),
+                            ),
+                          });
+                        }}
+                      />
+                    ))}
+                  </>
+                )}
               </svg>
             </div>
             <div className="card-crop-controls">
@@ -280,25 +350,28 @@ export default function CardImageCrop({
                 <Select
                   aria-label="选择检测到的小卡"
                   value={region}
+                  placeholder="请选择一张小卡"
                   disabled={busy}
                   options={preview.regions.map((_, i) => ({
                     value: i,
                     label: `小卡 ${i + 1}`,
                   }))}
-                  onChange={(i) => {
-                    setRegion(i);
-                    setCrop(preview.regions[i]);
-                  }}
+                  onChange={selectRegion}
                 />
               )}
               <Space wrap>
                 <Button
-                  disabled={busy || !preview.regions.length}
-                  onClick={() => setCrop(preview.regions[region])}
+                  disabled={busy || region === undefined}
+                  onClick={() =>
+                    region !== undefined && setCrop(preview.regions[region])
+                  }
                 >
                   恢复自动框选
                 </Button>
-                <Button disabled={busy} onClick={() => setCrop(fullImage)}>
+                <Button
+                  disabled={busy || preview.regions.length > 1}
+                  onClick={() => setCrop(fullImage)}
+                >
                   保留整张图片
                 </Button>
               </Space>
@@ -318,7 +391,7 @@ export default function CardImageCrop({
                         step={0.1}
                         precision={2}
                         value={p[axis] * 100}
-                        disabled={busy}
+                        disabled={busy || needsSelection}
                         onChange={(n) =>
                           n !== null && update(i, { [axis]: clamp(n / 100) })
                         }

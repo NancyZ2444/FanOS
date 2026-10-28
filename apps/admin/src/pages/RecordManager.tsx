@@ -20,7 +20,9 @@ import {
   Space,
   Spin,
   Tag,
+  Switch,
 } from "antd";
+import { canPermission, companyEnabled } from "../api/permissions";
 import { consoleApi, send } from "../api/client";
 import { useConsole } from "../state";
 import { groupMembers, memberLabel } from "./memberOptions";
@@ -99,7 +101,11 @@ export default function RecordManager({
         .catch((e) => message.error(e.message));
     setCurrent(r);
     form.resetFields();
-    form.setFieldsValue(r?.data || {});
+    form.setFieldsValue(
+      kind === "companies"
+        ? { ...r?.data, enabled: r ? companyEnabled(r) : true }
+        : r?.data || {},
+    );
     setOpen(true);
   };
   const save = useSingleSubmit(async () => {
@@ -217,14 +223,14 @@ export default function RecordManager({
         actions={
           <>
             <Button onClick={load}>刷新</Button>
-            {kind === "companies" && actor.role !== "operation_admin" && (
+            {kind === "companies" && canPermission(actor, "catalog.edit") && (
               <Button
                 onClick={() => navigate("/catalog/import?kind=companies")}
               >
                 批量导入公司
               </Button>
             )}
-            {actor.role !== "operation_admin" && (
+            {canPermission(actor, "catalog.edit") && (
               <Button type="primary" onClick={() => edit()}>
                 新增{labels[kind]}
               </Button>
@@ -245,7 +251,9 @@ export default function RecordManager({
         )}
         filtered={!!q}
         onReset={() => setQ("")}
-        onCreate={actor.role !== "operation_admin" ? () => edit() : undefined}
+        onCreate={
+          canPermission(actor, "catalog.edit") ? () => edit() : undefined
+        }
         createLabel={`新增${labels[kind]}`}
         pagination={{ defaultPageSize: 10 }}
         columns={[
@@ -260,9 +268,15 @@ export default function RecordManager({
               r.id,
           },
           {
-            title: "状态 / 有效期",
+            title: kind === "companies" ? "开启状态" : "状态 / 有效期",
             render: (_, r) =>
-              `${displayValue(r.data.status || r.status)} ${r.data.start_date || (r.data.date_unknown ? "开始日期待核实" : r.data.release_date || "")} ${r.data.end_date || ""}`,
+              kind === "companies" ? (
+                <Tag color={companyEnabled(r) ? "green" : "default"}>
+                  {companyEnabled(r) ? "已开启" : "未开启"}
+                </Tag>
+              ) : (
+                `${displayValue(r.data.status || r.status)} ${r.data.start_date || (r.data.date_unknown ? "开始日期待核实" : r.data.release_date || "")} ${r.data.end_date || ""}`
+              ),
           },
           ...(kind === "companies"
             ? [
@@ -301,7 +315,9 @@ export default function RecordManager({
                   kind === "companies" ? viewCompany(r) : setViewRecord(r)
                 }
                 onEdit={
-                  actor.role !== "operation_admin" ? () => edit(r) : undefined
+                  canPermission(actor, "catalog.edit")
+                    ? () => edit(r)
+                    : undefined
                 }
                 items={[
                   ...(kind === "batches"
@@ -320,7 +336,7 @@ export default function RecordManager({
                           label: "全部校验",
                           onClick: () => batchAction(r.id, "validate"),
                         },
-                        ...(actor.role === "admin"
+                        ...(canPermission(actor, "catalog.publish")
                           ? [
                               {
                                 key: "publish",
@@ -338,7 +354,7 @@ export default function RecordManager({
                           : []),
                       ]
                     : []),
-                  ...(actor.role === "admin" &&
+                  ...(canPermission(actor, "catalog.delete") &&
                   !["memberships", "company_relations"].includes(kind)
                     ? [
                         {
@@ -497,7 +513,7 @@ export default function RecordManager({
               {
                 title: "操作",
                 render: (_, r) =>
-                  actor.role !== "operation_admin" &&
+                  canPermission(actor, "catalog.edit") &&
                   ["DRAFT", "REJECTED", "OFFLINE", "ARCHIVED"].includes(
                     r.status,
                   ) && (
@@ -527,7 +543,7 @@ export default function RecordManager({
       <Drawer
         title={companyDetail?.company?.data?.name || "公司详情"}
         extra={
-          companyDetail?.company && actor.role !== "operation_admin" ? (
+          companyDetail?.company && canPermission(actor, "catalog.edit") ? (
             <Button
               onClick={() => {
                 edit(companyDetail.company);
@@ -550,8 +566,8 @@ export default function RecordManager({
                 <Descriptions.Item label="公司 ID">
                   {companyDetail.company.id}
                 </Descriptions.Item>
-                <Descriptions.Item label="状态">
-                  {displayValue(companyDetail.company.status)}
+                <Descriptions.Item label="开启状态">
+                  {companyEnabled(companyDetail.company) ? "已开启" : "未开启"}
                 </Descriptions.Item>
                 <Descriptions.Item label="当前关联组合">
                   {companyDetail.company.group_count || 0}
@@ -594,7 +610,7 @@ export default function RecordManager({
         title={`${labels[kind]}详情`}
         onClose={() => setViewRecord(undefined)}
         extra={
-          actor.role !== "operation_admin" ? (
+          canPermission(actor, "catalog.edit") ? (
             <Button
               onClick={() => {
                 edit(viewRecord);
@@ -639,9 +655,19 @@ export default function RecordManager({
             </>
           )}
           {kind === "companies" && (
-            <Form.Item name="description" label="描述">
-              <Input.TextArea maxLength={2000} />
-            </Form.Item>
+            <>
+              <Form.Item
+                name="enabled"
+                label="开启公司"
+                valuePropName="checked"
+                extra="开启后可供组合和艺人选择；关闭不会删除已有公司经历。"
+              >
+                <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+              </Form.Item>
+              <Form.Item name="description" label="描述">
+                <Input.TextArea maxLength={2000} />
+              </Form.Item>
+            </>
           )}
           {kind === "sources" && (
             <Form.Item
@@ -738,10 +764,20 @@ export default function RecordManager({
                 rules={[{ required: true }]}
               >
                 <Select
-                  options={companies.map((c) => ({
-                    value: c.id,
-                    label: c.data.name,
-                  }))}
+                  showSearch
+                  optionFilterProp="label"
+                  options={companies
+                    .filter(
+                      (c) =>
+                        companyEnabled(c) || c.id === current?.data.company_id,
+                    )
+                    .map((c) => ({
+                      value: c.id,
+                      label:
+                        c.data.name +
+                        (companyEnabled(c) ? "" : "（未开启，保留原关联）"),
+                      disabled: !companyEnabled(c),
+                    }))}
                 />
               </Form.Item>
               <Form.Item name="relation_type" label="关系类型">

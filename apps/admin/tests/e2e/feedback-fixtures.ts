@@ -122,5 +122,7 @@ export async function setupFeedback(request: APIRequestContext, page: Page) {
     action,
     detail,
     headers: adminHeaders,
+    userHeaders: headers,
+    scan,
   };
 }

@@ -114,11 +114,8 @@ class _HomePageState extends ConsumerState<HomePage> {
                     ),
                     const SizedBox(height: 24),
                   ],
-                  const SectionHeader(
-                    title: '今日翻卡',
-                    subtitle: '每天 3 次，发现与你有关的小卡',
-                  ),
-                  const SizedBox(height: 10),
+                  const SectionHeader(title: '今日翻卡'),
+                  const SizedBox(height: 12),
                   _DailyCardBanner(
                     daily: daily,
                     isGuest: session.isGuest,
@@ -128,7 +125,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                       () => context.push('/daily-card'),
                     ),
                   ),
-                  const SizedBox(height: 26),
+                  const SizedBox(height: 24),
                   SectionHeader(
                     title: session.isGuest ? '热门艺人' : '我的本命',
                     actionLabel: session.isGuest

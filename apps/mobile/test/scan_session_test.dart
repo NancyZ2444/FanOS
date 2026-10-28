@@ -405,7 +405,13 @@ void main() {
     final json = request.toJson();
     expect(json['scan_session_id'], session.id);
     expect(json['detected_card_id'], detected.id);
-    expect(json['crop_region'], isA<Map<String, double>>());
+    // JSON may also carry polygon points; verify the actual crop coordinates
+    // instead of constraining the map's runtime generic value type.
+    expect(json['crop_region'], equals(detected.cropRegion.toJson()));
+    expect(json['crop_region'], containsPair('x', detected.cropRegion.x));
+    expect(json['crop_region'], containsPair('y', detected.cropRegion.y));
+    expect(json['crop_region'], containsPair('width', detected.cropRegion.width));
+    expect(json['crop_region'], containsPair('height', detected.cropRegion.height));
     expect(json['ai_candidates'], hasLength(2));
     expect(json['source'], '签售');
   });

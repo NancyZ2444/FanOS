@@ -152,8 +152,8 @@ def test_preview_fallback_invalid_photo_and_permission(client, admin_headers, au
         client, admin_headers, "/cards/crop-preview", Image.new("RGB", (200, 300), "white")
     )
     assert blank.json()["data"]["regions"] == []
-    assert post_image(client, auth_headers, "/cards/crop-preview", photo()).status_code == 403
-    assert post_image(client, auth_headers, "/uploads", photo(), selection()).status_code == 403
+    assert post_image(client, auth_headers, "/cards/crop-preview", photo()).status_code == 401
+    assert post_image(client, auth_headers, "/uploads", photo(), selection()).status_code == 401
     bad = client.post(
         ROOT + "/cards/crop-preview",
         headers=admin_headers,

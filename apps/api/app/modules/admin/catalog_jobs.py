@@ -22,32 +22,14 @@ from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.future_models import OutboxEvent
 from app.integrations.card_matcher.adapter import CardMatcherAdapter
+from app.integrations.storage import get_storage
 from app.models import Card
 
 log = logging.getLogger(__name__)
 
 
 def storage_bytes(url: str) -> bytes:
-    settings = get_settings()
-    if settings.storage_backend == "local":
-        prefix = settings.public_media_base_url.rstrip("/") + "/"
-        if not url.startswith(prefix):
-            raise ValueError("图片须先通过后台上传到当前对象存储，再生成索引")
-        root = settings.local_media_root.resolve()
-        path = (root / url.removeprefix(prefix)).resolve()
-        if not path.is_relative_to(root):
-            raise ValueError("非法素材路径")
-        return path.read_bytes()
-    from app.integrations.storage import S3Storage
-
-    storage = S3Storage()
-    endpoint = (settings.s3_public_base_url or settings.s3_endpoint_url or "").rstrip("/")
-    prefix = f"{endpoint}/{settings.s3_bucket}/"
-    if not url.startswith(prefix):
-        raise ValueError("图片不在当前对象存储中")
-    return storage.client.get_object(Bucket=settings.s3_bucket, Key=url.removeprefix(prefix))[
-        "Body"
-    ].read()
+    return get_storage().read_bytes(url)
 
 
 def process_pending() -> int:

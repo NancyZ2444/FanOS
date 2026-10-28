@@ -7,8 +7,7 @@ import { useEffect, useState } from "react";
 import { Alert, Button, Descriptions, Input, Tag } from "antd";
 import { SearchOutlined } from "@ant-design/icons";
 import { consoleApi } from "../api/client";
-import { Panel } from "../components/shared";
-import { roleLabels } from "../api/types";
+import RolePermissions from "./RolePermissions";
 
 export default function System({ tab }: { tab: "roles" | "logs" }) {
   const [rows, setRows] = useState<any[]>([]);
@@ -26,77 +25,7 @@ export default function System({ tab }: { tab: "roles" | "logs" }) {
     <>
       <PageHeader title={<>{tab === "logs" ? "操作日志" : "角色与权限"}</>} />
       {tab === "roles" ? (
-        <>
-          <div className="role-grid">
-            {Object.entries(roleLabels).map(([key, label]) => (
-              <Panel key={key} title={label}>
-                <p>
-                  {key === "admin"
-                    ? "拥有所有后台模块权限，包括图鉴审核发布与系统日志。"
-                    : key === "content_operator"
-                      ? "维护图鉴、艺人、来源和社交动态，提交小卡审核。"
-                      : "管理每日翻卡、通知、公告、用户、评论与举报。"}
-                </p>
-              </Panel>
-            ))}
-          </div>
-          <Panel title="权限矩阵" className="table-panel">
-            <Table
-              pagination={false}
-              rowKey="module"
-              dataSource={[
-                {
-                  module: "图鉴查看",
-                  admin: "✓",
-                  content: "✓",
-                  operation: "✓",
-                },
-                {
-                  module: "图鉴创建、编辑与导入",
-                  admin: "✓",
-                  content: "✓",
-                  operation: "—",
-                },
-                {
-                  module: "小卡审核发布",
-                  admin: "✓",
-                  content: "—",
-                  operation: "—",
-                },
-                {
-                  module: "社交动态与数据源",
-                  admin: "✓",
-                  content: "✓",
-                  operation: "—",
-                },
-                {
-                  module: "翻卡、通知与公告",
-                  admin: "✓",
-                  content: "—",
-                  operation: "✓",
-                },
-                {
-                  module: "用户与评论、举报处理",
-                  admin: "✓",
-                  content: "—",
-                  operation: "✓",
-                },
-                {
-                  module: "完整操作日志",
-                  admin: "✓",
-                  content: "—",
-                  operation: "—",
-                },
-              ]}
-              columns={[
-                { title: "模块与操作", dataIndex: "module" },
-                { title: "超级管理员", dataIndex: "admin" },
-                { title: "内容运营", dataIndex: "content" },
-                { title: "运营管理员", dataIndex: "operation" },
-              ]}
-            />
-          </Panel>
-        </>
+        <RolePermissions />
       ) : (
         <>
           {error && (

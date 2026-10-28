@@ -1,6 +1,7 @@
 import type { Actor, FieldError } from "./types";
 const base = import.meta.env.VITE_API_BASE_URL || "/api/v1";
 const sessionKey = "fanos-admin-session";
+const refreshRequestKey = "fanos-admin-refresh-request";
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -12,6 +13,7 @@ export class ApiError extends Error {
 }
 export function clearSession() {
   sessionStorage.removeItem(sessionKey);
+  sessionStorage.removeItem(refreshRequestKey);
   window.dispatchEvent(new Event("fanos:logout"));
 }
 function session(): { access_token?: string; refresh_token?: string } {
@@ -22,25 +24,35 @@ function session(): { access_token?: string; refresh_token?: string } {
   }
 }
 export const hasSession = () => !!session().access_token;
-let refreshPromise: Promise<boolean> | undefined;
+let refreshPromise: Promise<boolean | "unavailable"> | undefined;
 async function refresh() {
   if (!refreshPromise)
     refreshPromise = (async () => {
       const token = session().refresh_token;
       if (!token) return false;
+      const requestId =
+        sessionStorage.getItem(refreshRequestKey) || crypto.randomUUID();
+      sessionStorage.setItem(refreshRequestKey, requestId);
       try {
-        const res = await fetch(base + "/auth/refresh", {
+        const res = await fetch(base + "/admin/auth/refresh", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": requestId,
+          },
           body: JSON.stringify({ refresh_token: token }),
           signal: AbortSignal.timeout(15000),
         });
-        if (!res.ok) return false;
+        if (!res.ok)
+          return res.status === 401 || res.status === 403
+            ? false
+            : "unavailable";
         const json = await res.json();
         sessionStorage.setItem(sessionKey, JSON.stringify(json.data));
+        sessionStorage.removeItem(refreshRequestKey);
         return true;
       } catch {
-        return false;
+        return "unavailable";
       }
     })().finally(() => {
       refreshPromise = undefined;
@@ -71,8 +83,17 @@ export async function api<T = any>(
     if (e instanceof DOMException && e.name === "AbortError") throw e;
     throw new ApiError("无法连接服务，请检查后台 API 是否已启动");
   }
-  if (response.status === 401 && !path.startsWith("/auth/")) {
-    if (retry && (await refresh())) return api<T>(path, init, false);
+  if (
+    response.status === 401 &&
+    !path.startsWith("/admin/auth/login") &&
+    !path.startsWith("/admin/auth/refresh")
+  ) {
+    if (retry) {
+      const refreshed = await refresh();
+      if (refreshed === true) return api<T>(path, init, false);
+      if (refreshed === "unavailable")
+        throw new ApiError("暂时无法恢复后台会话，请重试；已保留本地登录信息");
+    }
     clearSession();
   }
   if (
@@ -102,8 +123,9 @@ export const send = (data: unknown, method = "POST"): RequestInit => ({
   method,
   body: JSON.stringify(data),
 });
-export async function login(phone: string, code: string): Promise<Actor> {
-  const data = await api("/auth/login", send({ method: "phone", phone, code }));
+export async function login(account: string, password: string): Promise<Actor> {
+  const data = await api("/admin/auth/login", send({ account, password }));
+  sessionStorage.removeItem(refreshRequestKey);
   sessionStorage.setItem(sessionKey, JSON.stringify(data));
   try {
     return await consoleApi<Actor>("/me");
@@ -111,6 +133,13 @@ export async function login(phone: string, code: string): Promise<Actor> {
     clearSession();
     throw e;
   }
+}
+export async function logout() {
+  await api(
+    "/admin/auth/logout",
+    send({ refresh_token: session().refresh_token }),
+  );
+  clearSession();
 }
 export async function uploadImage(
   file: File,

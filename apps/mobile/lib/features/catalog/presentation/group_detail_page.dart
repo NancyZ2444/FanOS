@@ -1,3 +1,5 @@
+import 'catalog_profile_tab.dart';
+
 import 'package:fan_os/core/widgets/entity_header.dart';
 import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/config/feature_flags.dart';
@@ -5,6 +7,7 @@ import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:fan_os/features/feed/presentation/entity_social_feed.dart';
+import 'package:fan_os/features/feedback/catalog_contributors.dart';
 import 'package:flutter/material.dart';
 import 'package:fan_os/features/profile/presentation/name_preferences_page.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -79,16 +82,15 @@ class _GroupBody extends ConsumerWidget {
         .toList();
     final showFeed = ref.watch(idolFeedEnabledProvider);
     return DefaultTabController(
-      length: showFeed ? 6 : 5,
+      key: ValueKey('group-tabs-$showFeed'),
+      length: showFeed ? 7 : 6,
       child: NestedScrollView(
         headerSliverBuilder: (context, _) => [
           EntityProfileSliver(
             imageUrl:
                 group.coverImageUrl ?? group.imageUrl ?? group.thumbnailUrl,
             actions: [
-              IconButton(
-                tooltip: '设置备注',
-                icon: const Icon(Icons.edit_outlined),
+              CatalogPersonalRemarkButton(
                 onPressed: () => showNameRemarkEditor(
                   context,
                   ref,
@@ -96,13 +98,6 @@ class _GroupBody extends ConsumerWidget {
                   group.id,
                   group.nameEn.isNotEmpty ? group.nameEn : group.name,
                 ),
-              ),
-              IconButton(
-                tooltip: '反馈问题',
-                onPressed: () => context.push(
-                  '/catalog-correction?type=groups&id=${group.id}',
-                ),
-                icon: const Icon(Icons.more_horiz_rounded),
               ),
             ],
             hero: _GroupHero(group: group, cardCount: cards.length),
@@ -116,6 +111,7 @@ class _GroupBody extends ConsumerWidget {
               '活动',
               '小卡',
               '其他',
+              '资料',
             ], textScale: MediaQuery.textScalerOf(context).scale(14) / 14),
           ),
         ],
@@ -132,6 +128,7 @@ class _GroupBody extends ConsumerWidget {
             _EventTab(events: events),
             _CardTab(group: group, cards: cards, catalog: data),
             _MerchandiseTab(items: others),
+            CatalogProfileTab(kind: 'groups', entityId: group.id),
           ],
         ),
       ),
@@ -176,6 +173,7 @@ class _GroupHero extends StatelessWidget {
       '$cardCount 张小卡',
     ],
     description: group.description,
+    contribution: CatalogContributors(kind: 'groups', entityId: group.id),
   );
 }
 

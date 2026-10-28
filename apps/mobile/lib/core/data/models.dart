@@ -15,6 +15,7 @@ class IdolProfile {
     this.bio = '',
     this.company = '',
     this.birthDate = '',
+    this.debutDate = '',
     this.region = '',
     this.role = 'Member',
     this.careers = const [],
@@ -37,6 +38,7 @@ class IdolProfile {
   final String bio;
   final String company;
   final String birthDate;
+  final String debutDate;
   final String region;
   final String role;
   final List<IdolCareer> careers;
@@ -72,6 +74,7 @@ class IdolProfile {
     bio: (json['bio'] as String?) ?? '',
     company: (json['company'] as String?) ?? '',
     birthDate: (json['birth_date'] as String?) ?? '',
+    debutDate: (json['debut_date'] as String?) ?? '',
     region: (json['region'] as String?) ?? '',
     role: (json['role'] as String?) ?? 'Member',
     careers: (json['careers'] as List<dynamic>? ?? const [])
@@ -148,7 +151,8 @@ class FanGroup {
   final String nameKo;
   final String nameTranslated;
 
-  String get displayName => nameEn.isNotEmpty
+  String get displayName => officialDisplayName;
+  String get officialDisplayName => nameEn.isNotEmpty
       ? nameEn
       : (name.isNotEmpty
             ? name
@@ -194,6 +198,8 @@ class CollectibleCard {
     required this.groupId,
     required this.groupName,
     required this.source,
+    this.canonicalIdolName,
+    this.canonicalGroupName,
     required this.cardType,
     required this.version,
     required this.releaseDate,
@@ -230,6 +236,9 @@ class CollectibleCard {
   final String groupId;
   final String groupName;
   final String source;
+  final String? canonicalIdolName, canonicalGroupName;
+  String get officialIdolName => canonicalIdolName ?? idolName;
+  String get officialGroupName => canonicalGroupName ?? groupName;
   final String cardType;
   final String version;
   final String releaseDate;
@@ -254,33 +263,36 @@ class CollectibleCard {
 
   String get secondaryTitle => '';
 
-  CollectibleCard withIdolName(String value) => CollectibleCard(
-    id: id,
-    title: title,
-    idolId: idolId,
-    idolName: value,
-    groupId: groupId,
-    groupName: groupName,
-    source: source,
-    cardType: cardType,
-    version: version,
-    releaseDate: releaseDate,
-    region: region,
-    colorStart: colorStart,
-    colorEnd: colorEnd,
-    tags: tags,
-    titleEn: titleEn,
-    titleKo: titleKo,
-    titleTranslated: titleTranslated,
-    imageUrl: imageUrl,
-    thumbnailUrl: thumbnailUrl,
-    backImageUrl: backImageUrl,
-    sourceEntityId: sourceEntityId,
-    sourceEntityType: sourceEntityType,
-    entityVersionId: entityVersionId,
-    cardNumber: cardNumber,
-    isGroupCard: isGroupCard,
-  );
+  CollectibleCard withIdolName(String value, {String? group}) =>
+      CollectibleCard(
+        id: id,
+        title: title,
+        idolId: idolId,
+        idolName: value,
+        groupId: groupId,
+        groupName: group ?? groupName,
+        canonicalIdolName: officialIdolName,
+        canonicalGroupName: officialGroupName,
+        source: source,
+        cardType: cardType,
+        version: version,
+        releaseDate: releaseDate,
+        region: region,
+        colorStart: colorStart,
+        colorEnd: colorEnd,
+        tags: tags,
+        titleEn: titleEn,
+        titleKo: titleKo,
+        titleTranslated: titleTranslated,
+        imageUrl: imageUrl,
+        thumbnailUrl: thumbnailUrl,
+        backImageUrl: backImageUrl,
+        sourceEntityId: sourceEntityId,
+        sourceEntityType: sourceEntityType,
+        entityVersionId: entityVersionId,
+        cardNumber: cardNumber,
+        isGroupCard: isGroupCard,
+      );
 
   factory CollectibleCard.fromJson(Map<String, dynamic> json) =>
       CollectibleCard(
@@ -342,7 +354,30 @@ class CatalogBundle {
         .whereType<String>()
         .where((s) => s.isNotEmpty)
         .toSet();
-    return labels.isEmpty ? fallback : labels.join(' · ');
+    if (labels.isNotEmpty) return labels.join(' · ');
+    if (fallback.trim().isEmpty) return '';
+    // Older imported sources have only a label, not artist references.
+    for (final group in groups) {
+      if ([
+        group.name,
+        group.nameEn,
+        group.nameTranslated,
+        group.nameKo,
+      ].contains(fallback)) {
+        return group.displayName;
+      }
+    }
+    for (final idol in idols) {
+      if ([
+        idol.name,
+        idol.nameEn,
+        idol.nameTranslated,
+        idol.nameKo,
+      ].contains(fallback)) {
+        return idol.displayName;
+      }
+    }
+    return fallback;
   }
 
   CatalogAlbum? albumForCard(CollectibleCard card) {
@@ -659,43 +694,135 @@ List<CatalogTag> catalogTags(Map<String, dynamic> json, String type) =>
 
 enum ScanRecognitionStatus { recommended, needsConfirmation, unrecognized }
 
+class ScanCropPoint {
+  const ScanCropPoint({required this.x, required this.y});
+
+  final double x;
+  final double y;
+
+  Map<String, double> toJson() => {'x': x, 'y': y};
+}
+
 class ScanCropRegion {
   const ScanCropRegion({
     required this.x,
     required this.y,
     required this.width,
     required this.height,
-  });
+    List<ScanCropPoint>? corners,
+    // Preserve a public named argument while exposing only validated corners.
+    // ignore: prefer_initializing_formals
+  }) : _corners = corners;
 
   final double x;
   final double y;
   final double width;
   final double height;
+  final List<ScanCropPoint>? _corners;
+
+  /// Only convex, ordered points inside this region may replace its rectangle.
+  /// Older responses and malformed optional geometry retain the original box.
+  List<ScanCropPoint>? get corners {
+    final points = _corners;
+    if (points == null ||
+        points.length != 4 ||
+        !x.isFinite ||
+        !y.isFinite ||
+        !width.isFinite ||
+        !height.isFinite ||
+        width <= 0 ||
+        height <= 0) {
+      return null;
+    }
+    const epsilon = 1e-9;
+    for (final point in points) {
+      if (!point.x.isFinite ||
+          !point.y.isFinite ||
+          point.x < 0 ||
+          point.x > 1 ||
+          point.y < 0 ||
+          point.y > 1 ||
+          point.x < x - epsilon ||
+          point.x > x + width + epsilon ||
+          point.y < y - epsilon ||
+          point.y > y + height + epsilon) {
+        return null;
+      }
+    }
+    double? winding;
+    for (var i = 0; i < 4; i++) {
+      final a = points[i];
+      final b = points[(i + 1) % 4];
+      final c = points[(i + 2) % 4];
+      final cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+      if (cross.abs() <= epsilon || (winding != null && cross * winding < 0)) {
+        return null;
+      }
+      winding = cross;
+    }
+    return points;
+  }
+
+  static List<ScanCropPoint>? _parseCorners(Object? raw) {
+    if (raw is! List || raw.length != 4) return null;
+    final result = <ScanCropPoint>[];
+    for (final item in raw) {
+      if (item is! Map || item['x'] is! num || item['y'] is! num) return null;
+      result.add(
+        ScanCropPoint(
+          x: (item['x'] as num).toDouble(),
+          y: (item['y'] as num).toDouble(),
+        ),
+      );
+    }
+    return List.unmodifiable(result);
+  }
 
   factory ScanCropRegion.fromJson(Map<String, dynamic> json) => ScanCropRegion(
     x: (json['x'] as num?)?.toDouble() ?? 0,
     y: (json['y'] as num?)?.toDouble() ?? 0,
     width: (json['width'] as num?)?.toDouble() ?? 1,
     height: (json['height'] as num?)?.toDouble() ?? 1,
+    corners: _parseCorners(json['corners']),
   );
 
-  Map<String, double> toJson() => {
-    'x': x,
-    'y': y,
-    'width': width,
-    'height': height,
-  };
+  Map<String, dynamic> toJson() {
+    final points = corners;
+    return {
+      'x': x,
+      'y': y,
+      'width': width,
+      'height': height,
+      if (points != null)
+        'corners': points.map((point) => point.toJson()).toList(),
+    };
+  }
 }
 
 class ScanCandidate {
-  const ScanCandidate({required this.card, required this.similarity});
+  const ScanCandidate({
+    required this.card,
+    required this.similarity,
+    this.scores = const {},
+  });
 
   final CollectibleCard card;
   final double similarity;
+  final Map<String, double> scores;
+
+  bool get isApproximate => scores['approximate'] == 1;
 
   factory ScanCandidate.fromJson(Map<String, dynamic> json) => ScanCandidate(
     card: CollectibleCard.fromJson(json['card'] as Map<String, dynamic>),
     similarity: (json['similarity'] as num?)?.toDouble() ?? 0,
+    scores: {
+      if (json['scores'] is Map)
+        for (final entry in (json['scores'] as Map).entries)
+          if (entry.key is String &&
+              entry.value is num &&
+              (entry.value as num).isFinite)
+            entry.key as String: (entry.value as num).toDouble(),
+    },
   );
 }
 
@@ -708,6 +835,8 @@ class DetectedScanCard {
     this.cropImagePath,
     this.userConfirmedCardId,
     this.ownedAdded = false,
+    this.matchingFailed = false,
+    this.displayRotationQuarterTurns = 0,
   });
 
   final String id;
@@ -717,6 +846,10 @@ class DetectedScanCard {
   final ScanRecognitionStatus status;
   final String? userConfirmedCardId;
   final bool ownedAdded;
+  final bool matchingFailed;
+
+  /// Display only, clockwise. Detection coordinates and original crop stay intact.
+  final int displayRotationQuarterTurns;
 
   ScanCandidate? get topCandidate => candidates.firstOrNull;
 
@@ -740,6 +873,12 @@ class DetectedScanCard {
       status: status,
       userConfirmedCardId: json['user_confirmed_card_id'] as String?,
       ownedAdded: json['owned_added'] == true,
+      matchingFailed: json['recognition_status'] == 'failed',
+      displayRotationQuarterTurns:
+          switch (json['display_rotation_quarter_turns']) {
+            final int value when value >= 0 && value <= 3 => value,
+            _ => 0,
+          },
     );
   }
 }
@@ -777,18 +916,21 @@ class ScanConfirmation {
     required this.cardId,
     this.selected = true,
     this.addToWishlist = false,
+    this.ensureOwned = false,
   });
 
   final String detectedCardId;
   final String cardId;
   final bool selected;
   final bool addToWishlist;
+  final bool ensureOwned;
 
   Map<String, dynamic> toJson() => {
     'detected_card_id': detectedCardId,
     'card_id': cardId,
     'selected': selected,
     'add_to_wishlist': addToWishlist,
+    if (ensureOwned) 'ensure_owned': true,
   };
 }
 

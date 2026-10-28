@@ -2,12 +2,12 @@ import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/data/demo_catalog.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/data/repositories.dart';
-import 'package:fan_os/core/data/scan_feedback_repository.dart';
+import 'package:fan_os/core/api/api_client.dart';
+import 'package:fan_os/features/feedback/feedback_data.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/catalog_tags.dart';
 import 'package:fan_os/features/catalog/presentation/card_gallery_page.dart';
 import 'package:fan_os/features/scan/presentation/catalog_missing_feedback_page.dart';
-import 'package:fan_os/features/scan/state/scan_feedback_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -163,11 +163,11 @@ void main() {
     tester,
   ) async {
     phone(tester);
-    final repository = MockScanFeedbackOptionsRepository();
+    final repository = _MissingRepository();
     final container = ProviderContainer(
       overrides: [
         catalogProvider.overrideWith((_) async => DemoCatalog.bundle),
-        scanFeedbackOptionsRepositoryProvider.overrideWithValue(repository),
+        feedbackRepositoryProvider.overrideWithValue(repository),
         catalogTagOptionsProvider('OTHER').overrideWith((_) async => const []),
       ],
     );
@@ -185,7 +185,7 @@ void main() {
               body: TextButton(
                 onPressed: () => Navigator.push(
                   context,
-                  MaterialPageRoute<void>(
+                  MaterialPageRoute<bool>(
                     builder: (_) => const CatalogMissingFeedbackPage(
                       args: CatalogMissingFeedbackRouteArgs(
                         source: '其他',
@@ -203,7 +203,7 @@ void main() {
     );
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
-    expect(find.text('组合'), findsWidgets);
+    expect(find.text('组合/艺人'), findsOneWidget);
     await tester.enterText(
       find.byKey(const Key('catalog-missing-name')),
       'Brand Collaboration',
@@ -212,14 +212,11 @@ void main() {
       find.byKey(const Key('catalog-missing-notes')),
       '活动说明',
     );
-    await tester.ensureVisible(find.byKey(const Key('catalog-tag-search')));
+    await tester.ensureVisible(find.byKey(const ValueKey('others:tags')));
     await tester.enterText(
-      find.byKey(const Key('catalog-tag-search')),
+      find.byKey(const ValueKey('others:tags')),
       'Japan Exclusive',
     );
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byKey(const Key('catalog-add-tag')));
-    await tester.tap(find.byKey(const Key('catalog-add-tag')));
     await tester.pumpAndSettle();
     FocusManager.instance.primaryFocus?.unfocus();
     await tester.pumpAndSettle();
@@ -228,22 +225,40 @@ void main() {
     );
     await tester.tap(find.byKey(const Key('submit-catalog-missing-feedback')));
     await tester.pumpAndSettle();
-    final request = repository.suggestions.single;
-    expect(request.entityType, 'others');
-    expect(request.suggested.keys.toSet(), {
-      'missing_kind',
-      'group_id',
-      'artists',
-      'missing_references',
-      'name',
-      'original_name',
-      'start_date',
-      'end_date',
-      'description',
-      'tags',
-    });
-    expect(request.suggested['group_id'], 'group-lumina');
-    expect(request.suggested['tags'], ['Japan Exclusive']);
+    final request = repository.submissions.single;
+    expect(request['kind'], 'MISSING_CATALOG');
+    expect(request['entity_type'], 'others');
+    final values = {
+      for (final field in feedbackItems(request['fields']))
+        field['key']: field['value'],
+    };
+    expect(values['artists'], [
+      {'type': 'groups', 'id': 'group-lumina'},
+    ]);
+    expect(values['tags'], ['Japan Exclusive']);
     expect(tester.takeException(), isNull);
   });
+}
+
+class _MissingRepository extends FeedbackRepository {
+  _MissingRepository() : super(ApiClient());
+  final submissions = <FeedbackJson>[];
+  @override
+  Future<FeedbackJson> get(String path, {FeedbackJson? query}) async => {
+    'fields': [
+      {'key': 'name', 'label': '名称', 'type': 'text', 'required': true},
+      {
+        'key': 'artists',
+        'label': '组合/艺人',
+        'type': 'multi_reference',
+        'reference': 'actors',
+      },
+      {'key': 'tags', 'label': '标签', 'type': 'list'},
+    ],
+  };
+  @override
+  Future<FeedbackJson> post(String path, FeedbackJson body) async {
+    submissions.add(body);
+    return {'id': 'missing-other'};
+  }
 }

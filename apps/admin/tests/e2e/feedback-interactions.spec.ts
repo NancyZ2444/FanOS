@@ -190,7 +190,7 @@ test("reject confirmation identifies the record; cancel does not act, completion
     .getByLabel("公开处理说明", { exact: true })
     .fill("图片资料不足，请补充清晰正反面。");
   await page.getByRole("button", { name: "更多", exact: true }).click();
-  await page.getByRole("menuitem", { name: "不予采纳", exact: true }).click();
+  await page.getByRole("menuitem", { name: "无法采用", exact: true }).click();
   await expect(page.getByRole("dialog")).toContainText(row.name);
   await expect(page.getByRole("dialog")).toContainText("1 条反馈");
   await page
@@ -199,10 +199,10 @@ test("reject confirmation identifies the record; cancel does not act, completion
     .click();
   expect((await setup.detail(row.id)).result).toBe("PENDING");
   await page.getByRole("button", { name: "更多", exact: true }).click();
-  await page.getByRole("menuitem", { name: "不予采纳", exact: true }).click();
+  await page.getByRole("menuitem", { name: "无法采用", exact: true }).click();
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "不予采纳", exact: true })
+    .getByRole("button", { name: "无法采用", exact: true })
     .click();
   await expect
     .poll(async () => (await setup.detail(row.id)).result)
@@ -214,7 +214,7 @@ test("reject confirmation identifies the record; cancel does not act, completion
   const record = page
     .locator(".ant-table-tbody tr")
     .filter({ hasText: row.id });
-  await expect(record).toContainText("未收录");
+  await expect(record).toContainText("无法采用");
   await expect(
     record.getByRole("button", { name: "编辑", exact: true }),
   ).toHaveCount(0);

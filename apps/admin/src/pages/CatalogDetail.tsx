@@ -1,9 +1,17 @@
+import CatalogProfile from "./CatalogProfile";
 import { displayValue } from "../design/format";
 import { DetailFields, BusinessData } from "../components/admin";
-import { editable } from "../components/shared";
+import { CardArt, editable, StatusTag } from "../components/shared";
+import { canPermission } from "../api/permissions";
+import "./catalog-editorial.css";
 import { Table } from "../components/admin";
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import {
   Skeleton,
   Alert,
@@ -33,12 +41,12 @@ export default function CatalogDetail() {
     "cards",
     "history",
     ...(kind === "cards"
-      ? ["source", "scan", "feedback"]
+      ? ["scan"]
       : ["groups", "idols"].includes(kind)
-        ? ["members", "company", "social"]
+        ? ["members", "company", "social", "profile"]
         : kind === "others"
           ? []
-          : ["versions", "sources"]),
+          : ["versions"]),
   ];
   const requestedTab = params.get("tab") || "overview";
   const activeTab = tabKeys.includes(requestedTab) ? requestedTab : "overview";
@@ -101,28 +109,42 @@ export default function CatalogDetail() {
           <Button onClick={() => navigate(`/catalog/${kind}`)}>返回列表</Button>
           <h1>{entity?.name || entity?.title || "详情"}</h1>
         </div>
-        {(kind === "cards" || actor.role !== "operation_admin") && (
+        {(kind === "cards" || canPermission(actor, "catalog.edit")) && (
           <Space wrap className="catalog-detail-actions">
-            {actor.role !== "operation_admin" && (
-              <Button
-                type="primary"
-                disabled={!entity || !editable(entity.status)}
-                title={
-                  entity && !editable(entity.status)
-                    ? "已发布内容需先下架，待审核内容需先驳回"
-                    : "编辑资料"
-                }
-                onClick={() =>
-                  navigate(
-                    kind === "cards"
-                      ? `/catalog/cards/${id}`
-                      : `/catalog/${kind}?edit=${encodeURIComponent(id)}`,
-                  )
-                }
-              >
-                编辑
-              </Button>
-            )}
+            {canPermission(actor, "catalog.edit") &&
+              ["groups", "idols"].includes(kind) &&
+              entity?.status === "PUBLISHED" && (
+                <Button
+                  type="primary"
+                  onClick={() => setParams({ tab: "profile" })}
+                >
+                  编辑资料
+                </Button>
+              )}
+            {canPermission(actor, "catalog.edit") &&
+              !(
+                ["groups", "idols"].includes(kind) &&
+                entity?.status === "PUBLISHED"
+              ) && (
+                <Button
+                  type="primary"
+                  disabled={!entity || !editable(entity.status)}
+                  title={
+                    entity && !editable(entity.status)
+                      ? "已发布内容需先下架，待审核内容需先驳回"
+                      : "编辑资料"
+                  }
+                  onClick={() =>
+                    navigate(
+                      kind === "cards"
+                        ? `/catalog/cards/${id}`
+                        : `/catalog/${kind}?edit=${encodeURIComponent(id)}`,
+                    )
+                  }
+                >
+                  编辑
+                </Button>
+              )}
             {kind === "cards" ? (
               <Button onClick={() => navigate(`/catalog/cards/${id}`)}>
                 维护与审核
@@ -183,6 +205,15 @@ export default function CatalogDetail() {
           setParams(nextParams, { replace: true });
         }}
         items={[
+          ...(["groups", "idols"].includes(kind)
+            ? [
+                {
+                  key: "profile",
+                  label: "资料",
+                  children: <CatalogProfile kind={kind} entityId={id} />,
+                },
+              ]
+            : []),
           {
             key: "overview",
             label: "概览",
@@ -323,7 +354,7 @@ export default function CatalogDetail() {
                 <MediaIngestionStatus
                   kind={kind}
                   id={id}
-                  canEdit={actor.role !== "operation_admin"}
+                  canEdit={canPermission(actor, "catalog.edit")}
                 />
                 <Space wrap>
                   {[
@@ -349,14 +380,6 @@ export default function CatalogDetail() {
                       { title: "版本", dataIndex: "version" },
                       { title: "时间", dataIndex: "created_at" },
                       {
-                        title: "来源",
-                        render: (_, r) => r.data.source_url || "—",
-                      },
-                      {
-                        title: "版权",
-                        render: (_, r) => r.data.copyright_status || "UNKNOWN",
-                      },
-                      {
                         title: "图片",
                         render: (_, r) => (
                           <Image src={r.data.image_url} width={60} />
@@ -370,46 +393,6 @@ export default function CatalogDetail() {
           },
           ...(kind === "cards"
             ? [
-                {
-                  key: "source",
-                  label: "来源",
-                  children: content(
-                    <>
-                      <Descriptions
-                        items={[
-                          {
-                            key: "kind",
-                            label: "来源类型",
-                            children: displayValue(entity?.source_entity_type),
-                          },
-                          {
-                            key: "source",
-                            label: "发行来源",
-                            children: entity?.source || "—",
-                          },
-                          {
-                            key: "copyright",
-                            label: "版权状态",
-                            children: displayValue(
-                              entity?.source_info?.copyright_status ||
-                                "UNKNOWN",
-                            ),
-                          },
-                          {
-                            key: "url",
-                            label: "来源链接",
-                            children: entity?.source_info?.source_url || "—",
-                          },
-                        ]}
-                      />
-                      <RecordManager
-                        kind="sources"
-                        entityType="cards"
-                        entityId={id}
-                      />
-                    </>,
-                  ),
-                },
                 {
                   key: "scan",
                   label: "AI Scan",
@@ -436,7 +419,7 @@ export default function CatalogDetail() {
                           },
                         ]}
                       />
-                      {actor.role !== "operation_admin" && (
+                      {canPermission(actor, "catalog.edit") && (
                         <Button
                           disabled={
                             !entity?.image_url || entity?.status === "ARCHIVED"
@@ -460,32 +443,6 @@ export default function CatalogDetail() {
                     </>,
                   ),
                 },
-                {
-                  key: "feedback",
-                  label: "用户反馈",
-                  children: content(
-                    <>
-                      <Button onClick={() => navigate("/catalog/review")}>
-                        进入审核中心
-                      </Button>
-                      <Table<any>
-                        rowKey="id"
-                        dataSource={data?.feedback || []}
-                        columns={[
-                          { title: "状态", dataIndex: "status" },
-                          {
-                            title: "反馈原因",
-                            render: (_, r) => r.data.reason,
-                          },
-                          {
-                            title: "提交人",
-                            render: (_, r) => r.data.contributor,
-                          },
-                        ]}
-                      />
-                    </>,
-                  ),
-                },
               ]
             : []),
           ...(["groups", "idols"].includes(kind)
@@ -495,12 +452,22 @@ export default function CatalogDetail() {
                   label: kind === "groups" ? "成员 / 经历" : "组合经历",
                   children: content(
                     <>
-                      <Table
+                      <Table<any>
                         rowKey="id"
                         dataSource={members}
                         pagination={{ defaultPageSize: 10 }}
                         columns={[
-                          { title: "组合 / 艺人", dataIndex: "name" },
+                          {
+                            title: kind === "groups" ? "艺人" : "组合",
+                            dataIndex: "name",
+                            render: (name, row) => (
+                              <Link
+                                to={`/catalog/${kind === "groups" ? "idols" : "groups"}/${encodeURIComponent(kind === "groups" ? row.idol_id : row.group_id)}/detail`}
+                              >
+                                {name || "查看资料"}
+                              </Link>
+                            ),
+                          },
                           { title: "加入日期", dataIndex: "start_date" },
                           { title: "退出日期", dataIndex: "end_date" },
                           {
@@ -548,7 +515,11 @@ export default function CatalogDetail() {
                     ),
                   },
                   { title: "类型", dataIndex: "entity_type" },
-                  { title: "状态", dataIndex: "status" },
+                  {
+                    title: "状态",
+                    dataIndex: "status",
+                    render: (status) => <StatusTag status={status} />,
+                  },
                 ]}
               />,
             ),
@@ -565,17 +536,34 @@ export default function CatalogDetail() {
                     title: "小卡",
                     dataIndex: "title",
                     render: (title, row) => (
-                      <Button
-                        type="link"
-                        onClick={() => navigate(`/catalog/cards/${row.id}`)}
+                      <Link
+                        className="catalog-related-card"
+                        to={`/catalog/cards/${row.id}/detail`}
+                        title={title || "查看小卡详情"}
+                        aria-label={`查看小卡：${title || "未命名小卡"}`}
                       >
-                        {title}
-                      </Button>
+                        <CardArt card={row} small />
+                      </Link>
                     ),
                   },
-                  { title: "艺人", dataIndex: "idol_name" },
+                  {
+                    title: "艺人",
+                    dataIndex: "idol_name",
+                    render: (name, row) =>
+                      row.idol_id ? (
+                        <Link to={`/catalog/idols/${row.idol_id}/detail`}>
+                          {name || "查看艺人"}
+                        </Link>
+                      ) : (
+                        name || "—"
+                      ),
+                  },
                   { title: "来源", dataIndex: "source" },
-                  { title: "状态", dataIndex: "status" },
+                  {
+                    title: "状态",
+                    dataIndex: "status",
+                    render: (status) => <StatusTag status={status} />,
+                  },
                 ]}
               />,
             ),
@@ -588,17 +576,6 @@ export default function CatalogDetail() {
                   children: content(
                     <RecordManager
                       kind="versions"
-                      entityType={kind}
-                      entityId={id}
-                    />,
-                  ),
-                },
-                {
-                  key: "sources",
-                  label: "来源链",
-                  children: content(
-                    <RecordManager
-                      kind="sources"
                       entityType={kind}
                       entityId={id}
                     />,

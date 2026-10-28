@@ -409,9 +409,9 @@ class _CatalogListPageState extends ConsumerState<CatalogListPage> {
   }
 
   int _groupAsc(FanGroup a, FanGroup b) =>
-      a.displayName.compareTo(b.displayName);
+      compareDisplayNames(a.displayName, b.displayName);
   int _groupDesc(FanGroup a, FanGroup b) =>
-      b.displayName.compareTo(a.displayName);
+      compareDisplayNames(b.displayName, a.displayName);
 
   Widget _listOrEmpty<T>(List<T> items, Widget Function(T item) builder) {
     if (items.isEmpty) {

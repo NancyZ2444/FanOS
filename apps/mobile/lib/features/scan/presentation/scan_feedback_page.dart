@@ -1,4 +1,6 @@
 import 'package:fan_os/features/scan/presentation/scan_image.dart';
+import 'package:fan_os/core/widgets/card_geometry.dart';
+import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/data/scan_feedback_models.dart';
 import 'package:fan_os/core/api/api_client.dart';
@@ -9,15 +11,19 @@ import 'package:fan_os/features/scan/state/scan_feedback_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:fan_os/features/feedback/feedback_data.dart';
+import 'package:fan_os/features/feedback/feedback_crop_page.dart';
 
 class ScanFeedbackRouteArgs {
   const ScanFeedbackRouteArgs({
     required this.session,
     required this.detectedCard,
+    this.returnToResult = false,
   });
 
   final ScanSession session;
   final DetectedScanCard detectedCard;
+  final bool returnToResult;
 }
 
 class ScanFeedbackPage extends ConsumerStatefulWidget {
@@ -44,6 +50,94 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
   String? _optionsError;
   int _optionsGeneration = 0;
   bool _submitting = false;
+  String? _submitError;
+  final _requestKey = FeedbackRequestKey();
+  FeedbackJson? _frontImage, _backImage;
+  bool _imageBusy = false;
+  String? _imageError;
+
+  Future<void> _pickImage(bool back) async {
+    if (_imageBusy || _submitting) return;
+    setState(() {
+      _imageBusy = true;
+      _imageError = null;
+    });
+    try {
+      final image = await ref.read(feedbackRepositoryProvider).pickImage();
+      if (!mounted || image == null) return;
+      final url = image['image_url'] as String?;
+      if (url == null || url.isEmpty) {
+        throw StateError('Missing uploaded image');
+      }
+      final bounds = await Navigator.of(context).push<List<double>>(
+        MaterialPageRoute(
+          builder: (_) => FeedbackCropPage(url: url, side: back ? '背面' : '正面'),
+        ),
+      );
+      if (!mounted || bounds == null) return;
+      final cropped = await ref.read(feedbackRepositoryProvider).post(
+        '/images/crop',
+        {'image_id': image['id'], 'crop': bounds},
+      );
+      if (mounted) {
+        setState(() {
+          if (back) {
+            _backImage = cropped;
+          } else {
+            _frontImage = cropped;
+          }
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _imageError = feedbackError(error));
+    } finally {
+      if (mounted) setState(() => _imageBusy = false);
+    }
+  }
+
+  Future<void> _cropImage(bool back) async {
+    if (_imageBusy || _submitting) return;
+    final image = back ? _backImage : _frontImage;
+    final url =
+        image?['image_url'] as String? ??
+        (back ? null : widget.args?.detectedCard.cropImagePath);
+    if (url == null) return;
+    final bounds = await Navigator.of(context).push<List<double>>(
+      MaterialPageRoute(
+        builder: (_) => FeedbackCropPage(url: url, side: back ? '背面' : '正面'),
+      ),
+    );
+    if (!mounted || bounds == null) return;
+    setState(() {
+      _imageBusy = true;
+      _imageError = null;
+    });
+    try {
+      final cropped = await ref.read(feedbackRepositoryProvider).post(
+        '/images/crop',
+        {
+          if (image?['id'] != null)
+            'image_id': image!['id']
+          else
+            'detected_card_id': widget.args!.detectedCard.id,
+          'crop': bounds,
+        },
+      );
+      if (mounted) {
+        setState(() {
+          if (back) {
+            _backImage = cropped;
+          } else {
+            _frontImage = cropped;
+          }
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _imageError = feedbackError(error));
+    } finally {
+      if (mounted) setState(() => _imageBusy = false);
+    }
+  }
 
   Future<void> _loadOptions() async {
     final source = _source;
@@ -147,18 +241,52 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
 
   Future<void> _submit() async {
     final args = widget.args;
-    if (args == null || _submitting) return;
+    if (args == null || _submitting || _imageBusy) return;
     if (!ref.read(sessionProvider).isLoggedIn) {
       context.push('/login');
       return;
     }
     final notes = _notesController.text.trim();
-    if (_sourceMode != 'KNOWN' && notes.isEmpty) {
+    if (!args.returnToResult && _sourceMode != 'KNOWN' && notes.isEmpty) {
       showFanToast(context, '请补充备注，帮助我们核实小卡来源');
       return;
     }
-    setState(() => _submitting = true);
+    setState(() {
+      _submitting = true;
+      _submitError = null;
+    });
     try {
+      if (args.returnToResult) {
+        final body = <String, dynamic>{
+          'kind': 'MISSING_CARD',
+          'missing': {
+            'feedback_mode': 'SCAN_CLUE',
+            'scan_session_id': args.session.id,
+            'detected_card_id': args.detectedCard.id,
+            if (_frontImage != null) 'front_image_id': _frontImage!['id'],
+            if (_backImage != null) 'back_image_id': _backImage!['id'],
+            if (_backImage != null) 'is_double_sided': true,
+            'group_id': _group?.id,
+            'idol_id': _idol?.id,
+            'source_entity_type': {
+              '专辑': 'ALBUM',
+              '活动': 'EVENT',
+              '其他': 'OTHER',
+            }[_source],
+            'source_entity_id': _sourceOption?.id,
+            'source_version_id': _sourceVersion?.id,
+          },
+          'notes': notes,
+        };
+        await ref.read(feedbackRepositoryProvider).post('', {
+          ...body,
+          'request_key': _requestKey.forPayload(body),
+        });
+        if (!mounted) return;
+        showFanToast(context, '反馈已提交');
+        Navigator.of(context).pop(true);
+        return;
+      }
       await ref
           .read(scanRepositoryProvider)
           .submitFeedback(
@@ -188,6 +316,14 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
     } catch (error) {
       if (!mounted) return;
       setState(() => _submitting = false);
+      if (args.returnToResult) {
+        setState(
+          () => _submitError = error is ApiException
+              ? error.message
+              : '反馈提交失败，请重试，填写内容已保留。',
+        );
+        return;
+      }
       showFanToast(
         context,
         error is ApiException ? error.message : '反馈提交失败，请稍后重试',
@@ -200,7 +336,7 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
     final args = widget.args;
     if (args == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('主动反馈')),
+        appBar: AppBar(title: const Text('我要反馈')),
         body: FanEmptyState(
           icon: Icons.info_outline_rounded,
           title: '反馈信息已失效',
@@ -214,7 +350,7 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
     final session = ref.watch(sessionProvider);
     if (!session.isLoggedIn) {
       return Scaffold(
-        appBar: AppBar(title: const Text('主动反馈')),
+        appBar: AppBar(title: const Text('我要反馈')),
         body: FanEmptyState(
           icon: Icons.lock_outline_rounded,
           title: '登录后提交反馈',
@@ -227,35 +363,65 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
 
     final catalog = ref.watch(catalogProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('主动反馈')),
+      appBar: AppBar(title: const Text('我要反馈')),
       body: catalog.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, _) => const FanEmptyState(
+        error: (_, _) => FanEmptyState(
           icon: Icons.cloud_off_rounded,
           title: '选项加载失败',
           message: '请稍后重试',
+          actionLabel: '重试',
+          onAction: () => ref.invalidate(catalogProvider),
         ),
         data: (data) => SingleChildScrollView(
           child: FanContent(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (!args.returnToResult)
+                  Text(
+                    '帮助我们补充官方图鉴',
+                    style: Theme.of(context).textTheme.headlineMedium,
+                  ),
+                if (!args.returnToResult) const SizedBox(height: 8),
                 Text(
-                  '帮助我们补充官方图鉴',
-                  style: Theme.of(context).textTheme.headlineMedium,
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  '扫描记录、原始图片、裁剪区域和 AI 候选会自动随反馈提交。',
+                  args.returnToResult
+                      ? '将附带扫描原图、裁剪图及候选信息'
+                      : '扫描记录、原始图片、裁剪区域和 AI 候选会自动随反馈提交。',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
-                const SizedBox(height: 18),
-                _FeedbackContextCard(args: args),
-                const SizedBox(height: 22),
-                Text('补充来源信息', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
+                if (args.returnToResult)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: _imageEditor(back: false)),
+                      const SizedBox(width: 12),
+                      Expanded(child: _imageEditor(back: true)),
+                    ],
+                  )
+                else
+                  _FeedbackContextCard(args: args),
+                if (_imageBusy) const LinearProgressIndicator(),
+                if (_imageError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      _imageError!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 24),
+                if (!args.returnToResult)
+                  Text(
+                    '补充来源信息',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                if (!args.returnToResult) const SizedBox(height: 12),
                 _SearchAutocomplete<FanGroup>(
-                  label: '所属组合',
+                  label: args.returnToResult ? '所属组合（选填）' : '所属组合',
                   hint: '搜索组合',
                   options: data.groups,
                   displayString: (group) => group.displayName,
@@ -269,8 +435,8 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
                 const SizedBox(height: 12),
                 _SearchAutocomplete<IdolProfile>(
                   key: ValueKey(_group?.id),
-                  label: 'Idol',
-                  hint: '搜索 Idol',
+                  label: args.returnToResult ? '艺人（选填）' : 'Idol',
+                  hint: '搜索艺人',
                   options: data.idols
                       .where(
                         (idol) =>
@@ -282,11 +448,11 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
                       )
                       .toList(),
                   displayString: (idol) =>
-                      '${idol.displayName} · ${idol.groupName}',
+                      '${idol.displayName} · ${idol.displayGroupName}',
                   onQueryChanged: (value) {
                     if (_idol != null &&
                         value !=
-                            '${_idol!.displayName} · ${_idol!.groupName}') {
+                            '${_idol!.displayName} · ${_idol!.displayGroupName}') {
                       _filtersChanged(group: _group);
                     }
                   },
@@ -297,7 +463,9 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
                 DropdownButtonFormField<String>(
                   key: const Key('scan-feedback-source'),
                   initialValue: _source,
-                  decoration: const InputDecoration(labelText: '卡片来源'),
+                  decoration: InputDecoration(
+                    labelText: args.returnToResult ? '来源（选填）' : '卡片来源',
+                  ),
                   hint: const Text('请选择来源'),
                   items: _sources
                       .map(
@@ -309,9 +477,38 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
                       .toList(),
                   onChanged: _sourceChanged,
                 ),
-                if (_source != null) ...[
+                if (_source != null && !args.returnToResult) ...[
                   const SizedBox(height: 12),
                   _sourceFields(),
+                ],
+                if (args.returnToResult &&
+                    ['专辑', '活动', '其他'].contains(_source)) ...[
+                  const SizedBox(height: 12),
+                  if (_loadingOptions)
+                    const LinearProgressIndicator()
+                  else if (_optionsError != null)
+                    Row(
+                      children: [
+                        const Expanded(child: Text('来源选项加载失败')),
+                        TextButton(
+                          onPressed: _loadOptions,
+                          child: const Text('重试'),
+                        ),
+                      ],
+                    )
+                  else
+                    ListTile(
+                      key: const Key('scan-clue-source-picker'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(_sourceOption?.name ?? '选择来源（选填）'),
+                      subtitle: _options.isEmpty
+                          ? const Text('暂无可选来源，可在说明中补充')
+                          : null,
+                      trailing: _options.isEmpty
+                          ? null
+                          : const Icon(Icons.chevron_right_rounded),
+                      onTap: _options.isEmpty ? null : _chooseOfficialSource,
+                    ),
                 ],
                 const SizedBox(height: 12),
                 TextField(
@@ -320,15 +517,28 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
                   maxLines: 4,
                   maxLength: 200,
                   decoration: InputDecoration(
-                    labelText: _sourceMode == 'KNOWN' ? '备注（选填）' : '备注（必填）',
+                    labelText: args.returnToResult
+                        ? '补充说明（选填）'
+                        : _sourceMode == 'KNOWN'
+                        ? '备注（选填）'
+                        : '备注（必填）',
                     hintText: '可以补充版本、获取渠道或其他线索',
                     alignLabelWithHint: true,
                   ),
                 ),
                 const SizedBox(height: 12),
+                if (_submitError != null) ...[
+                  Text(
+                    _submitError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 FilledButton(
                   key: const Key('submit-scan-feedback'),
-                  onPressed: _submitting ? null : _submit,
+                  onPressed: _submitting || _imageBusy ? null : _submit,
                   child: _submitting
                       ? const SizedBox(
                           width: 20,
@@ -345,6 +555,76 @@ class _ScanFeedbackPageState extends ConsumerState<ScanFeedbackPage> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _imageEditor({required bool back}) {
+    final image = back ? _backImage : _frontImage;
+    final path =
+        image?['image_url'] as String? ??
+        (back ? null : widget.args?.detectedCard.cropImagePath);
+    final side = back ? 'back' : 'front';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          back ? '背面（选填）' : '正面',
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
+        Semantics(
+          button: true,
+          label: back ? '点击更换背面图片' : '点击更换正面图片',
+          child: InkWell(
+            key: Key('scan-clue-upload-$side'),
+            onTap: _imageBusy || _submitting ? null : () => _pickImage(back),
+            child: Center(
+              child: SizedBox(
+                width: 140,
+                height: 140 / photocardAspectRatio,
+                child: ScanImage(
+                  path: path,
+                  aspectRatio: photocardAspectRatio,
+                  fallback: Center(
+                    child: Icon(
+                      Icons.add_photo_alternate_outlined,
+                      color: FanColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        Wrap(
+          alignment: WrapAlignment.center,
+          children: [
+            if (path != null)
+              IconButton(
+                key: Key('scan-clue-crop-$side'),
+                tooltip: back ? '裁剪背面' : '裁剪正面',
+                onPressed: _imageBusy || _submitting
+                    ? null
+                    : () => _cropImage(back),
+                icon: const Icon(Icons.crop_rounded, size: 20),
+              ),
+            if (image != null)
+              IconButton(
+                tooltip: back ? '移除背面' : '恢复扫描裁剪图',
+                onPressed: _imageBusy || _submitting
+                    ? null
+                    : () => setState(() {
+                        if (back) {
+                          _backImage = null;
+                        } else {
+                          _frontImage = null;
+                        }
+                      }),
+                icon: const Icon(Icons.close_rounded, size: 20),
+              ),
+          ],
+        ),
+      ],
     );
   }
 
@@ -581,12 +861,19 @@ class _FeedbackContextCard extends StatelessWidget {
               width: 76,
               child: ScanImage(
                 path: imagePath,
-                fallback: const FanArtwork(
-                  startColor: Color(0xFF756D65),
-                  endColor: Color(0xFF292621),
-                  label: 'SCAN',
-                  borderRadius: 12,
-                ),
+                fallback: args.returnToResult
+                    ? const AspectRatio(
+                        aspectRatio: .74,
+                        child: Center(
+                          child: Text('预览不可用', style: TextStyle(fontSize: 12)),
+                        ),
+                      )
+                    : const FanArtwork(
+                        startColor: Color(0xFF756D65),
+                        endColor: Color(0xFF292621),
+                        label: 'SCAN',
+                        borderRadius: 12,
+                      ),
               ),
             ),
             const SizedBox(width: 14),

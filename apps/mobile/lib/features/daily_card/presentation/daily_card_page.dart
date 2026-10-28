@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/state/app_state.dart';
+import 'package:fan_os/core/widgets/card_geometry.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -70,24 +71,19 @@ class DailyCardPage extends ConsumerWidget {
               Text(
                 state.remaining == 0 ? '今日的相遇' : '选择一张，揭晓此刻的缘分',
                 textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.headlineMedium,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-              const SizedBox(height: 8),
-              Text(
-                '翻卡只是发现玩法，不会自动加入 Owned',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 30),
+              const SizedBox(height: 16),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: List.generate(3, (index) {
                   final revealed = index < state.drawnCards.length;
                   return Expanded(
                     child: Padding(
-                      padding: EdgeInsets.only(
-                        left: index == 0 ? 0 : 5,
-                        right: index == 2 ? 0 : 5,
-                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
                       child: revealed
                           ? _FlipRevealCard(
                               key: ValueKey(state.drawnCards[index].id),
@@ -107,7 +103,7 @@ class DailyCardPage extends ConsumerWidget {
                   );
                 }),
               ),
-              const SizedBox(height: 22),
+              const SizedBox(height: 24),
               if (state.errorMessage != null)
                 Text(
                   state.errorMessage!,
@@ -122,7 +118,7 @@ class DailyCardPage extends ConsumerWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '${state.drawnCards.last.groupName} · ${state.drawnCards.last.source}',
+                  "${entityDisplayName(ref, 'groups', state.drawnCards.last.groupId, state.drawnCards.last.groupName)} · ${state.drawnCards.last.source}",
                   style: Theme.of(context).textTheme.bodySmall,
                   textAlign: TextAlign.center,
                 ),
@@ -142,11 +138,6 @@ class DailyCardPage extends ConsumerWidget {
                   icon: const Icon(Icons.style_rounded),
                   label: const Text('翻开第一张'),
                 ),
-              const SizedBox(height: 8),
-              Text(
-                '次数与结果以服务端 Draw Record 为准',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
             ],
           ),
         ),
@@ -169,56 +160,32 @@ class _CardBack extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AspectRatio(
-      aspectRatio: .68,
+      aspectRatio: photocardAspectRatio,
       child: InkWell(
         onTap: enabled ? onTap : null,
         borderRadius: BorderRadius.circular(18),
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 200),
           opacity: enabled || loading ? 1 : .42,
-          child: Container(
-            decoration: BoxDecoration(
-              color: FanColors.ink,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: .25),
-                width: 4,
-              ),
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF12182A), Color(0xFF4D467F)],
-              ),
-            ),
-            child: loading
-                ? const Center(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Image.asset(
+                  'assets/cards/default-card-back.png',
+                  fit: BoxFit.cover,
+                  semanticLabel: 'Fan OS 默认卡背',
+                ),
+                if (loading)
+                  const Center(
                     child: CircularProgressIndicator(
                       color: Colors.white,
                       strokeWidth: 2,
                     ),
-                  )
-                : const Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.auto_awesome_rounded,
-                          color: Colors.white,
-                          size: 28,
-                        ),
-                        SizedBox(height: 8),
-                        Text(
-                          'FAN OS',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 1.4,
-                          ),
-                        ),
-                      ],
-                    ),
                   ),
+              ],
+            ),
           ),
         ),
       ),
@@ -271,6 +238,7 @@ class _FlipRevealCardState extends State<_FlipRevealCard>
             ..rotateY(angle),
           child: showFront
               ? FanArtwork(
+                  aspectRatio: photocardAspectRatio,
                   imageUrl: widget.card.imageUrl,
                   startColor: Color(widget.card.colorStart),
                   endColor: Color(widget.card.colorEnd),

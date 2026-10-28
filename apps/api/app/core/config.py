@@ -26,7 +26,27 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 60
     refresh_token_days: int = 30
-    dev_phone_code: str = "666666"
+    sms_enabled: bool = False
+    sms_secret_id: str = ""
+    sms_secret_key: str = ""
+    sms_app_id: str = ""
+    sms_template_id: str = ""
+    sms_sign_name: str = ""
+    sms_region: str = "ap-guangzhou"
+    # Enable only after real app signatures and SDK callbacks are verified.
+    oauth_native_verified: bool = False
+    wechat_enabled: bool = False
+    wechat_app_id: str = ""
+    wechat_app_secret: str = ""
+    wechat_universal_link: str = ""
+    weibo_enabled: bool = False
+    weibo_app_key: str = ""
+    weibo_app_secret: str = ""
+    weibo_redirect_uri: str = ""
+    qq_enabled: bool = False
+    qq_app_id: str = ""
+    qq_universal_link: str = ""
+    support_allowed_hosts: list[str] = Field(default_factory=list)
     auto_seed: bool = True
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
 

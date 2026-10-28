@@ -1,3 +1,7 @@
+import 'package:fan_os/core/api/auth_flow.dart';
+import 'package:fan_os/core/api/api_client.dart';
+import 'package:fan_os/features/onboarding/presentation/auth_help_page.dart';
+import 'package:fan_os/features/profile/presentation/account_security_page.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/config/feature_flags.dart';
 import 'package:fan_os/core/data/social_feed_models.dart';
@@ -23,6 +27,7 @@ import 'package:fan_os/features/onboarding/presentation/favorite_setup_page.dart
 import 'package:fan_os/features/onboarding/presentation/launch_page.dart';
 import 'package:fan_os/features/onboarding/presentation/login_page.dart';
 import 'package:fan_os/features/onboarding/presentation/privacy_page.dart';
+import 'package:fan_os/features/onboarding/presentation/password_setup_page.dart';
 import 'package:fan_os/features/profile/presentation/edit_profile_page.dart';
 import 'package:fan_os/features/profile/presentation/profile_page.dart';
 import 'package:fan_os/features/profile/presentation/profile_support_pages.dart';
@@ -33,6 +38,7 @@ import 'package:fan_os/features/feedback/correction_page.dart';
 import 'package:fan_os/features/feedback/missing_card_page.dart';
 import 'package:fan_os/features/scan/presentation/catalog_missing_feedback_page.dart';
 import 'package:fan_os/features/scan/presentation/scan_result_page.dart';
+import 'package:fan_os/features/scan/presentation/scan_spatial_result_page.dart';
 import 'package:fan_os/features/shell/presentation/main_shell.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -43,10 +49,35 @@ const _initialLocation = String.fromEnvironment(
   defaultValue: '/',
 );
 
+String _lastBusinessLocation = '/home';
+
 final GoRouter fanOsRouter = GoRouter(
   navigatorKey: _rootNavigatorKey,
   initialLocation: _initialLocation,
+  redirect: (context, state) {
+    final path = state.uri.path;
+    if (path != '/login' &&
+        path != '/privacy' &&
+        path != '/' &&
+        !path.startsWith('/onboarding') &&
+        !path.startsWith('/account')) {
+      _lastBusinessLocation = safeLoginReturn(state.uri.toString());
+    }
+    return null;
+  },
   routes: [
+    GoRoute(
+      path: '/account-banned',
+      builder: (context, state) => AccountBannedPage(
+        error: state.extra is ApiException
+            ? state.extra as ApiException
+            : const ApiException('ACCOUNT_BANNED', '当前账号暂时无法登录'),
+      ),
+    ),
+    GoRoute(
+      path: '/account/security',
+      builder: (context, state) => const AccountSecurityPage(),
+    ),
     GoRoute(path: '/', builder: (context, state) => const LaunchPage()),
     GoRoute(
       path: '/collection/search',
@@ -57,13 +88,23 @@ final GoRouter fanOsRouter = GoRouter(
     GoRoute(
       path: '/login',
       parentNavigatorKey: _rootNavigatorKey,
-      builder: (context, state) => const LoginPage(),
+      builder: (context, state) => LoginPage(
+        returnTo: state.uri.queryParameters['from'] ?? _lastBusinessLocation,
+        showPhoneForm: state.uri.queryParameters['phone'] == '1',
+      ),
+    ),
+    GoRoute(
+      path: '/onboarding/password',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) =>
+          PasswordSetupPage(returnTo: state.uri.queryParameters['from']),
     ),
     GoRoute(
       path: '/onboarding/favorites',
       parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) => FavoriteSetupPage(
         isOnboarding: state.uri.queryParameters['welcome'] == '1',
+        returnTo: state.uri.queryParameters['from'],
       ),
     ),
     StatefulShellRoute.indexedStack(
@@ -238,6 +279,23 @@ final GoRouter fanOsRouter = GoRouter(
           CardDetailPage(cardId: state.pathParameters['cardId']!),
     ),
     GoRoute(
+      path: '/scan-original',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) => const ScanPage(originalLocation: true),
+    ),
+    GoRoute(
+      path: '/scan-original-result',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) => ScanSpatialResultPage(
+        key: ValueKey(
+          state.extra is ScanSession ? (state.extra! as ScanSession).id : null,
+        ),
+        session: state.extra is ScanSession
+            ? state.extra! as ScanSession
+            : null,
+      ),
+    ),
+    GoRoute(
       path: '/scan-result',
       parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) => ScanResultPage(
@@ -271,6 +329,12 @@ final GoRouter fanOsRouter = GoRouter(
           FeedbackCenterPage(initialKind: state.uri.queryParameters['kind']),
     ),
     GoRoute(
+      path: '/feedback/:id/supplement',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) =>
+          MissingCardFeedbackPage(feedbackId: state.pathParameters['id']!),
+    ),
+    GoRoute(
       path: '/feedback/:id',
       parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) =>
@@ -282,6 +346,10 @@ final GoRouter fanOsRouter = GoRouter(
       builder: (context, state) => CorrectionPage(
         entityType: state.uri.queryParameters['type'] ?? 'cards',
         entityId: state.uri.queryParameters['id'] ?? '',
+        section: state.uri.queryParameters['section'],
+        resubmit: state.extra is Map<String, dynamic>
+            ? state.extra as Map<String, dynamic>
+            : null,
       ),
     ),
     GoRoute(

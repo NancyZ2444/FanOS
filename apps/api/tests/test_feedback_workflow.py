@@ -75,14 +75,24 @@ def action(client, headers, row, verb, **extra):
         "action": verb,
         "revision": row["revision"],
         "request_key": str(uuid4()),
-        "public_note": "已核对提交内容",
+        **({"public_note": "已核对提交内容"} if verb != "publish" else {}),
         **extra,
     }
     return client.post(f"{ADMIN}/{row['id']}/actions", headers=headers, json=body)
 
 
+def accept(client, headers, row, **extra):
+    """Submit an explicit public approval, preserving the supplied review snapshot."""
+    return result(action(client, headers, row, "decide", review_decision="ACCEPTED", **extra))
+
+
+def accept_and_publish(client, headers, row, **extra):
+    accepted = accept(client, headers, row, **extra)
+    return action(client, headers, accepted, "publish")
+
+
 def test_missing_idempotency_authentic_context_and_private_details(
-    client, auth_headers, admin_headers
+    client, auth_headers, second_app_headers
 ):
     body = missing(client, auth_headers)
     row = result(client.post(ROOT, headers=auth_headers, json=body))
@@ -92,11 +102,72 @@ def test_missing_idempotency_authentic_context_and_private_details(
     assert row["submission"]["scan"]["detected_card_id"] == body["missing"]["detected_card_id"]
     assert "internal_note" not in row
     assert "request_hash" not in row["submission"]
-    result(client.get(ROOT + "/records/" + row["id"], headers=admin_headers), 404)
+    result(client.get(ROOT + "/records/" + row["id"], headers=second_app_headers), 404)
     result(client.post(ROOT, headers=auth_headers, json={**body, "notes": "different"}), 409)
     result(
-        client.post(ROOT, headers=admin_headers, json={**body, "request_key": str(uuid4())}), 404
+        client.post(ROOT, headers=second_app_headers, json={**body, "request_key": str(uuid4())}),
+        404,
     )
+
+
+def test_scan_clue_optional_metadata_keeps_trusted_context_and_review_rules(
+    client, auth_headers, second_app_headers, admin_headers
+):
+    body = missing(
+        client,
+        auth_headers,
+        feedback_mode="SCAN_CLUE",
+        group_id=None,
+        idol_id=None,
+        source_entity_type=None,
+        source_entity_id=None,
+    )
+    body["missing"]["original_image_url"] = "https://untrusted.invalid/fake.jpg"
+    row = result(client.post(ROOT, headers=auth_headers, json=body))
+    assert row["submission"]["missing"]["feedback_mode"] == "SCAN_CLUE"
+    assert row["submission"]["scan"]["detected_card_id"] == body["missing"]["detected_card_id"]
+    assert row["submission"]["scan"]["original_image_url"] != body["missing"]["original_image_url"]
+    assert row["submission"]["front"]["image_url"] == row["submission"]["scan"]["crop_image_url"]
+    assert result(client.post(ROOT, headers=auth_headers, json=body))["id"] == row["id"]
+    result(client.post(ROOT, headers=second_app_headers, json=body), 404)
+    result(client.get(ADMIN + "/" + row["id"], headers=admin_headers))
+    accepted = accept(client, admin_headers, row)
+    result(action(client, admin_headers, accepted, "publish"), 422)
+    draft = result(
+        action(
+            client,
+            admin_headers,
+            accepted,
+            "draft",
+            changes={
+                "group_id": "group-lumina",
+                "idol_id": "idol-aria",
+                "source_entity_type": "ALBUM",
+                "source_entity_id": "album-starlit",
+            },
+        )
+    )
+    published = result(accept_and_publish(client, admin_headers, draft))
+    assert published["draft"]["front_source"]["copyright_status"] == "UNKNOWN"
+    with SessionLocal() as db:
+        assert db.get(Card, draft["entity_id"]).status == "PUBLISHED"
+    for invalid in [
+        {"group_id": "not-a-group"},
+        {"idol_id": "not-an-idol"},
+        {"source_entity_type": "UNKNOWN"},
+        {"source_entity_id": "not-an-album"},
+        {"source_version_id": "orphan-version"},
+    ]:
+        response = client.post(
+            ROOT,
+            headers=auth_headers,
+            json={
+                **body,
+                "request_key": str(uuid4()),
+                "missing": {**body["missing"], **invalid},
+            },
+        )
+        assert response.status_code in {400, 404, 422}, response.text
 
 
 def test_missing_required_relations_double_side_and_reason(client, auth_headers, admin_headers):
@@ -120,28 +191,24 @@ def test_missing_required_relations_double_side_and_reason(client, auth_headers,
     rejected = result(
         action(client, admin_headers, row, "reject", public_note="图片不清晰，请补充无遮挡正面")
     )
-    assert rejected["status_label"] == "未收录"
+    assert rejected["status_label"] == "无法采用"
     assert rejected["result"] == "NOT_INCLUDED"
 
 
 def test_draft_then_publish_contribution_and_notification_once(client, auth_headers, admin_headers):
     row = result(client.post(ROOT, headers=auth_headers, json=missing(client, auth_headers)))
     draft = result(action(client, admin_headers, row, "draft"))
-    assert draft["status_label"] == "已处理" and draft["result"] == "PENDING"
+    assert draft["status_label"] == "处理中" and draft["result"] == "PENDING"
     draft2 = result(action(client, admin_headers, draft, "draft"))
     assert draft2["entity_id"] == draft["entity_id"]
     assert result(client.get(ROOT + "/users/me/contributions", headers=auth_headers))["total"] == 0
-    res = action(client, admin_headers, draft2, "publish")
-    assert res.status_code == 422, res.text  # Copyright never auto-authorized.
+    assert draft2["draft"]["front_source"]["copyright_status"] == "UNKNOWN"
     current = result(client.get(ADMIN + "/" + row["id"], headers=admin_headers))
+    current = accept(client, admin_headers, current, public_note="图片已采纳，待发布")
     body = {
         "action": "publish",
         "revision": current["revision"],
         "request_key": str(uuid4()),
-        "public_note": "图片已采用，感谢贡献",
-        "changes": {
-            "front_source": {"source_type": "USER_SUBMITTED", "copyright_status": "AUTHORIZED"}
-        },
     }
     published = result(
         client.post(ADMIN + "/" + row["id"] + "/actions", headers=admin_headers, json=body)
@@ -166,8 +233,9 @@ def test_draft_then_publish_contribution_and_notification_once(client, auth_head
         assert len(db.scalars(select(CardContribution)).all()) == 1
         assert all(n.delivered for n in db.scalars(select(FeedbackNotice)))
     messages = result(client.get("/api/v1/notifications/inbox", headers=auth_headers))["items"]
-    included = [m for m in messages if m["title"] == "反馈已收录"]
+    included = [m for m in messages if m["title"] == "反馈已采用"]
     assert len(included) == 1
+    assert len(messages) == 2  # Approval and publication are separate public updates.
     result(
         client.post(
             f"/api/v1/admin/console/cards/{draft['entity_id']}/actions",
@@ -211,11 +279,10 @@ def test_correction_snapshot_partial_publish_no_text_credit(client, auth_headers
         == before["version"]
     )
     published = result(
-        action(
+        accept_and_publish(
             client,
             admin_headers,
             reviewed,
-            "publish",
             decisions=decisions,
             object_version=before["version"],
         )
@@ -241,17 +308,16 @@ def test_correction_invalid_field_unchanged_and_conflicting_version(
     row = result(client.post(ROOT, headers=auth_headers, json=body))
     result(action(client, admin_headers, row, "draft"), 422)
     result(
-        action(
+        accept_and_publish(
             client,
             admin_headers,
             row,
-            "publish",
             object_version="old",
             decisions=[{"key": "name", "decision": "ACCEPT"}],
         ),
         409,
     )
-    result(action(client, auth_headers, row, "publish", object_version=body["object_version"]), 403)
+    result(action(client, auth_headers, row, "publish", object_version=body["object_version"]), 401)
 
 
 def test_correction_multi_field_rollback_and_no_inclusion_notice(
@@ -266,32 +332,31 @@ def test_correction_multi_field_rollback_and_no_inclusion_notice(
         ],
     )
     row = result(client.post(ROOT, headers=auth_headers, json=body))
-    result(
-        action(
-            client,
-            admin_headers,
-            row,
-            "publish",
-            object_version=body["object_version"],
-            decisions=[
-                {"key": "name", "decision": "ACCEPT"},
-                {"key": "release_date", "decision": "MODIFY", "value": "invalid-date"},
-            ],
-        ),
-        422,
+    accepted = accept(
+        client,
+        admin_headers,
+        row,
+        object_version=body["object_version"],
+        decisions=[
+            {"key": "name", "decision": "ACCEPT"},
+            {"key": "release_date", "decision": "MODIFY", "value": "invalid-date"},
+        ],
     )
+    result(action(client, admin_headers, accepted, "publish"), 422)
     obj = result(client.get(ROOT + "/objects/albums/album-starlit", headers=auth_headers))
     assert obj["version"] == body["object_version"]
     current = result(client.get(ROOT + "/records/" + row["id"], headers=auth_headers))
     assert current["result"] == "PENDING"
+    assert current["status_label"] == "已采纳，待发布"
+    assert current["revision"] == accepted["revision"]
     assert not any(
-        m["title"] == "反馈已收录"
+        m["title"] == "反馈已采用"
         for m in result(client.get("/api/v1/notifications/inbox", headers=auth_headers))["items"]
     )
 
 
-def test_image_ownership_and_crop_validation(client, auth_headers, admin_headers):
-    asset = upload(client, admin_headers)
+def test_image_ownership_and_crop_validation(client, auth_headers, second_app_headers):
+    asset = upload(client, second_app_headers)
     body = correction(client, auth_headers, fields=[{"key": "image_url", "value": asset["id"]}])
     result(client.post(ROOT, headers=auth_headers, json=body), 422)
     result(
@@ -333,12 +398,13 @@ def test_missing_source_can_save_draft_but_not_publish(client, auth_headers, adm
     )
     draft = result(action(client, admin_headers, row, "draft"))
     assert draft["entity_id"]
-    result(action(client, admin_headers, draft, "publish"), 422)
+    accepted = accept(client, admin_headers, draft)
+    result(action(client, admin_headers, accepted, "publish"), 422)
     with SessionLocal() as db:
         assert db.get(Card, draft["entity_id"]).status == "DRAFT"
 
 
-def test_full_editor_publication_reconciles_feedback(client, auth_headers, admin_headers):
+def test_full_editor_cannot_publish_pending_feedback(client, auth_headers, admin_headers):
     row = result(client.post(ROOT, headers=auth_headers, json=missing(client, auth_headers)))
     draft = result(
         action(
@@ -353,12 +419,14 @@ def test_full_editor_publication_reconciles_feedback(client, auth_headers, admin
     )
     path = f"/api/v1/admin/console/cards/{draft['entity_id']}/actions"
     result(client.post(path, headers=admin_headers, json={"action": "submit"}))
-    result(client.post(path, headers=admin_headers, json={"action": "publish"}))
+    result(client.post(path, headers=admin_headers, json={"action": "publish"}), 409)
     assert (
         result(client.get(ROOT + "/records/" + row["id"], headers=auth_headers))["result"]
-        == "INCLUDED"
+        == "PENDING"
     )
-    assert result(client.get(ROOT + "/users/me/contributions", headers=auth_headers))["total"] == 1
+    assert result(client.get(ROOT + "/users/me/contributions", headers=auth_headers))["total"] == 0
+    with SessionLocal() as db:
+        assert db.get(Card, draft["entity_id"]).status == "PENDING"
 
 
 def test_card_image_correction_creates_only_real_image_contribution(
@@ -389,11 +457,10 @@ def test_card_image_correction_creates_only_real_image_contribution(
         )
     )
     published = result(
-        action(
+        accept_and_publish(
             client,
             admin_headers,
             row,
-            "publish",
             object_version=obj["version"],
             decisions=[{"key": "image_url", "decision": "ACCEPT"}],
             sources={"front_source": {"copyright_status": "AUTHORIZED"}},

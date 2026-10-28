@@ -1,4 +1,3 @@
-import 'package:fan_os/core/data/name_preferences.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:flutter/material.dart';
@@ -13,7 +12,6 @@ class NamePreferencesPage extends ConsumerStatefulWidget {
 
 class _NamePreferencesPageState extends ConsumerState<NamePreferencesPage> {
   String _query = '';
-  bool _saving = false;
   @override
   Widget build(BuildContext context) {
     final preferences = ref.watch(namePreferencesProvider);
@@ -28,31 +26,9 @@ class _NamePreferencesPageState extends ConsumerState<NamePreferencesPage> {
             style: TextStyle(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 8),
-          DropdownButtonFormField<NameDisplayMode>(
-            key: ValueKey(preferences.mode),
-            initialValue: preferences.mode,
-            items: NameDisplayMode.values
-                .map((m) => DropdownMenuItem(value: m, child: Text(m.label)))
-                .toList(),
-            onChanged: _saving
-                ? null
-                : (mode) async {
-                    if (mode == null) return;
-                    setState(() => _saving = true);
-                    try {
-                      await ref
-                          .read(namePreferencesProvider.notifier)
-                          .setMode(mode);
-                    } catch (_) {
-                      if (context.mounted) showFanToast(context, '保存失败，请重试');
-                    } finally {
-                      if (mounted) setState(() => _saving = false);
-                    }
-                  },
-          ),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 12),
-            child: Text('未填写备注时，始终展示官方名。备注仅自己可见。'),
+            child: Text('有备注时，App 优先展示备注；未填写时展示官方名。备注仅自己可见，相册可单独选择名称类型。'),
           ),
           TextField(
             onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),

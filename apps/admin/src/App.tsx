@@ -1,3 +1,4 @@
+import { canPermission } from "./api/permissions";
 import { Form, Modal } from "./components/admin";
 import Tags from "./pages/Tags";
 import { useCallback, useEffect, useState } from "react";
@@ -40,7 +41,7 @@ import {
   TeamOutlined,
   UserOutlined,
 } from "@ant-design/icons";
-import { clearSession, consoleApi, hasSession, login } from "./api/client";
+import { consoleApi, hasSession, login, logout } from "./api/client";
 import type { Actor, Catalog, Kind } from "./api/types";
 import { emptyCatalog, roleLabels } from "./api/types";
 import { ConsoleContext } from "./state";
@@ -49,24 +50,27 @@ import CardEditor from "./pages/CardEditor";
 import Entities from "./pages/Entities";
 import Imports from "./pages/Imports";
 import Dashboard from "./pages/Dashboard";
-import Sources from "./pages/Sources";
 import Operations, { operationNames } from "./pages/Operations";
 import System from "./pages/System";
 import AdminUsers from "./pages/AdminUsers";
 import CatalogDetail from "./pages/CatalogDetail";
 import CatalogWorkbench from "./pages/CatalogWorkbench";
 import DigitalAlbums from "./pages/DigitalAlbums";
+import MaterialScene from "./pages/digital-albums/MaterialScene";
 import FeedbackWorkbench from "./pages/FeedbackWorkbench";
+import AppUsers, { AppUserDetail } from "./pages/auth/AppUsers";
+import LoginWhitelist from "./pages/auth/LoginWhitelist";
+import SupportEntry from "./pages/auth/SupportEntry";
 
 function Login({ onLogin }: { onLogin: (actor: Actor) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [form] = Form.useForm();
-  const submit = async (values: { phone: string; code: string }) => {
+  const submit = async (values: { account: string; password: string }) => {
     setBusy(true);
     setError("");
     try {
-      onLogin(await login(values.phone, values.code));
+      onLogin(await login(values.account, values.password));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -111,7 +115,10 @@ function Login({ onLogin }: { onLogin: (actor: Actor) => void }) {
         <div className="login-form-inner">
           <div className="eyebrow">ADMIN CONSOLE</div>
           <h2>登录运营工作台</h2>
-          <p>使用管理员账号，继续今天的内容维护。</p>
+          <p>
+            使用独立后台管理员账号。App
+            手机号、测试验证码及平台登录不能用于登录后台。
+          </p>
           {error && (
             <Alert
               showIcon
@@ -122,30 +129,26 @@ function Login({ onLogin }: { onLogin: (actor: Actor) => void }) {
           )}
           <Form form={form} layout="vertical" onFinish={submit}>
             <Form.Item
-              name="phone"
-              label="管理员手机号"
-              rules={[
-                { required: true, message: "请输入手机号" },
-                { pattern: /^1\d{10}$/, message: "请输入 11 位手机号" },
-              ]}
+              name="account"
+              label="管理员登录账号"
+              rules={[{ required: true, message: "请输入管理员登录账号" }]}
             >
               <Input
                 size="large"
                 prefix={<UserOutlined aria-hidden="true" />}
-                placeholder="请输入管理员手机号"
-                autoComplete="tel"
+                placeholder="请输入管理员登录账号"
+                autoComplete="username"
               />
             </Form.Item>
             <Form.Item
-              name="code"
-              label="登录验证码"
-              rules={[{ required: true, message: "请输入验证码" }]}
+              name="password"
+              label="密码"
+              rules={[{ required: true, message: "请输入密码" }]}
             >
-              <Input
+              <Input.Password
                 size="large"
-                maxLength={6}
-                placeholder="请输入验证码"
-                autoComplete="one-time-code"
+                placeholder="请输入后台密码"
+                autoComplete="current-password"
               />
             </Form.Item>
             <Button
@@ -158,20 +161,6 @@ function Login({ onLogin }: { onLogin: (actor: Actor) => void }) {
               进入工作台
             </Button>
           </Form>
-          {import.meta.env.DEV && (
-            <div className="dev-account">
-              <span>本地开发账号</span>
-              <b>13900000000 / 123456</b>
-              <Button
-                type="link"
-                onClick={() =>
-                  form.setFieldsValue({ phone: "13900000000", code: "123456" })
-                }
-              >
-                填入账号
-              </Button>
-            </div>
-          )}
           <div className="login-secure">
             <FileProtectOutlined aria-hidden="true" /> 仅限经授权的运营人员访问
           </div>
@@ -185,6 +174,7 @@ export default function App() {
   const [actor, setActor] = useState<Actor>();
   const [checking, setChecking] = useState(true);
   const [catalog, setCatalog] = useState<Catalog>(emptyCatalog);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [collapsed, setCollapsed] = useState(false);
@@ -195,18 +185,27 @@ export default function App() {
   const location = useLocation();
   const { modal } = AntApp.useApp();
   const reload = useCallback(async () => {
+    if (!actor || !canPermission(actor, "catalog.view")) {
+      setCatalog(emptyCatalog);
+      setCatalogLoaded(true);
+      setLoading(false);
+      setError("");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
       const data = await consoleApi<Catalog>("/catalog");
       setCatalog(data);
     } catch (e) {
+      setCatalog(emptyCatalog);
       setError((e as Error).message);
       throw e;
     } finally {
+      setCatalogLoaded(true);
       setLoading(false);
     }
-  }, []);
+  }, [actor]);
   useEffect(() => {
     if (hasSession())
       consoleApi<Actor>("/me")
@@ -252,8 +251,43 @@ export default function App() {
       </div>
     );
   if (!actor) return <Login onLogin={setActor} />;
-  const contentRole = actor.role !== "operation_admin";
-  const operationRole = actor.role !== "content_operator";
+  const canViewCatalog = canPermission(actor, "catalog.view");
+  const contentRole =
+    canViewCatalog && !error && canPermission(actor, "catalog.edit");
+  const allowedPath = (path: string) => {
+    if (path.startsWith("/catalog")) {
+      return (
+        canViewCatalog &&
+        ((path !== "/catalog/import" && path !== "/catalog/cards/new") ||
+          contentRole)
+      );
+    }
+    if (path.startsWith("/digital-albums/materials"))
+      return canPermission(actor, "albums.manage");
+    if (path.startsWith("/digital-albums"))
+      return (
+        canPermission(actor, "albums.manage") ||
+        canPermission(actor, "reports.manage")
+      );
+    if (path === "/system/roles") return canPermission(actor, "roles.manage");
+    if (path === "/system/logs") return canPermission(actor, "logs.view");
+    if (path === "/system/auth-support")
+      return canPermission(actor, "auth.support.manage");
+    if (path === "/system/admins")
+      return canPermission(actor, "auth.admins.manage");
+    if (path.startsWith("/system/")) return false;
+    if (path.startsWith("/operations/")) {
+      const key = path.split("/")[2];
+      if (key === "login-whitelist")
+        return canPermission(actor, "auth.whitelist.manage");
+      if (key === "users") return canPermission(actor, "auth.users.view");
+      return canPermission(
+        actor,
+        `${key === "accounts" ? "sources" : key === "draws" ? "daily" : key}.manage`,
+      );
+    }
+    return true;
+  };
   const sections = [
     {
       label: "工作台",
@@ -271,84 +305,83 @@ export default function App() {
         { label: "AI Scan 索引", path: "/catalog/scan" },
         { label: "公司管理", path: "/catalog/companies" },
         { label: "标签管理", path: "/catalog/tags" },
-        {
-          label: "专辑管理",
-          path: "/catalog/albums",
-        },
+        { label: "专辑管理", path: "/catalog/albums" },
         { label: "活动管理", path: "/catalog/events" },
         { label: "其他来源", path: "/catalog/others" },
-        ...(contentRole
-          ? [{ label: "批量导入", path: "/catalog/import" }]
-          : []),
+        { label: "批量导入", path: "/catalog/import" },
         { label: "批次与批量编辑", path: "/catalog/workbench" },
-        { label: "图鉴审核与质量", path: "/catalog/review" },
-        { label: "小卡缺失收录", path: "/catalog/missing-cards" },
-        { label: "图鉴问题纠错", path: "/catalog/corrections" },
+        { label: "图鉴新增", path: "/catalog/additions" },
+        { label: "图鉴信息错误", path: "/catalog/corrections" },
       ],
     },
-    ...(contentRole
-      ? [
-          {
-            label: "明星动态管理",
-            icon: <CommentOutlined aria-hidden="true" />,
-            path: "/operations/social",
-            children: [
-              { label: "动态列表", path: "/operations/social" },
-              { label: "社交数据源", path: "/operations/accounts" },
-            ],
-          },
-        ]
-      : []),
-    ...(operationRole
-      ? [
-          {
-            label: "每日翻卡管理",
-            icon: <GiftOutlined aria-hidden="true" />,
-            path: "/operations/daily",
-            children: [
-              { label: "卡池与概率", path: "/operations/daily" },
-              { label: "翻卡记录", path: "/operations/draws" },
-            ],
-          },
-          {
-            label: "消息中心",
-            icon: <MessageOutlined aria-hidden="true" />,
-            path: "/operations/notifications",
-          },
-          {
-            label: "首页运营",
-            icon: <SoundOutlined aria-hidden="true" />,
-            path: "/operations/announcements",
-          },
-          {
-            label: "用户管理",
-            icon: <TeamOutlined aria-hidden="true" />,
-            path: "/operations/users",
-          },
-          {
-            label: "数字相册",
-            icon: <BookOutlined aria-hidden="true" />,
-            path: "/digital-albums",
-          },
-        ]
-      : []),
     {
-      label: "审核与来源",
-      icon: <AuditOutlined aria-hidden="true" />,
-      path: contentRole ? "/reviews/sources" : "/operations/reports",
+      label: "明星动态管理",
+      icon: <CommentOutlined aria-hidden="true" />,
+      path: "/operations/social",
       children: [
-        ...(contentRole
-          ? [
-              { label: "来源审核", path: "/reviews/sources" },
-              { label: "小卡审核", path: "/catalog/cards?status=PENDING" },
-            ]
-          : []),
-        ...(operationRole
-          ? [
-              { label: "举报管理", path: "/operations/reports" },
-              { label: "评论管理", path: "/operations/comments" },
-            ]
-          : []),
+        { label: "动态列表", path: "/operations/social" },
+        { label: "社交数据源", path: "/operations/accounts" },
+      ],
+    },
+    {
+      label: "每日翻卡管理",
+      icon: <GiftOutlined aria-hidden="true" />,
+      path: "/operations/daily",
+      children: [
+        { label: "卡池与概率", path: "/operations/daily" },
+        { label: "翻卡记录", path: "/operations/draws" },
+      ],
+    },
+    {
+      label: "消息中心",
+      icon: <MessageOutlined aria-hidden="true" />,
+      path: "/operations/notifications",
+    },
+    {
+      label: "首页运营",
+      icon: <SoundOutlined aria-hidden="true" />,
+      path: "/operations/announcements",
+    },
+    {
+      label: "用户管理",
+      icon: <TeamOutlined aria-hidden="true" />,
+      path: "/operations/users",
+      children: [
+        { label: "App 用户", path: "/operations/users" },
+        { label: "登录白名单", path: "/operations/login-whitelist" },
+      ],
+    },
+    {
+      label: "数字相册",
+      icon: <BookOutlined aria-hidden="true" />,
+      path: "/digital-albums",
+      children: [
+        { label: "作品管理与额度", path: "/digital-albums" },
+        {
+          label: "素材管理 · 书架主题",
+          path: "/digital-albums/materials/SHELF",
+        },
+        {
+          label: "素材管理 · 相册封面",
+          path: "/digital-albums/materials/ALBUM_COVER",
+        },
+        {
+          label: "素材管理 · 相册内页",
+          path: "/digital-albums/materials/ALBUM_PAGE",
+        },
+        {
+          label: "素材管理 · 卡片背景",
+          path: "/digital-albums/materials/CARD_BACKGROUND",
+        },
+      ],
+    },
+    {
+      label: "社区管理",
+      icon: <AuditOutlined aria-hidden="true" />,
+      path: "/operations/reports",
+      children: [
+        { label: "举报管理", path: "/operations/reports" },
+        { label: "评论管理", path: "/operations/comments" },
       ],
     },
     {
@@ -356,26 +389,27 @@ export default function App() {
       icon: <SettingOutlined aria-hidden="true" />,
       path: "/system/roles",
       children: [
-        ...(actor.role === "admin"
-          ? [{ label: "管理员账号", path: "/system/admins" }]
-          : []),
+        { label: "后台管理员", path: "/system/admins" },
+        { label: "App 登录客服入口", path: "/system/auth-support" },
         { label: "角色与权限", path: "/system/roles" },
-        ...(actor.role === "admin"
-          ? [{ label: "操作日志", path: "/system/logs" }]
-          : []),
+        { label: "操作日志", path: "/system/logs" },
       ],
     },
   ];
-  const current = location.pathname.startsWith("/catalog/")
-    ? "图鉴内容管理"
-    : location.pathname.startsWith("/reviews")
-      ? "审核与来源"
-      : location.pathname.startsWith("/system")
-        ? "系统管理"
-        : location.pathname === "/digital-albums"
-          ? "数字相册"
-          : operationNames[location.pathname.split("/").pop() || ""] ||
-            "工作台";
+  const current =
+    location.pathname.startsWith("/operations/users") ||
+    location.pathname === "/operations/login-whitelist"
+      ? "用户管理"
+      : location.pathname.startsWith("/catalog/")
+        ? "图鉴内容管理"
+        : location.pathname.startsWith("/reviews")
+          ? "审核与来源"
+          : location.pathname.startsWith("/system")
+            ? "系统管理"
+            : location.pathname === "/digital-albums"
+              ? "数字相册"
+              : operationNames[location.pathname.split("/").pop() || ""] ||
+                "工作台";
   return (
     <ConsoleContext.Provider value={{ actor, catalog, reload, loading }}>
       <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}>
@@ -390,62 +424,84 @@ export default function App() {
             </span>
           </button>
           <nav>
-            {sections.map((s) => {
-              const active =
-                location.pathname === s.path ||
-                s.children?.some(
-                  (c) =>
-                    (c.path.includes("?")
-                      ? location.pathname + location.search === c.path
-                      : location.pathname.startsWith(c.path)) ||
-                    (c as any).match?.includes(location.pathname),
-                );
-              return (
-                <div key={s.label} className="nav-group">
-                  <button
-                    className={`nav-parent ${active ? "active-parent" : ""}`}
-                    title={s.label}
-                    onClick={() => go(s.path)}
-                  >
-                    {s.icon}
-                    <span>{s.label}</span>
-                    {s.children && (
-                      <DownOutlined
-                        aria-hidden="true"
-                        className="nav-arrow"
-                        rotate={active ? 0 : -90}
-                      />
+            {sections
+              .map((section) => ({
+                ...section,
+                children: section.children?.filter((child) =>
+                  allowedPath(child.path),
+                ),
+              }))
+              .filter((section) =>
+                section.children
+                  ? section.children.length > 0
+                  : allowedPath(section.path),
+              )
+              .map((s) => {
+                const active =
+                  location.pathname === s.path ||
+                  s.children?.some(
+                    (c) =>
+                      (c.path.includes("?")
+                        ? location.pathname + location.search === c.path
+                        : location.pathname.startsWith(c.path)) ||
+                      (c as any).match?.includes(location.pathname),
+                  );
+                return (
+                  <div key={s.label} className="nav-group">
+                    <button
+                      className={`nav-parent ${active ? "active-parent" : ""}`}
+                      title={s.label}
+                      onClick={() =>
+                        go(
+                          allowedPath(s.path)
+                            ? s.path
+                            : s.children?.[0]?.path || "/dashboard",
+                        )
+                      }
+                    >
+                      {s.icon}
+                      <span>{s.label}</span>
+                      {s.children && (
+                        <DownOutlined
+                          aria-hidden="true"
+                          className="nav-arrow"
+                          rotate={active ? 0 : -90}
+                        />
+                      )}
+                    </button>
+                    {s.children && active && !collapsed && (
+                      <div className="nav-children">
+                        {s.children.map((c) => (
+                          <button
+                            key={c.path}
+                            className={
+                              location.pathname === c.path ||
+                              (c.path === "/catalog/cards" &&
+                                /^\/catalog\/cards\//.test(
+                                  location.pathname,
+                                )) ||
+                              ([
+                                "/catalog/additions",
+                                "/catalog/missing-cards",
+                                "/catalog/missing-content",
+                                "/catalog/corrections",
+                              ].includes(c.path) &&
+                                location.pathname.startsWith(c.path + "/")) ||
+                              (c as any).match?.includes(location.pathname)
+                                ? "active"
+                                : ""
+                            }
+                            onClick={() => go(c.path)}
+                          >
+                            <span className="nav-child-dot" />
+                            {c.label}
+                          </button>
+                        ))}
+                      </div>
                     )}
-                  </button>
-                  {s.children && active && !collapsed && (
-                    <div className="nav-children">
-                      {s.children.map((c) => (
-                        <button
-                          key={c.path}
-                          className={
-                            location.pathname === c.path ||
-                            (c.path === "/catalog/cards" &&
-                              /^\/catalog\/cards\//.test(location.pathname)) ||
-                            ([
-                              "/catalog/missing-cards",
-                              "/catalog/corrections",
-                            ].includes(c.path) &&
-                              location.pathname.startsWith(c.path + "/")) ||
-                            (c as any).match?.includes(location.pathname)
-                              ? "active"
-                              : ""
-                          }
-                          onClick={() => go(c.path)}
-                        >
-                          <span className="nav-child-dot" />
-                          {c.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                  </div>
+                );
+              })}
           </nav>
           <div className="sidebar-bottom">
             <button
@@ -468,22 +524,24 @@ export default function App() {
               <b>/</b>
               <strong>{current}</strong>
             </div>
-            <div className="global-search">
-              <SearchOutlined aria-hidden="true" />
-              <input
-                aria-label="全局搜索"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="搜索组合、艺人、小卡…"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && search.trim()) {
-                    go(`/catalog/cards?q=${encodeURIComponent(search)}`);
-                    setSearch("");
-                  }
-                }}
-              />
-              <kbd>↵</kbd>
-            </div>
+            {canViewCatalog && (
+              <div className="global-search">
+                <SearchOutlined aria-hidden="true" />
+                <input
+                  aria-label="全局搜索"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="搜索组合、艺人、小卡…"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && search.trim()) {
+                      go(`/catalog/cards?q=${encodeURIComponent(search)}`);
+                      setSearch("");
+                    }
+                  }}
+                />
+                <kbd>↵</kbd>
+              </div>
+            )}
             <div className="topbar-right">
               {contentRole && (
                 <Button
@@ -495,32 +553,37 @@ export default function App() {
                   快速创建
                 </Button>
               )}
-              <Dropdown
-                trigger={["click"]}
-                menu={{
-                  items: [
-                    {
-                      key: "pending",
-                      label: `待审核小卡 · ${catalog.cards.filter((c) => c.status === "PENDING").length}`,
-                    },
-                    { key: "sources", label: "查看来源审核任务" },
-                  ],
-                  onClick: ({ key }) =>
-                    go(
-                      key === "pending"
-                        ? "/catalog/cards?status=PENDING"
-                        : "/reviews/sources",
-                    ),
-                }}
-              >
-                <button className="top-icon-button" aria-label="查看待处理事项">
-                  <Badge
-                    dot={catalog.cards.some((c) => c.status === "PENDING")}
+              {canViewCatalog && (
+                <Dropdown
+                  trigger={["click"]}
+                  menu={{
+                    items: [
+                      {
+                        key: "pending",
+                        label: `待审核小卡 · ${catalog.cards.filter((c) => c.status === "PENDING").length}`,
+                      },
+                      { key: "sources", label: "查看图鉴新增申请" },
+                    ],
+                    onClick: ({ key }) =>
+                      go(
+                        key === "pending"
+                          ? "/catalog/cards?status=PENDING"
+                          : "/catalog/additions",
+                      ),
+                  }}
+                >
+                  <button
+                    className="top-icon-button"
+                    aria-label="查看待处理事项"
                   >
-                    <BellOutlined aria-hidden="true" />
-                  </Badge>
-                </button>
-              </Dropdown>
+                    <Badge
+                      dot={catalog.cards.some((c) => c.status === "PENDING")}
+                    >
+                      <BellOutlined aria-hidden="true" />
+                    </Badge>
+                  </button>
+                </Dropdown>
+              )}
               <span className="topbar-separator" />
               <Dropdown
                 trigger={["click"]}
@@ -538,7 +601,10 @@ export default function App() {
                     },
                   ],
                   onClick: ({ key }) => {
-                    if (key === "logout") clearSession();
+                    if (key === "logout")
+                      logout().catch((e) => {
+                        modal.error({ title: "退出失败", content: e.message });
+                      });
                   },
                 }}
               >
@@ -572,7 +638,21 @@ export default function App() {
                 style={{ marginBottom: 20 }}
               />
             )}
-            {loading && !catalog.cards.length ? (
+            {!allowedPath(location.pathname) ? (
+              <Result
+                status="403"
+                title="暂无此模块权限"
+                subTitle="请联系管理员为当前角色开通对应功能。"
+              />
+            ) : error && location.pathname.startsWith("/catalog") ? (
+              <Result
+                status="warning"
+                title="图鉴数据未加载"
+                subTitle="请重新连接后再操作。"
+              />
+            ) : loading &&
+              !catalogLoaded &&
+              location.pathname.startsWith("/catalog") ? (
               <Skeleton active paragraph={{ rows: 14 }} />
             ) : (
               <Routes>
@@ -586,7 +666,7 @@ export default function App() {
                 />
                 <Route
                   path="/catalog/review"
-                  element={<CatalogWorkbench mode="review" />}
+                  element={<Navigate to="/catalog/additions" replace />}
                 />
                 <Route
                   path="/catalog/scan"
@@ -598,9 +678,27 @@ export default function App() {
                 />
                 <Route
                   path="/"
-                  element={<Navigate to="/catalog/cards" replace />}
+                  element={
+                    <Navigate
+                      to={canViewCatalog ? "/catalog/cards" : "/dashboard"}
+                      replace
+                    />
+                  }
                 />
-                <Route path="/dashboard" element={<Dashboard />} />
+                <Route
+                  path="/dashboard"
+                  element={
+                    canViewCatalog ? (
+                      <Dashboard />
+                    ) : (
+                      <Result
+                        status="info"
+                        title={`欢迎回来，${actor.name}`}
+                        subTitle="请从侧栏进入已开通的管理模块。"
+                      />
+                    )
+                  }
+                />
                 <Route
                   path="/catalog/cards"
                   element={<Cards key={location.search} />}
@@ -621,9 +719,27 @@ export default function App() {
                 <Route path="/catalog/tags" element={<Tags />} />
                 <Route path="/catalog/import" element={<Imports />} />
                 <Route
+                  path="/catalog/additions/:feedbackId?"
+                  element={
+                    <FeedbackWorkbench key="additions" kind="ADDITIONS" />
+                  }
+                />
+                <Route
                   path="/catalog/missing-cards/:feedbackId?"
                   element={
-                    <FeedbackWorkbench key="missing" kind="MISSING_CARD" />
+                    <FeedbackWorkbench
+                      key="legacy-card-route"
+                      kind="ADDITIONS"
+                    />
+                  }
+                />
+                <Route
+                  path="/catalog/missing-content/:feedbackId?"
+                  element={
+                    <FeedbackWorkbench
+                      key="legacy-content-route"
+                      kind="ADDITIONS"
+                    />
                   }
                 />
                 <Route
@@ -632,15 +748,34 @@ export default function App() {
                     <FeedbackWorkbench key="corrections" kind="CORRECTION" />
                   }
                 />
-                <Route path="/reviews/sources" element={<Sources />} />
+                <Route
+                  path="/reviews/sources"
+                  element={<Navigate to="/catalog/additions" replace />}
+                />
                 <Route path="/digital-albums" element={<DigitalAlbums />} />
-                {Object.keys(operationNames).map((kind) => (
-                  <Route
-                    key={kind}
-                    path={`/operations/${kind}`}
-                    element={<Operations kind={kind} key={kind} />}
-                  />
-                ))}
+                <Route
+                  path="/digital-albums/materials/:scene"
+                  element={<MaterialScene />}
+                />
+                <Route path="/operations/users" element={<AppUsers />} />
+                <Route
+                  path="/operations/users/:userId"
+                  element={<AppUserDetail />}
+                />
+                <Route
+                  path="/operations/login-whitelist"
+                  element={<LoginWhitelist />}
+                />
+                <Route path="/system/auth-support" element={<SupportEntry />} />
+                {Object.keys(operationNames)
+                  .filter((kind) => kind !== "users")
+                  .map((kind) => (
+                    <Route
+                      key={kind}
+                      path={`/operations/${kind}`}
+                      element={<Operations kind={kind} key={kind} />}
+                    />
+                  ))}
                 <Route path="/system/admins" element={<AdminUsers />} />
                 <Route path="/system/roles" element={<System tab="roles" />} />
                 <Route path="/system/logs" element={<System tab="logs" />} />

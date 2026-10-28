@@ -114,7 +114,7 @@ def test_favorite_highlight_can_stay_unset_across_requests(client, auth_headers)
         assert profile["primary_idol_id"] == primary
 
 
-def test_name_preferences_private_persistent_and_clearable(client, auth_headers, admin_headers):
+def test_name_preferences_private_persistent_and_clearable(client, auth_headers, second_app_headers):
     root = "/api/v1/me/name-preferences"
     assert client.get(root).status_code == 401
     assert client.get(root, headers=auth_headers).json()["data"]["mode"] == "official"
@@ -129,7 +129,7 @@ def test_name_preferences_private_persistent_and_clearable(client, auth_headers,
     preferences = client.get(root, headers=auth_headers).json()["data"]
     assert preferences["aliases"]["idols"]["idol-aria"] == "我的备注"
     assert preferences["mode"] == "combined"
-    assert client.get(root, headers=admin_headers).json()["data"]["aliases"] == {
+    assert client.get(root, headers=second_app_headers).json()["data"]["aliases"] == {
         "groups": {},
         "idols": {},
     }

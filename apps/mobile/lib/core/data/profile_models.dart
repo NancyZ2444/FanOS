@@ -58,11 +58,13 @@ class PublicUserProfile {
     required this.albumCount,
     required this.photoCount,
     this.weiboName,
+    this.weiboUrl,
     this.avatarPath,
     this.backgroundPath,
     this.albums = const [],
     this.photos = const [],
     this.privacy = const ProfilePrivacy(),
+    this.relationStatus = UserRelationStatus.none,
   });
 
   final String id;
@@ -81,11 +83,13 @@ class PublicUserProfile {
   final int albumCount;
   final int photoCount;
   final String? weiboName;
+  final String? weiboUrl;
   final String? avatarPath;
   final String? backgroundPath;
   final List<DigitalCardAlbum> albums;
   final List<ProfilePhoto> photos;
   final ProfilePrivacy privacy;
+  final UserRelationStatus relationStatus;
 
   factory PublicUserProfile.fromJson(Map<String, dynamic> json) {
     final name = json['display_name'] as String? ?? '收藏家';
@@ -121,13 +125,17 @@ class PublicUserProfile {
       albumCount: (json['album_count'] as num?)?.toInt() ?? 0,
       photoCount: (json['photo_count'] as num?)?.toInt() ?? 0,
       weiboName: json['weibo_name'] as String?,
+      weiboUrl: (json['weibo_profile_url'] ?? json['weibo_url']) as String?,
       privacy: ProfilePrivacy(
         collectionVisible: json['owned'] != null,
         likesVisible: json['liked_card_ids'] != null,
         albumsVisible: json['album_count'] != null,
         photosVisible: json['photo_count'] != null,
         favoritesVisible: json['primary_idol_id'] != null,
+        followingListVisible: json['following_list_visible'] as bool? ?? true,
+        followersListVisible: json['followers_list_visible'] as bool? ?? true,
       ),
+      relationStatus: userRelationStatusFromJson(json['relation_status']),
     );
   }
 }
@@ -180,6 +188,13 @@ class ProfilePhoto {
 }
 
 enum UserRelationStatus { none, followsYou, following, mutual }
+
+UserRelationStatus userRelationStatusFromJson(dynamic value) => switch (value) {
+  'following' => UserRelationStatus.following,
+  'follows_you' => UserRelationStatus.followsYou,
+  'mutual' => UserRelationStatus.mutual,
+  _ => UserRelationStatus.none,
+};
 
 abstract final class DemoUserProfiles {
   static const users = <PublicUserProfile>[

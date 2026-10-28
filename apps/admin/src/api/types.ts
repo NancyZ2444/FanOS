@@ -22,6 +22,7 @@ export interface Actor {
   id: string;
   name: string;
   role: Role;
+  permissions?: string[];
 }
 export interface SourceInfo {
   source_type: string;

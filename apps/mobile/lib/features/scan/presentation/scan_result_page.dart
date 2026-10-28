@@ -34,7 +34,8 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
         detected.id: _DetectedSelection(
           cardId:
               detected.userConfirmedCardId ??
-              (detected.status == ScanRecognitionStatus.unrecognized
+              (detected.status == ScanRecognitionStatus.unrecognized ||
+                      detected.topCandidate?.isApproximate == true
                   ? null
                   : detected.topCandidate?.card.id),
           confirmed: detected.userConfirmedCardId != null,
@@ -81,7 +82,8 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
           (card) =>
               _selections[card.id]!.confirmed ||
               card.status == ScanRecognitionStatus.recommended &&
-                  card.topCandidate != null,
+                  card.topCandidate != null &&
+                  !card.topCandidate!.isApproximate,
         )
         .toList();
     if (eligible.isEmpty) {
@@ -611,7 +613,7 @@ class _ScanResultPageState extends ConsumerState<ScanResultPage> {
           ? FanEmptyState(
               icon: Icons.search_off_rounded,
               title: '暂时没有找到匹配的小卡',
-              message: '已保留原始照片，请重新扫描、搜索图鉴或主动反馈。',
+              message: '已保留原始照片，请重新扫描、搜索图鉴或我要反馈。',
               actionLabel: '重新扫描',
               onAction: () => context.go('/scan'),
             )
@@ -836,6 +838,8 @@ class _DetectedResultCard extends StatelessWidget {
         )
         .take(3)
         .toList();
+    final approximate =
+        (candidate ?? detected.topCandidate)?.isApproximate == true;
     final compactStyle = ButtonStyle(
       minimumSize: const WidgetStatePropertyAll(Size(0, 40)),
       padding: const WidgetStatePropertyAll(
@@ -879,7 +883,9 @@ class _DetectedResultCard extends StatelessWidget {
                   ),
                 ),
                 _RecognitionBadge(
-                  status: detected.status,
+                  status: approximate
+                      ? ScanRecognitionStatus.needsConfirmation
+                      : detected.status,
                   confirmed: selection.confirmed,
                   added: selection.added && ownedQuantity > 0,
                 ),
@@ -923,9 +929,13 @@ class _DetectedResultCard extends StatelessWidget {
                     children: [
                       if (candidate != null) ...[
                         FanEntityName(
-                          kind: 'idols',
-                          id: candidate!.card.idolId,
-                          officialName: candidate!.card.idolName.isEmpty
+                          kind: candidate!.card.hasIndividualIdol
+                              ? 'idols'
+                              : 'groups',
+                          id: candidate!.card.hasIndividualIdol
+                              ? candidate!.card.idolId
+                              : candidate!.card.groupId,
+                          officialName: !candidate!.card.hasIndividualIdol
                               ? candidate!.card.groupName
                               : candidate!.card.idolName,
                           maxLines: 2,
@@ -955,7 +965,9 @@ class _DetectedResultCard extends StatelessWidget {
                         ],
                         const SizedBox(height: 8),
                         Text(
-                          candidate!.similarity > 0
+                          candidate!.isApproximate
+                              ? '相似候选 · 已手动确认'
+                              : candidate!.similarity > 0
                               ? '相似度 ${(candidate!.similarity * 100).round()}%'
                               : '手动选择',
                           style: const TextStyle(
@@ -991,20 +1003,22 @@ class _DetectedResultCard extends StatelessWidget {
                           ],
                         ),
                       ] else ...[
-                        const Text(
-                          '暂未找到匹配的小卡',
-                          style: TextStyle(fontWeight: FontWeight.w600),
+                        Text(
+                          approximate ? '相似候选，需手动确认' : '暂未找到匹配的小卡',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '可搜索图鉴或反馈，不影响其他小卡。',
+                          approximate
+                              ? '请对照卡面选择，确认后可喜欢或标记拥有。'
+                              : '可搜索图鉴或反馈，不影响其他小卡。',
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ],
                       if (options.isNotEmpty) ...[
                         const SizedBox(height: 8),
                         Text(
-                          '其他相似结果',
+                          candidate == null ? '相似结果' : '其他相似结果',
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                         const SizedBox(height: 4),
@@ -1080,7 +1094,7 @@ class _DetectedResultCard extends StatelessWidget {
                 TextButton(
                   style: compactStyle,
                   onPressed: onFeedback,
-                  child: const Text('主动反馈'),
+                  child: const Text('我要反馈'),
                 ),
               ],
             ),
@@ -1160,6 +1174,7 @@ class _CandidateThumbnail extends StatelessWidget {
           ),
         ),
         InkWell(
+          key: Key('scan-choose-candidate-${candidate.card.id}'),
           onTap: onChoose,
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 5),
@@ -1313,12 +1328,22 @@ class _CandidatePicker extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontWeight: FontWeight.w800),
                       ),
-                      subtitle: FanEntityName(
-                        kind: 'idols',
-                        id: candidate.card.idolId,
-                        officialName: candidate.card.idolName,
-                        suffix:
-                            ' · ${candidate.card.source}\n${candidate.card.version} · 相似度 ${(candidate.similarity * 100).round()}%',
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          FanEntityName(
+                            kind: 'idols',
+                            id: candidate.card.idolId,
+                            officialName: candidate.card.idolName,
+                            suffix:
+                                ' · ${candidate.card.source}\n${candidate.card.version}',
+                          ),
+                          Text(
+                            candidate.isApproximate
+                                ? '相似候选，需手动确认'
+                                : '相似度 ${(candidate.similarity * 100).round()}%',
+                          ),
+                        ],
                       ),
                       isThreeLine: true,
                       trailing: Row(

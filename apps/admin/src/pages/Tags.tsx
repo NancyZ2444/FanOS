@@ -1,3 +1,4 @@
+import { canPermission } from "../api/permissions";
 import { useSingleSubmit } from "../components/admin";
 import { displayValue } from "../design/format";
 import { FilterBar, TableToolbar, RowActions } from "../components/admin";
@@ -23,7 +24,7 @@ export default function Tags() {
   const [contents, setContents] = useState<any>();
   const [busy, setBusy] = useState(false);
   const [form] = Form.useForm();
-  const canEdit = actor.role !== "operation_admin";
+  const canEdit = canPermission(actor, "catalog.edit");
   const load = () =>
     consoleApi<{ items: CatalogTag[] }>("/tags")
       .then((d) => setItems(d.items))
@@ -189,7 +190,7 @@ export default function Tags() {
                   }
                   onEdit={canEdit ? () => edit(t) : undefined}
                   items={
-                    actor.role === "admin"
+                    canPermission(actor, "catalog.publish")
                       ? [
                           {
                             key: "toggle",
@@ -241,7 +242,7 @@ export default function Tags() {
           {editing && (
             <Form.Item name="status" label="状态">
               <Select
-                disabled={actor.role !== "admin"}
+                disabled={!canPermission(actor, "catalog.publish")}
                 options={[
                   { value: "ACTIVE", label: "启用" },
                   { value: "DISABLED", label: "停用" },

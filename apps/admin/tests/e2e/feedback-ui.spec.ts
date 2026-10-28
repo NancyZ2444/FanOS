@@ -3,7 +3,9 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { setupFeedback } from "./feedback-fixtures";
 const stage = process.env.FEEDBACK_UI_STAGE || "after";
-const output = resolve("../../output/feedback-ui-20261014", stage);
+const output = process.env.FEEDBACK_UI_OUTPUT
+  ? resolve(process.env.FEEDBACK_UI_OUTPUT)
+  : resolve("../../output/feedback-ui-20261014", stage);
 async function checkLayout(page: Page) {
   if (stage === "before") return;
   expect(

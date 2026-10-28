@@ -1,8 +1,9 @@
 import json
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -30,11 +31,11 @@ class Change(BaseModel):
 class Submission(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_key: str = Field(min_length=8, max_length=100)
-    kind: Literal["MISSING_CARD", "CORRECTION"]
+    kind: Literal["MISSING_CARD", "MISSING_CATALOG", "CORRECTION"]
     entity_type: str = "cards"
     entity_id: str = Field(default="", max_length=64)
     object_version: str = ""
-    fields: list[Change] = Field(default_factory=list, max_length=20)
+    fields: list[Change] = Field(default_factory=list, max_length=30)
     missing: dict = Field(default_factory=dict)
     notes: str = Field(default="", max_length=2000)
     evidence_ids: list[str] = Field(default_factory=list, max_length=6)
@@ -54,20 +55,51 @@ class Submission(BaseModel):
     @field_validator("links")
     @classmethod
     def links_safe(cls, links):
-        if any(len(v) > 800 or not v.startswith(("http://", "https://")) for v in links):
-            raise ValueError("请填写HTTP(S)链接，最多800字符")
-        return links
+        cleaned = [value.strip() for value in links]
+        for index, value in enumerate(cleaned, start=1):
+            if len(value) > 800:
+                raise ValueError(f"第{index}条参考链接不能超过800字符")
+            try:
+                parsed = urlsplit(value)
+                valid = (
+                    parsed.scheme in {"http", "https"}
+                    and parsed.hostname
+                    and not parsed.username
+                    and not parsed.password
+                    and "@" not in parsed.netloc
+                    and not any(char.isspace() for char in value)
+                )
+                # Accessing the port validates malformed or out-of-range ports.
+                _ = parsed.port
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError(
+                    f"第{index}条请填写完整的 http:// 或 https:// 链接；没有链接可留空"
+                )
+        return cleaned
 
 
 class Action(BaseModel):
     request_key: str = Field(min_length=8, max_length=100)
     revision: int = Field(ge=1)
-    action: Literal["start", "review", "draft", "publish", "reject", "match", "already_fixed"]
+    action: Literal[
+        "start",
+        "review",
+        "draft",
+        "decide",
+        "publish",
+        "reject",
+        "match",
+        "already_fixed",
+        "need_info",
+    ]
+    review_decision: Literal["ACCEPTED", "REJECTED", "NEEDS_INFO"] | None = None
     public_note: str = Field(default="", max_length=2000)
     internal_note: str = Field(default="", max_length=5000)
     card_id: str | None = None
     changes: dict = Field(default_factory=dict)
-    decisions: list[dict] = Field(default_factory=list, max_length=20)
+    decisions: list[dict] = Field(default_factory=list, max_length=30)
     object_version: str = ""
     sources: dict = Field(default_factory=dict)
 
@@ -84,6 +116,24 @@ class Action(BaseModel):
             if not isinstance(d.get("reason", ""), str) or len(d.get("reason", "")) > 2000:
                 raise ValueError("原因最多2000字")
         return values
+
+
+@router.get("/missing-catalog/schema")
+def missing_catalog_schema(entity_type: str, user: User = Depends(current_user)):
+    from app.modules.feedback.missing_catalog import schema
+
+    return success(schema(entity_type))
+
+
+@admin_router.get("/objects")
+def admin_feedback_objects(
+    entity_type: str,
+    q: str = Query("", max_length=120),
+    user: User = Depends(current_admin),
+    db: Session = Depends(get_db),
+):
+    permit(user, "catalog")
+    return success({"items": fields.search_objects(db, entity_type, q)})
 
 
 @router.get("/objects")
@@ -132,18 +182,30 @@ async def upload(
 
 
 class Crop(BaseModel):
-    detected_card_id: str
+    detected_card_id: str | None = None
+    image_id: str | None = None
     crop: list[float] = Field(min_length=4, max_length=4)
+
+    @model_validator(mode="after")
+    def one_source(self):
+        if bool(self.detected_card_id) == bool(self.image_id):
+            raise ValueError("请选择一张待裁剪的图片")
+        return self
 
 
 @router.post("/images/crop")
 def crop_detected(body: Crop, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    detected = db.get(DetectedCard, body.detected_card_id)
-    session = db.get(ScanSession, detected.scan_session_id) if detected else None
-    if not session or session.user_id != user.id:
-        raise DomainError("SCAN_NOT_FOUND", "扫描对象不存在", 404)
+    if body.image_id:
+        source = service.image_for(db, user, body.image_id)
+        image_url = source.image_url
+    else:
+        detected = db.get(DetectedCard, body.detected_card_id)
+        session = db.get(ScanSession, detected.scan_session_id) if detected else None
+        if not session or session.user_id != user.id:
+            raise DomainError("SCAN_NOT_FOUND", "扫描对象不存在", 404)
+        image_url = detected.crop_image_url
     try:
-        content = service.get_storage().read_bytes(detected.crop_image_url)
+        content = service.get_storage().read_bytes(image_url)
     except Exception as e:
         raise DomainError("IMAGE_UNAVAILABLE", "原裁剪图不可用，请更换图片", 422) from e
     asset = service.save_image(db, user, content, body.crop)
@@ -286,10 +348,37 @@ def detail(feedback_id: str, user: User = Depends(current_user), db: Session = D
     return success(service.payload(db, row))
 
 
+class Resubmission(Submission):
+    revision: int = Field(ge=1)
+
+
+@router.post("/records/{feedback_id}/resubmit")
+def resubmit(
+    feedback_id: str,
+    body: Resubmission,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    row = db.get(Feedback, feedback_id)
+    if not row or row.user_id != user.id:
+        raise DomainError("NOT_FOUND", "反馈不存在", 404)
+    service.resubmit(db, row, user, body)
+    db.commit()
+    return success(service.payload(db, row))
+
+
 @router.get("/cards/{card_id}/contributors")
 def contributors(card_id: str, db: Session = Depends(get_db)):
     fields.target(db, "cards", card_id)
     return success({"items": service.credits(db, card_id)})
+
+
+@router.get("/objects/{kind}/{entity_id}/contributors")
+def catalog_contributors(kind: str, entity_id: str, db: Session = Depends(get_db)):
+    from app.modules.feedback.credits import catalog_credits
+
+    fields.target(db, kind, entity_id)
+    return success({"items": catalog_credits(db, kind, entity_id)})
 
 
 @router.get("/users/{user_id}/contributions")
@@ -307,11 +396,13 @@ def contributions(
 
 @admin_router.get("")
 def queue(
-    kind: Literal["MISSING_CARD", "CORRECTION"],
+    kind: Literal["MISSING_CARD", "MISSING_CATALOG", "CORRECTION", "ADDITIONS"],
     status: str | None = None,
     result: str | None = None,
     entity_type: str | None = None,
     handler_id: str | None = None,
+    profile_only: bool = False,
+    section_key: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     offset: int = Query(0, ge=0),
@@ -320,7 +411,25 @@ def queue(
     db: Session = Depends(get_db),
 ):
     permit(actor, "catalog")
-    query = select(Feedback).where(Feedback.kind == kind)
+    query = select(Feedback).where(
+        Feedback.kind.in_(["MISSING_CARD", "MISSING_CATALOG"])
+        if kind == "ADDITIONS"
+        else Feedback.kind == kind
+    )
+    if profile_only:
+        query = query.where(Feedback.data["profile"].as_boolean().is_(True))
+    if section_key:
+        from sqlalchemy import String, cast, func
+
+        from app.modules.catalog.profiles import SECTIONS
+
+        if section_key not in SECTIONS:
+            raise DomainError("INVALID_SECTION", "资料板块无效", 422)
+        query = query.where(
+            func.replace(cast(Feedback.data["fields"], String), " ", "").like(
+                f'%"section":"{section_key}"%'
+            )
+        )
     for column, value in [
         (Feedback.status, status),
         (Feedback.result, result),
@@ -374,22 +483,9 @@ def action(
             if isinstance(caught, DomainError)
             else DomainError("INVALID_VALUE", "发布资料格式不完整，请检查所选字段", 422)
         )
+        # Failed publication must not change the revision or notify the submitter.
+        # The editor retains the submitted values so the same revision can be retried.
         db.rollback()
-        if body.action == "publish" and error.error_code in {
-            "FIELD_VALIDATION_ERROR",
-            "IMAGE_UNAVAILABLE",
-            "COPYRIGHT_REQUIRED",
-            "VALUE_REQUIRED",
-            "INVALID_VALUE",
-        }:
-            row = db.get(Feedback, feedback_id)
-            if row.revision != body.revision or row.result != "PENDING":
-                raise error from caught
-            row.internal_note = f"发布校验失败：{error.message}"
-            row.status = "PROCESSED"
-            row.review = {**row.review, "retry_changes": body.changes, "decisions": body.decisions}
-            service.event(db, row, "审核已处理，待完成发布校验")
-            db.commit()
         raise error from caught
     service.deliver_notices(db)
     return success(service.payload(db, row, True))

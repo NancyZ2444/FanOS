@@ -63,7 +63,6 @@ class Contribution(BaseModel):
         return value
 
 
-@contribution_router.post("/feedback")
 def contribution(
     payload: Contribution, actor: User = Depends(current_user), db: Session = Depends(get_db)
 ):
@@ -286,8 +285,9 @@ def catalog_dashboard(actor: User = Depends(current_admin), db: Session = Depend
     from app.admin_models import AdminImportTask
     from app.models import ScanFeedback
 
-    from .catalog_service import all_entities, row_data
+    from .catalog_service import all_entities, permit, row_data
 
+    permit(actor, "catalog")
     entities = all_entities(db)
     cards = db.scalars(select(Card)).all()
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
@@ -485,7 +485,6 @@ def edit_import(
     return success(row_data(task))
 
 
-@router.get("/review-queue")
 def review_queue(actor: User = Depends(current_admin), db: Session = Depends(get_db)):
     from app.models import DetectedCard, Report, ScanCandidate, ScanFeedback
 
@@ -534,7 +533,6 @@ class ReviewAction(BaseModel):
     changes: dict = Field(default_factory=dict)
 
 
-@router.post("/review-queue/{queue}/{item_id}/actions")
 def review_action(
     queue: str,
     item_id: str,
@@ -889,7 +887,6 @@ def validate_batch(
     return success({"items": results})
 
 
-@router.get("/quality")
 def quality(actor: User = Depends(current_admin), db: Session = Depends(get_db)):
     from .catalog_service import admin_card, all_entities, validate_relations
     from .console_schemas import CardDraft
@@ -921,6 +918,9 @@ def scan_index(actor: User = Depends(current_admin), db: Session = Depends(get_d
     from app.future_models import OutboxEvent
     from app.integrations.card_matcher.adapter import CardMatcherAdapter
 
+    from .catalog_service import permit
+
+    permit(actor, "catalog")
     cards = db.scalars(select(Card)).all()
     indexed = {
         r["card_id"] for r in CardMatcherAdapter().indexed({c.id: c.image_url for c in cards})
@@ -1022,14 +1022,15 @@ def validate_record(db, kind, payload):
         "versions",
         "sources",
         "batches",
-        "reviews",
         "companies",
         "company_relations",
         "memberships",
     }:
         raise DomainError("INVALID_KIND", "不支持的记录类型", 422)
     data = payload.data
-    if payload.status != ("PENDING" if kind == "reviews" else "DRAFT"):
+    if kind == "companies" and "enabled" in data and not isinstance(data["enabled"], bool):
+        raise DomainError("INVALID_COMPANY", "公司开启状态必须为是或否", 422)
+    if payload.status != "DRAFT":
         raise DomainError("INVALID_STATUS", "状态必须通过审核操作维护", 422)
     if kind in {"versions", "sources", "company_relations"}:
         get_target(db, payload.entity_type, payload.entity_id)
@@ -1148,14 +1149,32 @@ def list_records(
     actor: User = Depends(current_admin),
     db: Session = Depends(get_db),
 ):
-    from .catalog_service import row_data
+    from .catalog_service import permit, row_data
 
+    permit(actor, "catalog")
+    if kind == "reviews":
+        raise DomainError("NOT_FOUND", "旧审核队列已停用", 404)
     rows = records(db, kind, entity_id)
     items = [row_data(r) for r in rows]
     if kind == "companies":
+        from .catalog_companies import company_enabled
+
         relations = records(db, "company_relations")
-        items = [{**item, **company_relation_counts(item["id"], relations)} for item in items]
+        items = [
+            {
+                **item,
+                "data": {**item["data"], "enabled": company_enabled(row)},
+                **company_relation_counts(item["id"], relations),
+            }
+            for item, row in zip(items, rows, strict=True)
+        ]
     if kind == "memberships" and entity_id:
+        from .catalog_memberships import membership_date_info
+
+        memberships = db.scalars(
+            select(GroupMembership).where(GroupMembership.idol_id == entity_id)
+        ).all()
+        date_info = membership_date_info(db, memberships)
         known = {r["data"].get("membership_id") for r in items}
         items += [
             {
@@ -1164,11 +1183,9 @@ def list_records(
                 "entity_type": "idols",
                 "entity_id": entity_id,
                 "status": "DRAFT",
-                "data": {**row_data(m), "membership_id": m.id},
+                "data": {**row_data(m), **date_info[m.id], "membership_id": m.id},
             }
-            for m in db.scalars(
-                select(GroupMembership).where(GroupMembership.idol_id == entity_id)
-            ).all()
+            for m in memberships
             if m.id not in known
         ]
     return success({"items": items})
@@ -1180,8 +1197,9 @@ def company_detail(
     actor: User = Depends(current_admin),
     db: Session = Depends(get_db),
 ):
-    from .catalog_service import row_data
+    from .catalog_service import permit, row_data
 
+    permit(actor, "catalog")
     company = db.get(CatalogRecord, company_id)
     if not company or company.kind != "companies":
         raise DomainError("NOT_FOUND", "公司不存在", 404)
@@ -1216,6 +1234,58 @@ def save_record(
     if record_id and (not row or row.kind != kind):
         raise DomainError("NOT_FOUND", "记录不存在", 404)
     before = row_data(row) if row else None
+    from .catalog_companies import company_enabled
+
+    if kind == "company_relations":
+        company = db.get(CatalogRecord, payload.data.get("company_id"))
+        if not company_enabled(company) and (not row or row.data.get("company_id") != company.id):
+            raise DomainError("COMPANY_DISABLED", "公司未开启，不能新增关联", 422)
+    # Legacy relation/company maintenance must use the same public revision chain.
+    from app.modules.catalog import profiles
+
+    affected = set()
+    if kind in {"memberships", "company_relations"}:
+        affected.add((payload.entity_type, payload.entity_id))
+        if kind == "memberships":
+            affected.add(("groups", payload.data.get("group_id")))
+    elif kind == "companies" and row and payload.data.get("name") != row.data.get("name"):
+        affected.update(
+            (r.entity_type, r.entity_id)
+            for r in records(db, "company_relations")
+            if r.data.get("company_id") == row.id and r.status != "ARCHIVED"
+        )
+    profile_before = {}
+    for target in sorted(affected):
+        if target[0] not in {"groups", "idols"}:
+            continue
+        try:
+            value = profiles.snapshot(db, *target)
+        except DomainError as error:
+            if error.status_code == 404:
+                continue
+            raise
+        permit(actor, "catalog", "publish")
+        profiles.initialize(db, *target)
+        profile_before[target] = value
+    if kind == "memberships" and profile_before and payload.data.get("membership_id"):
+        data = payload.data
+        from app.models import Card
+
+        for card in db.scalars(
+            select(Card).where(
+                Card.idol_id == payload.entity_id,
+                Card.group_id == data["group_id"],
+                Card.status != "ARCHIVED",
+            )
+        ):
+            if card.release_date and (
+                card.release_date < data["start_date"]
+                or data.get("end_date")
+                and card.release_date > data["end_date"]
+            ):
+                raise DomainError(
+                    "HISTORY_PROTECTED", "修改后的有效期不能排除已关联小卡的发行日期", 409
+                )
     if kind == "versions" and payload.entity_type == "albums":
         from .album_versions import validate_record_name
 
@@ -1229,7 +1299,11 @@ def save_record(
             for c in records(db, "companies")
         ):
             raise DomainError("COMPANY_EXISTS", "公司名称已存在，请使用已有公司", 409)
-        payload.data = {**payload.data, "name": name}
+        payload.data = {
+            **payload.data,
+            "name": name,
+            "enabled": payload.data.get("enabled", company_enabled(row) if row else True),
+        }
     if kind == "company_relations":
         payload.data = {**payload.data, "date_unknown": not bool(payload.data.get("start_date"))}
     if row and (row.entity_type != payload.entity_type or row.entity_id != payload.entity_id):
@@ -1247,6 +1321,8 @@ def save_record(
         row = CatalogRecord(kind=kind)
         db.add(row)
     for key, value in payload.model_dump().items():
+        if kind == "companies" and before and key == "status":
+            continue  # Enabled is independent from the historical publication status.
         setattr(row, key, value)
     db.flush()
     if kind == "memberships":
@@ -1286,6 +1362,10 @@ def save_record(
         from app.modules.catalog.media_import import queue_images
 
         queue_images(db, "versions", row.id, row.data)
+    for target, previous in profile_before.items():
+        profiles.append_version(
+            db, *target, previous, profiles.snapshot(db, *target), summary="平台核实更新关联资料"
+        )
     db.commit()
     return success(row_data(row))
 
@@ -1331,8 +1411,9 @@ def detail(
     from app.admin_models import CardImageVersion
     from app.models import IdolOfficialAccount, SocialPost
 
-    from .catalog_service import admin_card, all_entities, entity_payload, row_data
+    from .catalog_service import admin_card, all_entities, entity_payload, permit, row_data
 
+    permit(actor, "catalog")
     row = get_target(db, kind, item_id)
     cards = db.scalars(select(Card)).all()
     related = [
@@ -1348,6 +1429,9 @@ def detail(
             (GroupMembership.idol_id == item_id) | (GroupMembership.group_id == item_id)
         )
     ).all()
+    from .catalog_memberships import membership_date_info
+
+    membership_dates = membership_date_info(db, memberships)
     history = db.scalars(
         select(OperationLog)
         .where(OperationLog.target_id == item_id)
@@ -1372,7 +1456,7 @@ def detail(
         {
             "entity": admin_card(db, row) if kind == "cards" else entity_payload(db, kind, row),
             "cards": [admin_card(db, c) for c in related],
-            "memberships": [row_data(m) for m in memberships],
+            "memberships": [{**row_data(m), **membership_dates[m.id]} for m in memberships],
             "entities": related_entities,
             "history": [row_data(h) for h in history],
             "assets": [

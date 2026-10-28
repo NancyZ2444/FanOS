@@ -87,7 +87,40 @@ class AlbumEditorController extends ChangeNotifier {
         throw const ApiException('ALBUM_FORBIDDEN', '只有创建者可以编辑相册');
       }
       if (!discardLocal && local != null) {
-        album = PhotocardAlbum(local['album'] as AlbumJson);
+        var restored = cloneAlbumJson(local['album'] as AlbumJson);
+        if (remote != null &&
+            remote.json['work_mode'] != null &&
+            restored['work_mode'] == null) {
+          // Preserve the old draft before adapting its data to the confirmed fixed type.
+          await store.archive(id, local);
+          restored['work_mode'] = remote.workMode;
+          if (remote.opensAsCards) {
+            final placements = [
+              for (final p in restored['pages'] as List? ?? [])
+                for (final s in p['slots'] as List)
+                  if (s['card_id'] != null) s,
+            ];
+            restored['card_instances'] = placements;
+            restored['pages'] = <AlbumJson>[];
+            restored['cover'] = <String, dynamic>{};
+          }
+          synchronizeAlbum(restored);
+        }
+        album = PhotocardAlbum(restored);
+        if (remote != null) {
+          album = album!.edit((data) {
+            for (final key in [
+              'is_moderated',
+              'publication_blocked',
+              'moderation_status',
+              'moderation_reason',
+              'moderation_note',
+              'review_status',
+            ]) {
+              if (remote!.json.containsKey(key)) data[key] = remote.json[key];
+            }
+          });
+        }
         final ids = {
           ...album!.occupiedSlots.map((s) => s['card_id'] as String),
           ...((album!.cover['elements'] as List?) ?? [])
@@ -275,6 +308,27 @@ class AlbumEditorController extends ChangeNotifier {
       status = '发布失败，请重试';
       _notify();
       return null;
+    }
+  }
+
+  Future<bool> requestReview() async {
+    await save();
+    if (dirty) {
+      await save();
+      if (dirty) return false;
+    }
+    if (album == null) return false;
+    try {
+      album = await repository.requestReview(album!);
+      error = null;
+      status = '复核已提交';
+      _notify();
+      return true;
+    } catch (e) {
+      error = e.toString();
+      status = '复核提交失败';
+      _notify();
+      return false;
     }
   }
 

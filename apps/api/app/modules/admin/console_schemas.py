@@ -162,6 +162,7 @@ class ActionRequest(BaseModel):
     ]
     reason: str = Field(default="", max_length=1000)
     confirmation: str = ""
+    test_recipient_id: str | None = Field(default=None, max_length=64)
 
 
 class BatchAction(BaseModel):

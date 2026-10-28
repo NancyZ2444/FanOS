@@ -73,18 +73,7 @@ def patch_user_status(
     from app.modules.admin.catalog_service import permit
 
     permit(admin, "users", "edit")
-    user = db.get(User, user_id)
-    if user is None:
-        raise DomainError("USER_NOT_FOUND", "用户不存在", 404)
-    if user.role != "user":
-        raise DomainError("PROTECTED_ACCOUNT", "此入口不允许修改管理员账号", 422)
-    before = {"is_active": user.is_active}
-    user.is_active = payload.is_active
-    _audit(
-        db, admin.id, "user.status.patch", "user", user.id, before, {"is_active": user.is_active}
-    )
-    db.commit()
-    return success({"id": user.id, "is_active": user.is_active})
+    raise DomainError("ACCOUNT_ACTION_REQUIRED", "请使用 App 用户详情的安全处置入口", 409)
 
 
 @router.get("/scan/feedback")

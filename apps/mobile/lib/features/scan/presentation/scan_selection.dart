@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/data/scan_detection_repository.dart';
 import 'package:fan_os/features/scan/presentation/scan_image.dart';
 import 'package:flutter/material.dart';
@@ -84,37 +85,13 @@ class _ScanSelectionState extends State<ScanSelection> {
                             label: '小卡 ${i + 1}',
                             child: GestureDetector(
                               key: Key('detect-region-${regions[i].id}'),
+                              behavior: HitTestBehavior.deferToChild,
                               onTap: widget.busy
                                   ? null
                                   : () => toggle(regions[i].id),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: selected.contains(regions[i].id)
-                                      ? FanColors.lavender.withValues(
-                                          alpha: .16,
-                                        )
-                                      : Colors.black38,
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color: selected.contains(regions[i].id)
-                                        ? Colors.white
-                                        : Colors.white38,
-                                    width: 2,
-                                  ),
-                                ),
-                                alignment: Alignment.topRight,
-                                child: Padding(
-                                  padding: const EdgeInsets.all(3),
-                                  child: Icon(
-                                    selected.contains(regions[i].id)
-                                        ? Icons.check_circle
-                                        : Icons.radio_button_unchecked,
-                                    color: selected.contains(regions[i].id)
-                                        ? FanColors.lavender
-                                        : Colors.white,
-                                    size: 24,
-                                  ),
-                                ),
+                              child: _ScanRegionOverlay(
+                                region: regions[i].cropRegion,
+                                selected: selected.contains(regions[i].id),
                               ),
                             ),
                           ),
@@ -279,4 +256,113 @@ class _ScanSelectionState extends State<ScanSelection> {
       ],
     );
   }
+}
+
+class _ScanRegionOverlay extends StatelessWidget {
+  const _ScanRegionOverlay({required this.region, required this.selected});
+
+  final ScanCropRegion region;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final corners = region.corners;
+    final badge = Icon(
+      selected ? Icons.check_circle : Icons.radio_button_unchecked,
+      color: selected ? FanColors.lavender : Colors.white,
+      size: 24,
+    );
+    if (corners == null) {
+      return Container(
+        decoration: BoxDecoration(
+          color: selected
+              ? FanColors.lavender.withValues(alpha: .16)
+              : Colors.black38,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: selected ? Colors.white : Colors.white38,
+            width: 2,
+          ),
+        ),
+        alignment: Alignment.topRight,
+        child: Padding(padding: const EdgeInsets.all(3), child: badge),
+      );
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final points = corners
+            .map(
+              (point) => Offset(
+                (point.x - region.x) / region.width * constraints.maxWidth,
+                (point.y - region.y) / region.height * constraints.maxHeight,
+              ),
+            )
+            .toList();
+        final path = Path()..addPolygon(points, true);
+        var badgeCorner = 0;
+        for (var i = 1; i < points.length; i++) {
+          if (points[i].dx / constraints.maxWidth -
+                  points[i].dy / constraints.maxHeight >
+              points[badgeCorner].dx / constraints.maxWidth -
+                  points[badgeCorner].dy / constraints.maxHeight) {
+            badgeCorner = i;
+          }
+        }
+        final corner = points[badgeCorner];
+        final previous = points[(badgeCorner + 3) % 4] - corner;
+        final next = points[(badgeCorner + 1) % 4] - corner;
+        final inset =
+            (previous / previous.distance + next / next.distance) * 16;
+        final badgeCenter = corner + inset;
+        return CustomPaint(
+          painter: _ScanPolygonPainter(path, selected),
+          // The painter is the sole pointer target. The badge must not turn an
+          // empty corner of the bounding rectangle back into a tappable area.
+          child: IgnorePointer(
+            child: Stack(
+              children: [
+                Positioned(
+                  left: badgeCenter.dx - 12,
+                  top: badgeCenter.dy - 12,
+                  child: badge,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ScanPolygonPainter extends CustomPainter {
+  _ScanPolygonPainter(this.path, this.selected);
+
+  final Path path;
+  final bool selected;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = selected
+            ? FanColors.lavender.withValues(alpha: .16)
+            : Colors.black38,
+    );
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = selected ? Colors.white : Colors.white38
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+  }
+
+  @override
+  bool hitTest(Offset position) => path.contains(position);
+
+  @override
+  bool shouldRepaint(_ScanPolygonPainter oldDelegate) =>
+      selected != oldDelegate.selected || path != oldDelegate.path;
 }

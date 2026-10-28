@@ -16,7 +16,9 @@ def search(client, headers, q, **query):
 
 
 def album(client, headers, name, cards=(), public=False, publish=False):
-    a = data(client.post(f"{BASE}/albums", headers=headers, json={"name": name}))
+    a = data(
+        client.post(f"{BASE}/albums", headers=headers, json={"name": name, "work_mode": "BOOK"})
+    )
     a = data(
         client.patch(
             f"{BASE}/albums/{a['id']}",
@@ -87,11 +89,13 @@ def test_album_inner_cards_beyond_cover_and_draft_filter(client, auth_headers):
     assert client.get(f"{BASE}/albums?status=DELETED", headers=auth_headers).status_code == 422
 
 
-def test_favorite_search_only_published_snapshot(client, auth_headers, admin_headers):
-    a = album(client, admin_headers, "Public moon", ["card-aria-01"], public=True, publish=True)
+def test_favorite_search_only_published_snapshot(client, auth_headers, second_app_headers):
+    a = album(
+        client, second_app_headers, "Public moon", ["card-aria-01"], public=True, publish=True
+    )
     data(client.post(f"{BASE}/albums/{a['id']}/favorite", headers=auth_headers))
     hidden = album(
-        client, admin_headers, "Unrelated moon", ["card-lin-01"], public=True, publish=True
+        client, second_app_headers, "Unrelated moon", ["card-lin-01"], public=True, publish=True
     )
     with SessionLocal() as db:
         row = db.get(CardAlbum, a["id"])
@@ -119,8 +123,12 @@ def test_favorite_search_only_published_snapshot(client, auth_headers, admin_hea
     assert not search(client, auth_headers, "Public moon")["groups"]["albums"]["items"]
 
 
-def test_unavailable_author_and_revoked_cards_are_excluded(client, auth_headers, admin_headers):
-    a = album(client, admin_headers, "Inactive owner", ["card-aria-01"], public=True, publish=True)
+def test_unavailable_author_and_revoked_cards_are_excluded(
+    client, auth_headers, second_app_headers
+):
+    a = album(
+        client, second_app_headers, "Inactive owner", ["card-aria-01"], public=True, publish=True
+    )
     data(client.post(f"{BASE}/albums/{a['id']}/favorite", headers=auth_headers))
     with SessionLocal() as db:
         db.get(User, a["user_id"]).is_active = False

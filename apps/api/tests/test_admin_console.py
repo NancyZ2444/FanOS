@@ -7,9 +7,8 @@ from sqlalchemy import select
 
 from app.admin_models import CardImageVersion
 from app.core.database import SessionLocal
-from app.core.security import create_token
 from app.future_models import NotificationInboxItem, OutboxEvent
-from app.models import Card, OperationLog, User
+from app.models import Card, OperationLog
 
 ROOT = "/api/v1/admin/console"
 
@@ -114,15 +113,13 @@ def test_source_history_optimistic_lock_and_draft_archive(client, admin_headers)
     assert action(client, admin_headers, card["id"], "restore").json()["data"]["status"] == "DRAFT"
 
 
-def test_backend_permissions_and_legacy_endpoints(client, admin_headers, auth_headers):
+def test_backend_permissions_and_legacy_endpoints(
+    client, admin_headers, auth_headers, admin_actor_headers
+):
     assert client.get(ROOT + "/catalog").status_code == 401
-    assert client.get(ROOT + "/catalog", headers=auth_headers).status_code == 403
-    with SessionLocal() as db:
-        db.add(User(id="operator", display_name="Content", role="content_operator"))
-        db.add(User(id="ops", display_name="Operations", role="operation_admin"))
-        db.commit()
-    content = {"Authorization": "Bearer " + create_token("operator", "access")}
-    ops = {"Authorization": "Bearer " + create_token("ops", "access")}
+    assert client.get(ROOT + "/catalog", headers=auth_headers).status_code == 401
+    content = admin_actor_headers("content_operator", "operator")
+    ops = admin_actor_headers("operation_admin", "ops")
     card = create(client, content)
     assert action(client, content, card["id"], "submit").status_code == 200
     assert action(client, content, card["id"], "publish").status_code == 403
@@ -279,10 +276,35 @@ def test_notification_review_test_delivery_and_target_validation(
     ).json()["data"]
     url = ROOT + "/operations/notifications/" + row["id"] + "/actions"
     assert client.post(url, headers=admin_headers, json={"action": "send"}).status_code == 409
-    assert client.post(url, headers=admin_headers, json={"action": "test-send"}).status_code == 200
+    assert client.post(url, headers=admin_headers, json={"action": "test-send"}).status_code == 422
+    assert (
+        client.post(
+            url,
+            headers=admin_headers,
+            json={"action": "test-send", "test_recipient_id": "admin-principal-test"},
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            url,
+            headers=auth_headers,
+            json={"action": "test-send", "test_recipient_id": "admin-demo"},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            url,
+            headers=admin_headers,
+            json={"action": "test-send", "test_recipient_id": "admin-demo"},
+        ).status_code
+        == 200
+    )
     with SessionLocal() as db:
         notices = db.scalars(select(NotificationInboxItem)).all()
         assert len(notices) == 1 and notices[0].category == "TEST"
+        assert notices[0].user_id == "admin-demo"
     for act in ("submit", "approve", "send"):
         assert client.post(url, headers=admin_headers, json={"action": act}).status_code == 200
     assert client.post(url, headers=admin_headers, json={"action": "send"}).status_code == 409
@@ -343,12 +365,21 @@ def test_admin_accounts_require_super_role_and_protect_current_account(client, a
     created = client.post(
         ROOT + "/admins",
         headers=admin_headers,
-        json={"phone": "13700000088", "name": "Catalog Operator", "role": "content_operator"},
+        json={
+            "account": "catalog-operator",
+            "name": "Catalog Operator",
+            "role": "content_operator",
+            "password": "Independent-Test-Password1!",
+            "reason": "创建测试管理员",
+        },
     )
     assert created.status_code == 200
     admin_id = created.json()["data"]["id"]
-    assert created.json()["data"]["phone"] == "137****0088"
-    token = create_token(admin_id, "access")
+    assert created.json()["data"]["account"] == "catalog-operator"
+    token = client.post(
+        "/api/v1/admin/auth/login",
+        json={"account": "catalog-operator", "password": "Independent-Test-Password1!"},
+    ).json()["data"]["access_token"]
     assert (
         client.get(ROOT + "/admins", headers={"Authorization": "Bearer " + token}).status_code
         == 403
@@ -358,7 +389,12 @@ def test_admin_accounts_require_super_role_and_protect_current_account(client, a
         client.patch(
             ROOT + "/admins/" + current,
             headers=admin_headers,
-            json={"role": "content_operator", "is_active": False},
+            json={
+                "role": "content_operator",
+                "is_active": False,
+                "expected_version": 1,
+                "reason": "测试阻止停用自己",
+            },
         ).status_code
         == 422
     )
@@ -366,13 +402,18 @@ def test_admin_accounts_require_super_role_and_protect_current_account(client, a
         client.patch(
             ROOT + "/admins/" + admin_id,
             headers=admin_headers,
-            json={"role": "content_operator", "is_active": False},
+            json={
+                "role": "content_operator",
+                "is_active": False,
+                "expected_version": created.json()["data"]["version"],
+                "reason": "测试停用",
+            },
         ).status_code
         == 200
     )
     assert (
         client.get(ROOT + "/catalog", headers={"Authorization": "Bearer " + token}).status_code
-        == 401
+        == 403
     )
 
 
@@ -383,5 +424,5 @@ def test_production_refuses_development_login(client, monkeypatch):
     response = client.post(
         "/api/v1/auth/login", json={"method": "phone", "phone": "13900000000", "code": "666666"}
     )
-    assert response.status_code == 503
-    assert response.json()["error_code"] == "AUTH_PROVIDER_NOT_CONFIGURED"
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "CHALLENGE_REQUIRED"

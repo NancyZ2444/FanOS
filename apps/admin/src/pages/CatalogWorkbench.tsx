@@ -1,5 +1,6 @@
+import { canPermission } from "../api/permissions";
 import { fieldLabels, displayValue } from "../design/format";
-import { PageHeader, BusinessData, useFormGuard } from "../components/admin";
+import { PageHeader, useFormGuard } from "../components/admin";
 import { Form, Modal, Table } from "../components/admin";
 import TagSelect from "../components/TagSelect";
 import { useEffect, useState } from "react";
@@ -12,11 +13,12 @@ import { groupMembers, memberLabel } from "./memberOptions";
 
 export default function CatalogWorkbench({ mode }: { mode: string }) {
   const { catalog, actor, reload } = useConsole();
-  const { message, modal } = App.useApp();
+  const canEdit = canPermission(actor, "catalog.edit");
+  const canDelete = canPermission(actor, "catalog.delete");
+  const { message } = App.useApp();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [rows, setRows] = useState<any[]>([]);
-  const [quality, setQuality] = useState<any[]>([]);
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<React.Key[]>([]);
   const [preview, setPreview] = useState<any[]>([]);
@@ -24,13 +26,9 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
   const [form] = Form.useForm();
   const guard = useFormGuard(mode === "workbench");
   const selectedGroup = Form.useWatch("group_id", form);
-  const [review, setReview] = useState<any>();
-  const [target, setTarget] = useState<string>();
-  const [reason, setReason] = useState("");
   const [mergeSource, setMergeSource] = useState<string>();
   const [mergeTarget, setMergeTarget] = useState<string>();
   const [mergePlan, setMergePlan] = useState<any>();
-  const [suggested, setSuggested] = useState<any[]>([]);
   const [images, setImages] = useState<
     { file: File; card_id?: string; side: string }[]
   >([]);
@@ -55,14 +53,6 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
       consoleApi("/scan-index")
         .then((d) => setRows(d.items))
         .catch((e) => message.error(e.message));
-    if (mode === "review") {
-      consoleApi("/review-queue")
-        .then((d) => setRows(d.items))
-        .catch((e) => message.error(e.message));
-      consoleApi("/quality")
-        .then((d) => setQuality(d.items))
-        .catch((e) => message.error(e.message));
-    }
   };
   useEffect(() => {
     load();
@@ -99,32 +89,6 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
         setChanges(filtered);
         setPreview(data.items);
       }
-    } catch (e) {
-      message.error((e as Error).message);
-    }
-  };
-  const act = async (action: string) => {
-    try {
-      await consoleApi(
-        `/review-queue/${review.queue}/${review.id}/actions`,
-        send({
-          action,
-          reason,
-          card_id: target,
-          changes: Object.fromEntries(
-            suggested.map((s) => [
-              s.field,
-              s.edited && typeof s.original !== "string"
-                ? JSON.parse(s.value)
-                : s.value,
-            ]),
-          ),
-        }),
-      );
-      setReview(undefined);
-      load();
-      await reload();
-      message.success("审核已处理");
     } catch (e) {
       message.error((e as Error).message);
     }
@@ -178,7 +142,11 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
       </Space>
       <Table
         rowKey="id"
-        rowSelection={{ selectedRowKeys: selected, onChange: setSelected }}
+        rowSelection={
+          canEdit
+            ? { selectedRowKeys: selected, onChange: setSelected }
+            : undefined
+        }
         dataSource={catalog.cards.filter(
           (c) =>
             ["DRAFT", "REJECTED", "OFFLINE"].includes(c.status) &&
@@ -196,6 +164,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
       <Form
         form={form}
         layout="vertical"
+        disabled={!canEdit}
         className="bulk-form-grid"
         onValuesChange={guard.mark}
       >
@@ -288,11 +257,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
       </Form>
       <Button
         style={{ marginTop: 12 }}
-        disabled={
-          !selected.length ||
-          selected.length > 100 ||
-          actor.role === "operation_admin"
-        }
+        disabled={!selected.length || selected.length > 100 || !canEdit}
         onClick={() => bulk()}
       >
         预览修改 {selected.length} 条
@@ -305,7 +270,6 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
         title={
           {
             workbench: "批次与批量编辑",
-            review: "图鉴审核与质量",
             scan: "AI Scan 索引",
             companies: "公司管理",
           }[mode]
@@ -359,7 +323,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
                     />
                     <Button
                       disabled={
-                        actor.role !== "admin" ||
+                        !canDelete ||
                         !mergeSource ||
                         !mergeTarget ||
                         mergeSource === mergeTarget
@@ -405,6 +369,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
                   <input
                     type="file"
                     multiple
+                    disabled={!canEdit}
                     accept="image/png,image/jpeg,image/webp"
                     aria-label="批量上传图片"
                     onChange={(e) =>
@@ -469,9 +434,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
                     ]}
                   />
                   <Button
-                    disabled={
-                      !images.length || actor.role === "operation_admin"
-                    }
+                    disabled={!images.length || !canEdit}
                     onClick={upload}
                   >
                     确认上传
@@ -494,7 +457,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
                 render: (title, row) => (
                   <Button
                     type="link"
-                    onClick={() => navigate(`/catalog/cards/${row.id}`)}
+                    onClick={() => navigate(`/catalog/cards/${row.id}/detail`)}
                   >
                     {title}
                   </Button>
@@ -511,10 +474,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
                 title: "操作",
                 render: (_, row) => (
                   <Button
-                    disabled={
-                      actor.role === "operation_admin" ||
-                      row.status === "Disabled"
-                    }
+                    disabled={!canEdit || row.status === "Disabled"}
                     onClick={async () => {
                       try {
                         await consoleApi(
@@ -536,88 +496,6 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
           />
         </section>
       )}
-      {mode === "review" && (
-        <Tabs
-          items={[
-            {
-              key: "review",
-              label: "反馈审核",
-              children: (
-                <section className="panel">
-                  <Table
-                    rowKey="id"
-                    dataSource={rows}
-                    columns={[
-                      { title: "类型", dataIndex: "queue" },
-                      { title: "状态", dataIndex: "status" },
-                      { title: "关联对象", dataIndex: "entity_id" },
-                      {
-                        title: "操作",
-                        render: (_, row) => (
-                          <Button
-                            onClick={() => {
-                              setReview(row);
-                              setTarget(undefined);
-                              setReason("");
-                              setSuggested(
-                                Object.entries(row.data.suggested || {}).map(
-                                  ([field, value]) => ({
-                                    field,
-                                    value,
-                                    original: value,
-                                  }),
-                                ),
-                              );
-                            }}
-                          >
-                            查看
-                          </Button>
-                        ),
-                      },
-                    ]}
-                  />
-                </section>
-              ),
-            },
-            {
-              key: "quality",
-              label: "数据质量",
-              children: (
-                <section className="panel">
-                  <Table
-                    rowKey="id"
-                    dataSource={quality}
-                    columns={[
-                      { title: "对象", dataIndex: "name" },
-                      {
-                        title: "问题",
-                        render: (_, row) =>
-                          row.issues.map((e: any) => e.message).join("；"),
-                      },
-                      {
-                        title: "操作",
-                        render: (_, row) => (
-                          <Button
-                            onClick={() =>
-                              navigate(
-                                row.kind === "cards"
-                                  ? `/catalog/cards/${row.id}`
-                                  : `/catalog/${row.kind}/${row.id}/detail`,
-                              )
-                            }
-                          >
-                            查看
-                          </Button>
-                        ),
-                      },
-                    ]}
-                  />
-                </section>
-              ),
-            },
-          ]}
-        />
-      )}
       <Modal
         title="批量修改预览"
         width={900}
@@ -625,6 +503,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
         onCancel={() => setPreview([])}
         onOk={() => bulk(true)}
         okText="确认整批修改"
+        okButtonProps={{ disabled: !canEdit }}
       >
         <Alert message="仅草稿、驳回和下架记录可编辑。确认时重新校验状态及更新时间；任一失败整批回滚。" />
         <Table
@@ -660,7 +539,7 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
         open={!!mergePlan}
         onCancel={() => setMergePlan(undefined)}
         okText="迁移关联并归档重复记录"
-        okButtonProps={{ danger: true }}
+        okButtonProps={{ danger: true, disabled: !canDelete }}
         onOk={async () => {
           try {
             await consoleApi(
@@ -697,199 +576,6 @@ export default function CatalogWorkbench({ mode }: { mode: string }) {
             ?.map((r: any) => `${r.label} ${r.count} 条`)
             .join("；")}
         </p>
-      </Modal>
-      <Modal
-        title="反馈审核"
-        width={800}
-        open={!!review}
-        onCancel={() => setReview(undefined)}
-        footer={
-          <Space>
-            <Button onClick={() => setReview(undefined)}>关闭</Button>
-            {actor.role === "admin" && (
-              <>
-                <Button danger onClick={() => act("reject")}>
-                  驳回
-                </Button>
-                {review?.queue === "scan" ? (
-                  <>
-                    <Button onClick={() => act("ignore")}>忽略</Button>
-                    <Button disabled={!target} onClick={() => act("match")}>
-                      匹配已有小卡
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        navigate(
-                          `/catalog/cards/new?image_url=${encodeURIComponent(review?.data.image_url || "")}`,
-                        );
-                        setReview(undefined);
-                      }}
-                    >
-                      转新建草稿
-                    </Button>
-                  </>
-                ) : (
-                  <Button
-                    onClick={() =>
-                      modal.confirm({
-                        title: "确认接受反馈？",
-                        content:
-                          "已发布目标将经过重新校验后更新；校验失败整笔回滚。",
-                        onOk: () =>
-                          act(
-                            review?.queue === "report"
-                              ? "accept"
-                              : "edit_accept",
-                          ),
-                      })
-                    }
-                  >
-                    接受 / 编辑后接受
-                  </Button>
-                )}
-              </>
-            )}
-          </Space>
-        }
-      >
-        <p>{review?.data.reason || review?.data.notes}</p>
-        {review?.queue === "contribution" && (
-          <>
-            <p>
-              资料和本次新增 Tag 共用一次审核。接受后同步发布；驳回不创建
-              Tag。请先补齐关联与发布所需字段。
-            </p>
-            {!!review?.data.context?.missing_references && (
-              <BusinessData data={review.data.context.missing_references} />
-            )}
-            <Select<string>
-              placeholder="补充审核字段"
-              style={{ width: "100%", marginBottom: 12 }}
-              value={undefined}
-              options={[
-                "group_id",
-                "idol_id",
-                "artists",
-                "source_entity_type",
-                "source_entity_id",
-                "entity_version_id",
-                "image_url",
-                "back_image_url",
-                "front_source",
-                "back_source",
-                "source_info",
-                "city",
-                "is_online",
-                "platform",
-                "tags",
-              ]
-                .filter((field) => !suggested.some((s) => s.field === field))
-                .map((value) => ({
-                  value,
-                  label: fieldLabels[value] || value,
-                }))}
-              onChange={(field) => {
-                const value = ["tags", "artists"].includes(field)
-                  ? []
-                  : ["front_source", "back_source", "source_info"].includes(
-                        field,
-                      )
-                    ? {}
-                    : field === "is_online"
-                      ? false
-                      : "";
-                setSuggested((old) => [
-                  ...old,
-                  { field, value, original: value },
-                ]);
-              }}
-            />
-          </>
-        )}
-        {(review?.data.image_url || review?.data.evidence_image) && (
-          <img
-            src={review.data.image_url || review.data.evidence_image}
-            alt="用户扫描图片"
-            style={{ maxWidth: 220 }}
-          />
-        )}
-        {review?.data.source_url && (
-          <p>
-            来源：
-            <a href={review.data.source_url} target="_blank" rel="noreferrer">
-              查看证据来源
-            </a>
-          </p>
-        )}
-        {review?.data.contributor && <p>提交人：{review.data.contributor}</p>}
-        {review?.queue === "scan" && (
-          <>
-            <Select
-              style={{ width: "100%" }}
-              showSearch
-              optionFilterProp="label"
-              value={target}
-              onChange={setTarget}
-              placeholder="匹配已有官方小卡"
-              options={catalog.cards
-                .filter((c) => ["PUBLISHED", "OFFLINE"].includes(c.status))
-                .map((c) => ({ value: c.id, label: c.title }))}
-            />
-            <p>
-              候选：
-              {review?.data.candidates
-                ?.map((c: any) => `${c.card_id} (${c.similarity})`)
-                .join("；")}
-            </p>
-          </>
-        )}
-        <Table
-          rowKey="field"
-          dataSource={suggested}
-          pagination={false}
-          columns={[
-            { title: "字段", dataIndex: "field" },
-            {
-              title: "当前值",
-              render: (_, r) =>
-                displayValue(
-                  (
-                    (catalog.cards.find((c) => c.id === review?.entity_id) ||
-                      Object.values(catalog)
-                        .flat()
-                        .find((e: any) => e.id === review?.entity_id) ||
-                      {}) as Record<string, any>
-                  )[r.field] || "",
-                ),
-            },
-            {
-              title: "建议值",
-              render: (_, r, i) => (
-                <Input
-                  value={
-                    typeof r.value === "string"
-                      ? r.value
-                      : JSON.stringify(r.value)
-                  }
-                  onChange={(e) =>
-                    setSuggested((old) =>
-                      old.map((v, n) =>
-                        n === i
-                          ? { ...v, value: e.target.value, edited: true }
-                          : v,
-                      ),
-                    )
-                  }
-                />
-              ),
-            },
-          ]}
-        />
-        <Input.TextArea
-          placeholder="审核原因"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-        />
       </Modal>
     </>
   );

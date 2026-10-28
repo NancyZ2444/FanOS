@@ -672,3 +672,8 @@ button.text-button:disabled {
 .bulk-form-grid .ant-select {
   width: 100% !important;
 }
+
+/* Native date inputs must follow the same control height as text fields. */
+input.ant-input[type="date"] {
+  height: var(--control-height);
+}

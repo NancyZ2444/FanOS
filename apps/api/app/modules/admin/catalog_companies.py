@@ -8,6 +8,10 @@ from app.common.response import DomainError
 from .catalog_extensions import CatalogRecord, records
 
 
+def company_enabled(company) -> bool:
+    return company.data.get("enabled", company.status not in {"OFFLINE", "ARCHIVED"}) is True
+
+
 def company_name_key(name: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", name).split()).casefold()
 
@@ -31,10 +35,10 @@ def resolve_company_name(db, name: str):
             "系统中存在多个同名公司，请先在公司管理中合并或修正",
             409,
         )
-    if matches and matches[0].status == "ARCHIVED":
+    if matches and not company_enabled(matches[0]):
         raise DomainError(
-            "COMPANY_ARCHIVED",
-            "匹配到已归档公司，请先恢复该公司后再导入",
+            "COMPANY_DISABLED",
+            "匹配到未开启公司，请先开启该公司后再导入",
             409,
         )
     return (matches[0], "existing") if matches else (None, "create")
@@ -56,6 +60,7 @@ def get_or_create_company(db, actor, name: str, cache: dict | None = None):
         kind="companies",
         data={
             "name": normalized,
+            "enabled": True,
             "description": "",
             "source": "groups_idols_import",
         },
@@ -125,8 +130,8 @@ def ensure_company_relation(
     if kind not in {"groups", "idols"}:
         raise DomainError("INVALID_ENTITY_TYPE", "公司只能关联组合或艺人", 422)
     company = db.get(CatalogRecord, company_id)
-    if not company or company.kind != "companies" or company.status == "ARCHIVED":
-        raise DomainError("COMPANY_NOT_FOUND", "公司不存在或已归档", 422)
+    if not company or company.kind != "companies":
+        raise DomainError("COMPANY_NOT_FOUND", "公司不存在", 422)
     current = active_relations(db, kind, entity_id)
     existing = next(
         (relation for relation in current if relation.data.get("company_id") == company_id),
@@ -135,6 +140,8 @@ def ensure_company_relation(
     if existing:
         _sync_company_text(db, kind, entity_id)
         return existing, "existing"
+    if not company_enabled(company):
+        raise DomainError("COMPANY_DISABLED", "公司未开启，不能新增关联", 422)
     company_ids = {relation.data.get("company_id") for relation in current}
     company_ids.add(company_id)
     names = [
@@ -179,11 +186,23 @@ def validate_company_selection(db, kind, payload, before):
         return
     if kind not in {"groups", "idols"}:
         fail_fields([{"field": "company_ids", "message": "公司归属仅支持组合和艺人"}])
+    current = set(before.get("company_ids", [])) if before else set()
     names = []
     for cid in dict.fromkeys(payload.company_ids):
         company = db.get(CatalogRecord, cid)
-        if not company or company.kind != "companies" or company.status == "ARCHIVED":
-            fail_fields([{"field": "company_ids", "message": "请选择公司管理中的有效公司"}])
+        if (
+            not company
+            or company.kind != "companies"
+            or (cid not in current and not company_enabled(company))
+        ):
+            fail_fields(
+                [
+                    {
+                        "field": "company_ids",
+                        "message": "请选择已开启的公司；未开启公司仅保留已有归属",
+                    }
+                ]
+            )
         names.append(company.data["name"])
     if len(" / ".join(names)) > 120:
         fail_fields([{"field": "company_ids", "message": "所选公司名称合计不能超过 120 字符"}])

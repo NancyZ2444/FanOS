@@ -171,6 +171,21 @@
 .feedback-decision .ant-tag {
   align-self: flex-start;
 }
+.feedback-result-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.feedback-result-options .ant-radio-button-wrapper {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  height: var(--control-height);
+  line-height: calc(var(--control-height) - 2px);
+  padding-inline: var(--space-4);
+}
+.feedback-result-options .ant-radio-button-wrapper::before {
+  display: none;
+}
 .feedback-footer {
   justify-content: flex-end;
   flex-wrap: wrap;

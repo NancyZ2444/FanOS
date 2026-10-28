@@ -16,6 +16,28 @@ class CatalogPage extends ConsumerStatefulWidget {
 class _CatalogPageState extends ConsumerState<CatalogPage> {
   String _status = '全部状态';
   bool _ascending = true;
+  bool _openingFeedback = false;
+
+  Future<void> _openMissingFeedback() async {
+    if (_openingFeedback) return;
+    _openingFeedback = true;
+    try {
+      if (!ref.read(sessionProvider).isLoggedIn) {
+        final router = GoRouter.of(context);
+        final origin = router.state.uri;
+        showFanToast(context, '请先登录后反馈缺失内容');
+        await context.push('/login?from=/catalog/feedback');
+        if (!mounted || !ref.read(sessionProvider).isLoggedIn) return;
+        // A new account may replace the route with password/favorite setup.
+        // Its explicit return target resumes feedback after onboarding; never
+        // push a form on top of that flow when the login future completes.
+        if (router.state.uri != origin) return;
+      }
+      if (mounted) await context.push('/catalog/feedback');
+    } finally {
+      _openingFeedback = false;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -131,7 +153,7 @@ class _CatalogPageState extends ConsumerState<CatalogPage> {
                       actionLabel: _status != '全部状态' ? '清空筛选' : '反馈缺失内容',
                       onAction: _status != '全部状态'
                           ? () => setState(() => _status = '全部状态')
-                          : () => context.push('/catalog/feedback'),
+                          : _openMissingFeedback,
                     )
                   else
                     Card(
@@ -160,7 +182,7 @@ class _CatalogPageState extends ConsumerState<CatalogPage> {
                     alignment: Alignment.centerRight,
                     child: TextButton.icon(
                       key: const Key('catalog-missing-feedback'),
-                      onPressed: () => context.push('/catalog/feedback'),
+                      onPressed: _openMissingFeedback,
                       icon: const Icon(Icons.add_comment_outlined, size: 16),
                       label: const Text('反馈缺失内容'),
                     ),

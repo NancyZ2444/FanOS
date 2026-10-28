@@ -52,7 +52,12 @@ def library_search(db: Session, user: User, q: str, scope: str, offset: int, lim
     for album in albums:
         owner = album.user_id == user.id
         # Never inspect another author's working document, even when its title matches.
-        if not owner and (not album.is_public or album.is_moderated or album.status != "PUBLISHED"):
+        if not owner and (
+            not album.is_public
+            or album.is_moderated
+            or album.publication_blocked
+            or album.status != "PUBLISHED"
+        ):
             continue
         if not owner:
             try:

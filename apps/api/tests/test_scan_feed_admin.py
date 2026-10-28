@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-import json
+from uuid import uuid4
 
 from PIL import Image
 
@@ -40,20 +40,27 @@ def test_scan_recognize_confirm_and_feedback(client, auth_headers, scan_index):
     )
     assert confirmed.json()["data"]["added_count"] == 1
 
-    metadata = {
-        "scan_session_id": session["session_id"],
-        "detected_card_id": detected["detected_card_id"],
-        "crop_region": detected["crop_region"],
-        "ai_candidates": [],
-        "notes": "需要人工确认",
-    }
     feedback = client.post(
-        "/api/v1/scan/feedback",
+        "/api/v1/feedback",
         headers=auth_headers,
-        data={"metadata": json.dumps(metadata)},
+        json={
+            "kind": "MISSING_CARD",
+            "request_key": str(uuid4()),
+            "missing": {
+                "scan_session_id": session["session_id"],
+                "detected_card_id": detected["detected_card_id"],
+                "feedback_mode": "SCAN_CLUE",
+            },
+            "notes": "需要人工确认",
+        },
     )
-    assert feedback.status_code == 200
-    assert feedback.json()["data"]["feedback_id"].startswith("feedback_")
+    assert feedback.status_code == 200, feedback.text
+    row = feedback.json()["data"]
+    assert row["id"].startswith("fb_") and row["kind"] == "MISSING_CARD"
+    scan_context = row["submission"]["scan"]
+    assert scan_context["detected_card_id"] == detected["detected_card_id"]
+    assert scan_context["crop_region"] == detected["crop_region"]
+    assert scan_context["candidates"][0]["card_id"] == card_id
 
 
 def test_feed_interactions_and_admin_worker_ingestion(client, auth_headers, admin_headers):

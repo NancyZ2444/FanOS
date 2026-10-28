@@ -52,6 +52,15 @@ class AlbumCardSceneState extends ConsumerState<AlbumCardScene>
   bool get expanded => _expanded;
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduced = MediaQuery.disableAnimationsOf(context);
+    _spread.duration = Duration(milliseconds: reduced ? 0 : 420);
+    _flip.duration = Duration(milliseconds: reduced ? 0 : 500);
+    _travel.duration = Duration(milliseconds: reduced ? 0 : 300);
+  }
+
+  @override
   void initState() {
     super.initState();
     _reset();
@@ -106,7 +115,10 @@ class AlbumCardSceneState extends ConsumerState<AlbumCardScene>
 
   Future<void> _open(int index) async {
     if (_busy) return;
-    if (index != _selected) await _move(index);
+    if (index != _selected) {
+      await _move(index);
+      return;
+    }
     if (!mounted) return;
     setState(() => _expanded = true);
     widget.onExpandedChanged?.call(true);
@@ -130,7 +142,7 @@ class AlbumCardSceneState extends ConsumerState<AlbumCardScene>
     if (_busy || _slots.isEmpty) return;
     final card = widget.album.card(_slots[_selected]['card_id'] as String?);
     if (card?.backImageUrl?.trim().isNotEmpty != true) {
-      showFanToast(context, '暂无背面');
+      showFanToast(context, '暂无背面图片');
       return;
     }
     setState(() => _back = !_back);
@@ -151,8 +163,24 @@ class AlbumCardSceneState extends ConsumerState<AlbumCardScene>
     final values = <String, String>{
       'idol': card == null
           ? ''
-          : entityDisplayName(ref, 'idols', card.idolId, card.idolName),
-      'group': card?.groupName ?? '',
+          : !card.hasIndividualIdol
+          ? ''
+          : entityDisplayName(
+              ref,
+              'idols',
+              card.idolId,
+              card.officialIdolName,
+              nameMode: widget.album.nameDisplayMode,
+            ),
+      'group': card == null
+          ? ''
+          : entityDisplayName(
+              ref,
+              'groups',
+              card.groupId,
+              card.officialGroupName,
+              nameMode: widget.album.nameDisplayMode,
+            ),
       'source': card?.source ?? '',
       'type': card?.cardType ?? '',
       'version': card?.version ?? '',
@@ -171,202 +199,233 @@ class AlbumCardSceneState extends ConsumerState<AlbumCardScene>
     );
     return LayoutBuilder(
       builder: (context, bounds) {
-        final compact = bounds.maxHeight < 430;
-        return Column(
-          children: [
-            Expanded(
-              child: LayoutBuilder(
-                builder: (context, scene) {
-                  final w = scene.maxWidth, h = scene.maxHeight;
-                  final cardWidth = math.min(w * .52, h * .53);
-                  // Reserve 44pt hit targets on both sides; never crop the full card.
-                  final targetWidth = math.min(w - 100, h * .60);
-                  return ClipRect(
-                    child: GestureDetector(
-                      key: const Key('album-card-stage'),
-                      behavior: HitTestBehavior.opaque,
-                      onHorizontalDragStart: (_) => _drag = 0,
-                      onHorizontalDragUpdate: (details) {
-                        if (_spread.isAnimating || _flip.isAnimating) return;
-                        _drag += details.delta.dx;
-                        _dragging = true;
-                        if (!_expanded) {
-                          _travel.stop();
-                          setState(
-                            () => _position =
-                                (_position - details.delta.dx / (w * .27))
-                                    .clamp(0.0, (_slots.length - 1).toDouble()),
-                          );
-                        }
-                      },
-                      onHorizontalDragEnd: (details) {
-                        _dragging = false;
-                        if (_expanded) {
-                          if (_drag.abs() > 35 ||
-                              (details.primaryVelocity ?? 0).abs() > 150) {
-                            _move(
-                              _selected +
-                                  ((_drag == 0
-                                              ? details.primaryVelocity ?? 0
-                                              : _drag) <
-                                          0
-                                      ? 1
-                                      : -1),
+        // Size the image stage from the actual text below it, rather than a
+        // fixed screen percentage that leaves a large empty footer. Long text
+        // and accessibility sizes still scroll with a useful minimum stage.
+        final textWidth = math.max(1.0, bounds.maxWidth - 72);
+        double textHeight(String value, TextStyle style, {double inset = 0}) {
+          final painter = TextPainter(
+            text: TextSpan(
+              text: value,
+              style: DefaultTextStyle.of(context).style.merge(style),
+            ),
+            textDirection: Directionality.of(context),
+            textScaler: MediaQuery.textScalerOf(context),
+          )..layout(maxWidth: math.max(1.0, textWidth - inset));
+          final height = painter.height;
+          painter.dispose();
+          return height;
+        }
+
+        final story = !_expanded ? widget.album.description.trim() : '';
+        final informationHeight =
+            24 +
+            textHeight('00 / 00', const TextStyle(fontSize: 12)) +
+            8 +
+            textHeight(
+              card?.displayTitle ?? '小卡暂不可用',
+              const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+            ) +
+            (metadata.isEmpty
+                ? 0
+                : 8 + textHeight(metadata, const TextStyle(fontSize: 12))) +
+            (story.isEmpty
+                ? 0
+                : 48 +
+                      textHeight(
+                        story,
+                        const TextStyle(fontSize: 13, height: 1.5),
+                        inset: 28,
+                      ));
+        final stageHeight = math.max(
+          200.0,
+          bounds.maxHeight - informationHeight - 12,
+        );
+        return SingleChildScrollView(
+          key: const Key('album-scene-scroll'),
+          child: Column(
+            children: [
+              SizedBox(
+                height: stageHeight,
+                child: LayoutBuilder(
+                  builder: (context, scene) {
+                    final w = scene.maxWidth, h = scene.maxHeight;
+                    final cardWidth = math.min(w * .62, (h - 32) / 1.55);
+                    // Reserve 44pt hit targets on both sides; never crop the full card.
+                    final targetWidth = math.min(w - 100, (h - 24) / 1.55);
+                    return ClipRect(
+                      child: GestureDetector(
+                        key: const Key('album-card-stage'),
+                        behavior: HitTestBehavior.opaque,
+                        onHorizontalDragStart: (_) => _drag = 0,
+                        onHorizontalDragUpdate: (details) {
+                          if (_spread.isAnimating || _flip.isAnimating) return;
+                          _drag += details.delta.dx;
+                          _dragging = true;
+                          if (!_expanded) {
+                            _travel.stop();
+                            setState(
+                              () => _position =
+                                  (_position - details.delta.dx / (w * .27))
+                                      .clamp(
+                                        0.0,
+                                        (_slots.length - 1).toDouble(),
+                                      ),
                             );
                           }
-                        } else {
-                          _move(_position.round());
-                        }
-                      },
-                      onHorizontalDragCancel: () {
-                        // A simple tap also cancels the ancestor drag recognizer.
-                        // Only settle a real drag; otherwise it blocks extraction.
-                        if (!_expanded && _dragging) _move(_position.round());
-                        _dragging = false;
-                      },
-                      child: AnimatedBuilder(
-                        animation: Listenable.merge([_spread, _flip, _travel]),
-                        builder: (context, _) {
-                          final t = Curves.easeInOutCubic.transform(
-                            _spread.value,
-                          );
-                          // Bound image work even for legacy albums with hundreds of slots.
-                          final order =
-                              List.generate(_slots.length, (i) => i)
-                                  .where(
-                                    (i) =>
-                                        (i - _position).abs() <= 3 ||
-                                        i == _selected,
-                                  )
-                                  .toList()
-                                ..sort(
-                                  (a, b) => (b - _position).abs().compareTo(
-                                    (a - _position).abs(),
-                                  ),
-                                );
-                          if (t > 0) {
-                            order.remove(_selected);
-                            order.add(_selected);
-                          }
-                          return Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              for (final i in order)
-                                _sceneCard(i, w, h, cardWidth, targetWidth, t),
-                              if (_expanded || !_busy) ...[
-                                Positioned(
-                                  left: 2,
-                                  top: h / 2 - 22,
-                                  child: _nav(false),
-                                ),
-                                Positioned(
-                                  right: 2,
-                                  top: h / 2 - 22,
-                                  child: _nav(true),
-                                ),
-                              ],
-                            ],
-                          );
                         },
+                        onHorizontalDragEnd: (details) {
+                          _dragging = false;
+                          if (_expanded) {
+                            if (_drag.abs() > 35 ||
+                                (details.primaryVelocity ?? 0).abs() > 150) {
+                              _move(
+                                _selected +
+                                    ((_drag == 0
+                                                ? details.primaryVelocity ?? 0
+                                                : _drag) <
+                                            0
+                                        ? 1
+                                        : -1),
+                              );
+                            }
+                          } else {
+                            _move(_position.round());
+                          }
+                        },
+                        onHorizontalDragCancel: () {
+                          // A simple tap also cancels the ancestor drag recognizer.
+                          // Only settle a real drag; otherwise it blocks extraction.
+                          if (!_expanded && _dragging) _move(_position.round());
+                          _dragging = false;
+                        },
+                        child: AnimatedBuilder(
+                          animation: Listenable.merge([
+                            _spread,
+                            _flip,
+                            _travel,
+                          ]),
+                          builder: (context, _) {
+                            final t = Curves.easeInOutCubic.transform(
+                              _spread.value,
+                            );
+                            // Bound image work even for legacy albums with hundreds of slots.
+                            final order =
+                                List.generate(_slots.length, (i) => i)
+                                    .where(
+                                      (i) =>
+                                          (i - _position).abs() <= 3 ||
+                                          i == _selected,
+                                    )
+                                    .toList()
+                                  ..sort(
+                                    (a, b) => (b - _position).abs().compareTo(
+                                      (a - _position).abs(),
+                                    ),
+                                  );
+                            if (t > 0) {
+                              order.remove(_selected);
+                              order.add(_selected);
+                            }
+                            return Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                for (final i in order)
+                                  _sceneCard(
+                                    i,
+                                    w,
+                                    h,
+                                    cardWidth,
+                                    targetWidth,
+                                    t,
+                                  ),
+                                if (_expanded || !_busy) ...[
+                                  Positioned(
+                                    left: 2,
+                                    top: h / 2 - 22,
+                                    child: _nav(false),
+                                  ),
+                                  Positioned(
+                                    right: 2,
+                                    top: h / 2 - 22,
+                                    child: _nav(true),
+                                  ),
+                                ],
+                              ],
+                            );
+                          },
+                        ),
                       ),
-                    ),
-                  );
-                },
+                    );
+                  },
+                ),
               ),
-            ),
-            ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: compact ? 116 : 210),
-              child: Container(
+              Container(
                 width: double.infinity,
                 margin: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(18),
                   color: needsTextSurface
                       ? Colors.white.withValues(alpha: .85)
                       : Colors.transparent,
                 ),
-                child: SingleChildScrollView(
-                  padding: EdgeInsets.fromLTRB(24, 6, 24, compact ? 8 : 18),
-                  child: Column(
-                    children: [
-                      Text(
-                        '${(_selected + 1).toString().padLeft(2, '0')} / ${_slots.length.toString().padLeft(2, '0')}',
-                        key: const Key('album-card-counter'),
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: FanColors.textSecondary,
-                        ),
+                child: Column(
+                  children: [
+                    Text(
+                      '${(_selected + 1).toString().padLeft(2, '0')} / ${_slots.length.toString().padLeft(2, '0')}',
+                      key: const Key('album-card-counter'),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: FanColors.textSecondary,
                       ),
-                      const SizedBox(height: 8),
-                      Text(
-                        card?.displayTitle ?? '小卡暂不可用',
-                        textAlign: TextAlign.center,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                        ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      card?.displayTitle ?? '小卡暂不可用',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
                       ),
-                      if (metadata.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 6),
-                          child: Text(
-                            metadata,
-                            textAlign: TextAlign.center,
-                            maxLines: 3,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: FanColors.textSecondary,
-                            ),
+                    ),
+                    if (metadata.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          metadata,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: FanColors.textSecondary,
                           ),
                         ),
-                      const SizedBox(height: 10),
-                      Text(
-                        _expanded ? '轻点小卡翻面 · 左右切换浏览' : '轻点小卡放大 · 左右滑动浏览',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: FanColors.textSecondary,
+                      ),
+                    if (!_expanded &&
+                        widget.album.description.trim().isNotEmpty)
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(top: 16),
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: .75),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Text(
+                          widget.album.description,
+                          key: const Key('album-scene-story'),
+                          style: const TextStyle(
+                            fontSize: 13,
+                            height: 1.5,
+                            color: FanColors.textSecondary,
+                          ),
                         ),
                       ),
-                      if (!_expanded &&
-                          widget.album.description.trim().isNotEmpty)
-                        Container(
-                          width: double.infinity,
-                          margin: const EdgeInsets.only(top: 16),
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: .75),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                '收藏故事',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                widget.album.description,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: FanColors.textSecondary,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
+                  ],
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         );
       },
     );

@@ -41,7 +41,9 @@ MANAGED = {"notifications", "announcements", "daily"}
 
 
 def audience(db: Session, data: dict) -> list[str]:
-    query = select(User.id).where(User.is_active.is_(True), User.role == "user")
+    # Users contains App identities only; legacy role values no longer convey
+    # administrator identity or exclude an existing user's notification access.
+    query = select(User.id).where(User.is_active.is_(True), User.phone.is_not(None))
     if data.get("audience") == "FAVORITE_IDOL":
         query = query.where(
             User.id.in_(
@@ -163,7 +165,7 @@ def dashboard(actor: User = Depends(current_admin), db: Session = Depends(get_db
 def list_operations(
     kind: str, actor: User = Depends(current_admin), db: Session = Depends(get_db)
 ) -> dict:
-    domain = "social" if kind == "accounts" else "daily" if kind == "draws" else kind
+    domain = "sources" if kind == "accounts" else "daily" if kind == "draws" else kind
     permit(actor, domain)
     if kind in MANAGED:
         items = [
@@ -252,7 +254,7 @@ def edit_operation(
 def save_operation(
     kind: str, item_id: str | None, payload: OpsDraft, actor: User, db: Session
 ) -> dict:
-    permit(actor, "social" if kind == "accounts" else kind, "edit")
+    permit(actor, "sources" if kind == "accounts" else kind, "edit")
     data = payload.model_dump()
     if payload.group_id and not db.get(Group, payload.group_id):
         raise DomainError("INVALID_GROUP", "所选组合不存在", 422)
@@ -324,7 +326,8 @@ def save_operation(
             db.add(row)
         row.content = payload.content or payload.title
         row.platform = payload.platform
-        row.original_url = payload.source_url
+        if "source_url" in payload.model_fields_set:
+            row.original_url = payload.source_url
         row.group_id = payload.group_id or None
         row.idol_id = payload.idol_id or None
         row.relation = {"card_ids": payload.card_ids}
@@ -369,7 +372,7 @@ def operation_action(
     actor: User = Depends(current_admin),
     db: Session = Depends(get_db),
 ) -> dict:
-    permit(actor, "social" if kind == "accounts" else kind, payload.action)
+    permit(actor, "sources" if kind == "accounts" else kind, payload.action)
     action = payload.action
     if kind in MANAGED:
         row = db.scalar(
@@ -392,9 +395,18 @@ def operation_action(
             if row.status not in {"DRAFT", "PENDING", "APPROVED"}:
                 raise DomainError("INVALID_TRANSITION", "当前状态不可测试发送", 409)
             validate_target(db, row.data)
+            if not payload.test_recipient_id:
+                raise DomainError(
+                    "TEST_RECIPIENT_REQUIRED", "请先选择真实 App 用户作为测试接收人", 422
+                )
+            recipient = db.get(User, payload.test_recipient_id)
+            if not recipient or not recipient.is_active or not recipient.phone:
+                raise DomainError(
+                    "INVALID_TEST_RECIPIENT", "测试接收人不存在、未完成手机号验证或账号已停用", 422
+                )
             db.add(
                 NotificationInboxItem(
-                    user_id=actor.id,
+                    user_id=recipient.id,
                     category="TEST",
                     source_type="TEST",
                     source_id=item_id,
@@ -467,9 +479,7 @@ def operation_action(
         if kind in {"comments", "reports", "users"} and not payload.reason.strip():
             raise DomainError("REASON_REQUIRED", "请填写处理原因", 422)
         if kind == "users" and action in {"ban", "unban"}:
-            if row.role != "user":
-                raise DomainError("PROTECTED_ACCOUNT", "此入口不允许封禁管理员账号", 422)
-            row.is_active = action == "unban"
+            raise DomainError("ACCOUNT_ACTION_REQUIRED", "请使用 App 用户详情的安全处置入口", 409)
         elif kind == "comments" and action in {"hide", "delete", "restore"}:
             row.is_deleted = action != "restore"
             meta = meta_for(db, kind, item_id)
@@ -490,6 +500,11 @@ def operation_action(
             raise DomainError("INVALID_ACTION", "不支持此操作", 422)
         result = user_payload(db, row) if kind == "users" else row_data(row)
         result["review_note"] = payload.reason
-    audit(db, actor, f"{kind}.{action}", kind, item_id, before, result)
+    audit_result = (
+        {**result, "test_recipient_id": payload.test_recipient_id}
+        if kind == "notifications" and action == "test-send"
+        else result
+    )
+    audit(db, actor, f"{kind}.{action}", kind, item_id, before, audit_result)
     db.commit()
     return success(result)

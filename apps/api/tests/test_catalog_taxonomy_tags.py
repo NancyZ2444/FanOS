@@ -1,4 +1,7 @@
 from sqlalchemy import func, select
+from test_feedback_workflow import ROOT as FEEDBACK_ROOT
+from test_feedback_workflow import accept, action, missing, result
+from test_missing_catalog_feedback import body as catalog_submission
 
 from app.admin_models import ContentMetadata
 from app.core.database import SessionLocal
@@ -7,6 +10,7 @@ from app.modules.admin.catalog_extensions import CatalogRecord
 from app.modules.catalog.tags import bind_tags
 from app.modules.catalog.taxonomy_models import CatalogOther, CatalogTag, CatalogTagBinding
 from app.modules.catalog.taxonomy_upgrade import migrate_taxonomy
+from app.modules.feedback.models import Feedback
 
 ROOT = "/api/v1/admin/console"
 PUBLIC = "/api/v1/catalog"
@@ -34,8 +38,8 @@ def create(client, headers, name, tags=()):
 
 
 def publish(client, headers, kind, id):
-    for action in ["submit", "publish"]:
-        post(client, headers, ROOT + f"/entities/{kind}/{id}/actions", {"action": action})
+    for verb in ["submit", "publish"]:
+        post(client, headers, ROOT + f"/entities/{kind}/{id}/actions", {"action": verb})
 
 
 def tag_list(client, headers):
@@ -117,47 +121,49 @@ def test_contributions_subject_and_tags_share_one_review(client, admin_headers, 
         return post(
             client,
             auth_headers,
-            PUBLIC + "/feedback",
-            {
-                "entity_type": "others",
-                "reason": "公开资料补充",
-                "suggested": {
-                    "name": name,
-                    "group_id": "group-lumina",
-                    "original_name": "Original",
-                    "start_date": "2026-01-01",
-                    "end_date": "2026-02-01",
-                    "description": "Details",
-                    "tags": ["Brand  Collaboration"],
-                },
-            },
+            FEEDBACK_ROOT,
+            catalog_submission(
+                "others",
+                name=name,
+                artists=[{"type": "groups", "id": "group-lumina"}],
+                original_name="Original",
+                start_date="2026-01-01",
+                end_date="2026-02-01",
+                description="Details",
+                tags=["Brand  Collaboration"],
+            ),
         )
 
     rejected = submit("Rejected")
     accepted = submit("Accepted")
     concurrent = submit("Second")
     assert not any(t["name"] == "Brand Collaboration" for t in tag_list(client, admin_headers))
-    post(
-        client,
-        admin_headers,
-        ROOT + f"/review-queue/contribution/{rejected['id']}/actions",
-        {"action": "reject", "reason": "无法验证"},
+    result(
+        action(
+            client,
+            admin_headers,
+            rejected,
+            "decide",
+            review_decision="REJECTED",
+            public_note="无法验证",
+        )
     )
     assert not any(t["name"] == "Brand Collaboration" for t in tag_list(client, admin_headers))
     for item in [accepted, concurrent]:
-        post(
-            client,
-            admin_headers,
-            ROOT + f"/review-queue/contribution/{item['id']}/actions",
-            {"action": "accept"},
-        )
+        accepted_item = accept(client, admin_headers, item)
+        # Approval submits the shared decision; formal tags appear with publication.
+        if item["id"] == accepted["id"]:
+            assert not any(
+                t["name"] == "Brand Collaboration" for t in tag_list(client, admin_headers)
+            )
+        result(action(client, admin_headers, accepted_item, "publish"))
     tags = [t for t in tag_list(client, admin_headers) if t["name"] == "Brand Collaboration"]
     assert len(tags) == 1 and tags[0]["usage_count"] == 2 and tags[0]["source"] == "USER_SUBMITTED"
     assert tags[0]["submission_id"] == accepted["id"]
     published = client.get(PUBLIC + "/others?q=Accepted").json()["data"]["items"]
     assert len(published) == 1 and published[0]["tags"] == ["Brand Collaboration"]
     with SessionLocal() as db:
-        review = db.get(CatalogRecord, rejected["id"])
+        review = db.get(Feedback, rejected["id"])
         assert not review.entity_id
         assert not db.scalar(select(CatalogOther).where(CatalogOther.name == "Rejected"))
 
@@ -166,26 +172,22 @@ def test_failed_approval_rolls_back_tags_and_subject(client, admin_headers, auth
     review = post(
         client,
         auth_headers,
-        PUBLIC + "/feedback",
-        {
-            "entity_type": "cards",
-            "reason": "缺失小卡",
-            "suggested": {
-                "title": "Incomplete",
-                "group_id": "group-lumina",
-                "idol_id": "idol-aria",
-                "tags": ["Approval Rollback"],
-            },
-        },
+        FEEDBACK_ROOT,
+        missing(
+            client,
+            auth_headers,
+            title="Incomplete",
+            source_entity_id=None,
+            missing_source_name="Unrecorded album",
+        ),
     )
-    r = client.post(
-        ROOT + f"/review-queue/contribution/{review['id']}/actions",
-        headers=admin_headers,
-        json={"action": "accept"},
-    )
+    accepted = accept(client, admin_headers, review, changes={"tags": ["Approval Rollback"]})
+    r = action(client, admin_headers, accepted, "publish")
     assert r.status_code == 422, r.text
     with SessionLocal() as db:
-        assert db.get(CatalogRecord, review["id"]).status == "PENDING"
+        saved = db.get(Feedback, review["id"])
+        assert saved.result == "PENDING" and saved.review["review_decision"] == "ACCEPTED"
+        assert saved.revision == accepted["revision"] and not saved.entity_id
         assert not db.scalar(select(CatalogTag).where(CatalogTag.name == "Approval Rollback"))
         assert not db.scalar(select(Card).where(Card.title == "Incomplete"))
 
@@ -239,21 +241,17 @@ def test_other_dates_fields_and_user_system_field_rejection(client, admin_header
     ]:
         assert (
             client.post(
-                PUBLIC + "/feedback",
+                FEEDBACK_ROOT,
                 headers=auth_headers,
-                json={"entity_type": "others", "reason": "test", "suggested": suggested},
+                json=catalog_submission("others", **suggested),
             ).status_code
             == 422
         )
     assert (
         client.post(
-            PUBLIC + "/feedback",
+            FEEDBACK_ROOT,
             headers=auth_headers,
-            json={
-                "entity_type": "cards",
-                "reason": "test",
-                "suggested": {"source_entity_type": "MERCHANDISE"},
-            },
+            json=missing(client, auth_headers, source_entity_type="MERCHANDISE"),
         ).status_code
         == 422
     )

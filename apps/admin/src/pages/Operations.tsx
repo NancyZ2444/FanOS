@@ -1,3 +1,4 @@
+import { canPermission } from "../api/permissions";
 import { TableToolbar } from "../components/admin";
 import { useSingleSubmit } from "../components/admin";
 import {
@@ -23,6 +24,7 @@ import { EyeOutlined, PlusOutlined, SearchOutlined } from "@ant-design/icons";
 import { consoleApi, send } from "../api/client";
 import { useConsole } from "../state";
 import { ImageUpload, StatusTag } from "../components/shared";
+import { authApi, filtersQuery } from "./auth/shared";
 
 export const operationNames: Record<string, string> = {
   social: "动态管理",
@@ -65,6 +67,27 @@ export default function Operations({ kind }: { kind: string }) {
   }>();
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
+  const [testRecipient, setTestRecipient] = useState<string>();
+  const [testUsers, setTestUsers] = useState<
+    { value: string; label: string }[]
+  >([]);
+  const [testRecipientError, setTestRecipientError] = useState("");
+  const findTestUser = async (q: string) => {
+    setTestRecipientError("");
+    try {
+      const result = await authApi(
+        `/users?${filtersQuery({ q, status: "normal", page_size: 20 })}`,
+      );
+      setTestUsers(
+        result.items.map((u: any) => ({
+          value: u.id,
+          label: `${u.name} · ${u.phone_masked} · ${u.id}`,
+        })),
+      );
+    } catch (e) {
+      setTestRecipientError((e as Error).message);
+    }
+  };
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<any>();
   const title = operationNames[kind];
@@ -74,12 +97,10 @@ export default function Operations({ kind }: { kind: string }) {
     "accounts",
     ...["daily", "notifications", "announcements"],
   ].includes(kind);
-  const roleAllowed =
-    actor.role === "admin" ||
-    (actor.role === "content_operator" &&
-      ["social", "accounts"].includes(kind)) ||
-    (actor.role === "operation_admin" &&
-      !["social", "accounts"].includes(kind));
+  const roleAllowed = canPermission(
+    actor,
+    `${kind === "accounts" ? "sources" : kind === "draws" ? "daily" : kind}.manage`,
+  );
   const load = async () => {
     setLoading(true);
     setError("");
@@ -147,6 +168,10 @@ export default function Operations({ kind }: { kind: string }) {
   });
   const execute = async () => {
     if (!actionModal) return;
+    if (actionModal.action === "test-send" && !testRecipient) {
+      setTestRecipientError("请选择真实 App 测试接收人");
+      return;
+    }
     const needsReason =
       ["users", "comments", "reports"].includes(kind) ||
       actionModal.action === "reject";
@@ -158,11 +183,17 @@ export default function Operations({ kind }: { kind: string }) {
     try {
       await consoleApi(
         `/operations/${kind}/${actionModal.row.id}/actions`,
-        send({ action: actionModal.action, reason, confirmation }),
+        send({
+          action: actionModal.action,
+          reason,
+          confirmation,
+          test_recipient_id:
+            actionModal.action === "test-send" ? testRecipient : undefined,
+        }),
       );
       message.success(
         actionModal.action === "test-send"
-          ? "测试通知已写入当前管理员站内信"
+          ? "测试通知已发送至所选 App 用户站内信"
           : "操作成功",
       );
       setActionModal(undefined);
@@ -457,6 +488,9 @@ export default function Operations({ kind }: { kind: string }) {
                         });
                         setReason("");
                         setConfirmation("");
+                        setTestRecipient(undefined);
+                        setTestRecipientError("");
+                        if (a.key === "test-send") findTestUser("");
                       },
                     })),
                   ]}
@@ -544,13 +578,6 @@ export default function Operations({ kind }: { kind: string }) {
                     "OTHER",
                   ].map((value) => ({ value, label: value }))}
                 />
-              </Form.Item>
-              <Form.Item
-                name="source_url"
-                label="原始链接"
-                rules={[{ type: "url", message: "请输入有效链接" }]}
-              >
-                <Input placeholder="https://" />
               </Form.Item>
             </>
           )}
@@ -655,7 +682,7 @@ export default function Operations({ kind }: { kind: string }) {
               )}
               <Alert
                 type="info"
-                message="保存后可预览实际目标人数，测试发送仅投递当前管理员站内信。"
+                message="保存后可预览实际目标人数。测试发送需明确选择 App 接收人，后台管理员不自动拥有 App 身份。"
               />
             </>
           )}
@@ -837,6 +864,32 @@ export default function Operations({ kind }: { kind: string }) {
         cancelText="取消"
       >
         <p>目标：{actionModal?.row.title}（1 项）</p>
+        {actionModal?.action === "test-send" && (
+          <>
+            <Alert
+              type="info"
+              showIcon
+              message="请选择已授权接收测试消息的真实 App 用户；只向此用户投递，不发送给目标人群。"
+            />
+            <Form.Item
+              label="App 测试接收人"
+              required
+              validateStatus={testRecipientError ? "error" : undefined}
+              help={testRecipientError}
+            >
+              <Select
+                aria-label="App 测试接收人"
+                showSearch
+                filterOption={false}
+                onSearch={findTestUser}
+                options={testUsers}
+                value={testRecipient}
+                onChange={setTestRecipient}
+                placeholder="搜索 App 用户 ID 或昵称"
+              />
+            </Form.Item>
+          </>
+        )}
         {actionModal?.action === "delete" && (
           <Alert
             type="warning"

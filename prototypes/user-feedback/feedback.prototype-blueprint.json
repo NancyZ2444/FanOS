@@ -1,0 +1,94 @@
+{
+  "systemName": "Fan OS",
+  "target": "app-and-pc-admin",
+  "pages": [
+    {
+      "pageId": "scan-result",
+      "pageType": "detail",
+      "layoutPattern": "mobile-detail",
+      "headerMode": "title-only",
+      "tabsMode": "none",
+      "hasAdvancedFilter": false,
+      "hasBatchInteraction": false
+    },
+    {
+      "pageId": "catalog-detail",
+      "pageType": "detail",
+      "layoutPattern": "mobile-detail",
+      "headerMode": "title-only",
+      "tabsMode": "none",
+      "hasAdvancedFilter": false,
+      "hasBatchInteraction": false
+    },
+    {
+      "pageId": "submit",
+      "pageType": "form",
+      "layoutPattern": "mobile-form",
+      "headerMode": "title-only",
+      "tabsMode": "none",
+      "hasAdvancedFilter": false,
+      "hasBatchInteraction": false
+    },
+    {
+      "pageId": "history",
+      "pageType": "detail",
+      "layoutPattern": "mobile-detail",
+      "headerMode": "title-only",
+      "tabsMode": "none",
+      "hasAdvancedFilter": false,
+      "hasBatchInteraction": false
+    },
+    {
+      "pageId": "admin-scan",
+      "pageType": "list",
+      "layoutPattern": "shell-list",
+      "headerMode": "title-only",
+      "tabsMode": "status-view",
+      "hasAdvancedFilter": false,
+      "hasBatchInteraction": false
+    },
+    {
+      "pageId": "admin-correction",
+      "pageType": "list",
+      "layoutPattern": "shell-list",
+      "headerMode": "title-only",
+      "tabsMode": "status-view",
+      "hasAdvancedFilter": false,
+      "hasBatchInteraction": false
+    },
+    {
+      "pageId": "card-detail",
+      "pageType": "detail",
+      "layoutPattern": "mobile-detail",
+      "headerMode": "title-only",
+      "tabsMode": "none",
+      "hasAdvancedFilter": false,
+      "hasBatchInteraction": false
+    },
+    {
+      "pageId": "profile",
+      "pageType": "detail",
+      "layoutPattern": "mobile-detail",
+      "headerMode": "title-only",
+      "tabsMode": "detail-tabs",
+      "hasAdvancedFilter": false,
+      "hasBatchInteraction": false
+    }
+  ],
+  "interactions": [
+    "扫描缺失入口带入图片",
+    "详情纠错入口带入对象及字段，可切换",
+    "组合/艺人/团体/来源联动",
+    "双面图条件必填",
+    "独立收录与纠错模块",
+    "一键转图鉴草稿、补齐并发布",
+    "小卡详情贡献用户名链接",
+    "主页我的贡献，仅已收录小卡",
+    "我的贡献无进度入口，两类反馈进度统一从 AI 扫描进入"
+  ],
+  "assumptions": [
+    "简单流程确认原型，模拟数据保存在当前页面内存",
+    "App页面为手机预览，平台沿用Honeycomb布局"
+  ],
+  "version": "2.0"
+}

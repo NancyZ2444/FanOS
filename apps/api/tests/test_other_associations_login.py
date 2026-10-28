@@ -1,8 +1,6 @@
 import csv
 import io
 
-from app.core.config import get_settings
-
 ROOT = "/api/v1/admin/console"
 
 
@@ -63,14 +61,34 @@ def test_other_import_supports_group_names_and_solo_names(client, admin_headers)
     assert {"group_name", "idol_name", "artist_names", "artists"} <= set(fields)
 
 
-def test_dev_code_and_first_registration_flag(client, monkeypatch):
-    monkeypatch.setattr(get_settings(), "dev_phone_code", "666666")
-    body = {"method": "phone", "phone": "13855556666", "code": "666666"}
-    first = client.post("/api/v1/auth/login", json=body)
+def test_code_and_first_registration_flag(client, monkeypatch):
+    from app.core.database import SessionLocal
+    from sqlalchemy import select
+
+    from app.auth_models import VerificationChallenge
+    from app.modules.auth import providers, service
+
+    sent = []
+    monkeypatch.setattr(providers, "send_sms", lambda phone, code: sent.append(code) or "accepted")
+    body = {"method": "phone", "phone": "13855556666"}
+
+    def login():
+        challenge = client.post(
+            "/api/v1/auth/sms/challenges", json={"phone": body["phone"], "purpose": "login"}
+        ).json()["data"]["challenge_id"]
+        return client.post(
+            "/api/v1/auth/login", json={**body, "code": sent[-1], "challenge_id": challenge}
+        )
+
+    first = login()
     assert first.status_code == 200
     assert first.json()["data"]["is_new_user"] is True
-    assert client.post("/api/v1/auth/login", json=body).json()["data"]["is_new_user"] is False
-    assert client.post("/api/v1/auth/login", json={**body, "code": "123456"}).status_code == 400
-    monkeypatch.setattr(get_settings(), "environment", "production")
-    assert client.post("/api/v1/auth/login", json=body).status_code == 503
-    assert client.post("/api/v1/auth/request-code").status_code == 503
+    assert not first.json()["data"]["user"]["id"].endswith(body["phone"])
+    from datetime import timedelta
+
+    with SessionLocal() as db:
+        for row in db.scalars(select(VerificationChallenge)):
+            row.created_at = service.now() - timedelta(minutes=2)
+        db.commit()
+    assert login().json()["data"]["is_new_user"] is False
+    assert client.post("/api/v1/auth/login", json={**body, "code": "666666"}).status_code == 400

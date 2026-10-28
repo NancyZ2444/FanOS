@@ -7,7 +7,8 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import select
 
 from app.common.response import DomainError
-from app.integrations.card_matcher.adapter import CardMatcherAdapter
+from app.integrations.card_matcher.adapter import MIN_FEATURE_DESCRIPTORS, CardMatcherAdapter
+from app.integrations.card_matcher.visual import features
 from app.integrations.storage import get_storage
 from app.models import Card
 
@@ -44,9 +45,15 @@ def detect_single(raw):
     return regions[0].crop
 
 
-def recognize_artwork(db, actor, artwork, confirmed=None):
+def similar_artwork(db, artwork, exclude_card_id=None):
+    from app.modules.scan.service import recognition_status
+
     matcher = CardMatcherAdapter()
-    cards = list(db.scalars(select(Card)))
+    cards = (
+        list(db.scalars(select(Card).where(Card.id != exclude_card_id)))
+        if exclude_card_id
+        else list(db.scalars(select(Card)))
+    )
     known = {c.id: c.image_url for c in cards if c.image_url}
     matcher.records = matcher.indexed(known)
     indexed = {r["card_id"] for r in matcher.records}
@@ -70,31 +77,63 @@ def recognize_artwork(db, actor, artwork, confirmed=None):
         raise DomainError(
             "RECOGNITION_FAILED", "识别暂时失败，请重试；尚未新增或修改小卡", 503
         ) from exc
-    score = ranked[0]["similarity"] if ranked else 0
+    # Share the App's decision policy as well as its current visual matcher.
+    # Approximate matches require confirmation even if their score becomes high.
     status = (
         "matched"
-        if score >= 0.9 and (len(ranked) == 1 or score - ranked[1]["similarity"] >= 0.04)
+        if recognition_status(ranked) == "recommended"
         else "candidates"
         if ranked
         else "incomplete"
         if unavailable
         else "unrecognized"
     )
-    buffer = io.BytesIO()
-    artwork.save(buffer, format="WEBP", quality=95)
-    image_url = get_storage().save_bytes(
-        buffer.getvalue(), "card.webp", f"catalog/{actor.id}/recognition"
-    )
-    result = {
+    return {
         "status": status,
-        "image_url": image_url,
         "indexed_count": len(matcher.indexed(known)),
         "unavailable_count": unavailable,
         "candidates": [
             {"score": r["similarity"], "card": admin_card(db, db.get(Card, r["card_id"]))}
             for r in ranked
+            if r["card_id"] in known
         ],
     }
+
+
+def similar_uploaded(db, image_url, exclude_card_id=None):
+    """Read managed media only; do not create images, records, or scan sessions."""
+    try:
+        raw = storage_bytes(image_url)
+        artwork = load_image(raw)
+    except (OSError, ValueError, OverflowError, Image.DecompressionBombError) as exc:
+        raise DomainError(
+            "IMAGE_UNAVAILABLE", "无法读取已上传图片，请重新上传后检查相似小卡", 422
+        ) from exc
+    try:
+        if len(features(artwork)["descriptors"]) < MIN_FEATURE_DESCRIPTORS:
+            raise DomainError(
+                "INSUFFICIENT_IMAGE_DETAIL",
+                "卡图细节不足，无法检查相似小卡，请上传清晰完整的正面照片",
+                422,
+            )
+        return similar_artwork(db, artwork, exclude_card_id)
+    except DomainError:
+        raise
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Duplicate card lookup failed")
+        raise DomainError(
+            "RECOGNITION_FAILED", "相似小卡检查暂时失败，请重试或人工核对", 503
+        ) from exc
+
+
+def recognize_artwork(db, actor, artwork, confirmed=None):
+    result = similar_artwork(db, artwork)
+    buffer = io.BytesIO()
+    artwork.save(buffer, format="PNG")
+    image_url = get_storage().save_bytes(
+        buffer.getvalue(), "card.png", f"catalog/{actor.id}/recognition"
+    )
+    result["image_url"] = image_url
     audit(
         db,
         actor,
@@ -103,10 +142,10 @@ def recognize_artwork(db, actor, artwork, confirmed=None):
         "",
         None,
         {
-            "status": status,
+            "status": result["status"],
             "image_url": image_url,
-            "candidate_ids": [r["card_id"] for r in ranked],
-            "unavailable_count": unavailable,
+            "candidate_ids": [r["card"]["id"] for r in result["candidates"]],
+            "unavailable_count": result["unavailable_count"],
             "crop": confirmed.model_dump() if confirmed else None,
         },
     )

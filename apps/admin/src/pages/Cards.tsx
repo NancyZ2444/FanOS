@@ -1,3 +1,4 @@
+import { canPermission } from "../api/permissions";
 import { TableToolbar } from "../components/admin";
 import { RecordId, RowActions } from "../components/admin";
 import { FilterBar } from "../components/admin";
@@ -40,6 +41,7 @@ import {
 import { useConsole } from "../state";
 import { confirmCatalogDeletion } from "../components/catalogDeletion";
 import CardRecognition from "../components/CardRecognition";
+import { useCardsDuplicateApproval } from "../components/CardDuplicateWarning";
 
 export default function Cards() {
   const { catalog, reload, loading, actor } = useConsole();
@@ -59,8 +61,11 @@ export default function Cards() {
   const [view, setView] = useState("table");
   const [preview, setPreview] = useState<Card>();
   const [busy, setBusy] = useState(false);
-  const canEdit = actor.role !== "operation_admin";
-  const canPublish = actor.role === "admin";
+  const approveDuplicates = useCardsDuplicateApproval();
+  const canEdit = canPermission(actor, "catalog.edit");
+  const canPublish = canPermission(actor, "catalog.publish");
+  const canDelete = canPermission(actor, "catalog.delete");
+  const canSelect = canEdit || canPublish || canDelete;
   const filtered = useMemo(
     () =>
       catalog.cards.filter(
@@ -104,8 +109,14 @@ export default function Cards() {
     ],
   );
   const act = async (action: string, card?: Card) => {
+    if (busy) return;
+    const ids = [...selected];
+    const targets = card
+      ? [card]
+      : catalog.cards.filter((c) => ids.includes(c.id));
     setBusy(true);
     try {
+      if (action === "publish" && !(await approveDuplicates(targets))) return;
       await consoleApi(
         card
           ? action === "delete"
@@ -114,7 +125,7 @@ export default function Cards() {
           : "/cards/batch",
         card && action === "delete"
           ? { method: "DELETE" }
-          : send(card ? { action } : { action, ids: selected }),
+          : send(card ? { action } : { action, ids }),
       );
       message.success("操作成功");
       setSelected([]);
@@ -139,7 +150,7 @@ export default function Cards() {
         action === "delete"
           ? "删除不可恢复。未发布草稿可删除；曾发布后下架及归档记录须解除全部上下游关联。下游引用始终阻止删除；任一不满足条件整批不删除。"
           : action === "publish"
-            ? "发布前将检查来源、图片与版权信息。通过后，小卡会在 App 图鉴中公开展示。"
+            ? "发布前将检查关联来源及图片完整性。通过后，小卡会在 App 图鉴中公开展示。"
             : action === "offline"
               ? "下架后 App 图鉴和每日翻卡不再展示，已有收藏与图片来源历史将保留。"
               : "归档后从默认列表移除，可在已归档中恢复。",
@@ -214,49 +225,28 @@ export default function Cards() {
           ? "已发布内容需先下架，待审核内容需先驳回"
           : undefined
       }
-      items={(canEdit
-        ? [
-            { key: "preview", label: "预览 App" },
-            ...(c.status === "PENDING" && canPublish
-              ? [{ key: "publish", label: "审核通过并发布" }]
-              : []),
-            ...(c.status === "PUBLISHED"
-              ? [{ key: "offline", label: "下架小卡" }]
-              : []),
-            ...(editable(c.status)
-              ? [
-                  { key: "submit", label: "提交审核" },
-                  ...(canPublish
-                    ? [
-                        { key: "archive", label: "归档" },
-                        ...(c.status === "DRAFT" || c.status === "OFFLINE"
-                          ? [
-                              {
-                                key: "delete",
-                                label: "删除",
-                                danger: true,
-                              },
-                            ]
-                          : []),
-                      ]
-                    : []),
-                ]
-              : []),
-            ...(c.status === "ARCHIVED"
-              ? [
-                  { key: "restore", label: "恢复为草稿" },
-                  ...(canPublish
-                    ? [{ key: "delete", label: "删除", danger: true }]
-                    : []),
-                ]
-              : []),
-            { key: "history", label: "查看图片来源" },
-          ]
-        : [
-            { key: "preview", label: "预览 App" },
-            { key: "history", label: "查看图片来源" },
-          ]
-      ).map((item) => ({
+      items={[
+        { key: "preview", label: "预览 App" },
+        ...(canPublish && c.status === "PENDING"
+          ? [{ key: "publish", label: "审核通过并发布" }]
+          : []),
+        ...(canPublish && c.status === "PUBLISHED"
+          ? [{ key: "offline", label: "下架小卡" }]
+          : []),
+        ...(canEdit && editable(c.status)
+          ? [{ key: "submit", label: "提交审核" }]
+          : []),
+        ...(canPublish && editable(c.status)
+          ? [{ key: "archive", label: "归档" }]
+          : []),
+        ...(canPublish && c.status === "ARCHIVED"
+          ? [{ key: "restore", label: "恢复为草稿" }]
+          : []),
+        ...(canDelete && ["DRAFT", "OFFLINE", "ARCHIVED"].includes(c.status)
+          ? [{ key: "delete", label: "删除", danger: true }]
+          : []),
+        { key: "history", label: "查看图片来源" },
+      ].map((item) => ({
         ...item,
         onClick: () => {
           const key = item.key;
@@ -567,7 +557,7 @@ export default function Cards() {
             }}
           />
         </TableToolbar>
-        {selected.length > 0 && (
+        {canSelect && selected.length > 0 && (
           <div className="table-meta">
             <span>
               {selected.length
@@ -575,13 +565,15 @@ export default function Cards() {
                 : `共 ${filtered.length} 张小卡`}
               {selected.length > 0 && (
                 <Space className="batch-actions">
-                  <Button
-                    size="small"
-                    onClick={() => act("submit")}
-                    loading={busy}
-                  >
-                    提交审核
-                  </Button>
+                  {canEdit && (
+                    <Button
+                      size="small"
+                      onClick={() => act("submit")}
+                      loading={busy}
+                    >
+                      提交审核
+                    </Button>
+                  )}
                   {canPublish && (
                     <Button size="small" onClick={() => confirm("publish")}>
                       批量发布
@@ -597,7 +589,7 @@ export default function Cards() {
                       </Button>
                     </>
                   )}
-                  {canPublish && (
+                  {canDelete && (
                     <Button
                       danger
                       size="small"
@@ -655,7 +647,7 @@ export default function Cards() {
             createLabel="新增小卡"
             loading={loading}
             rowSelection={
-              canEdit
+              canSelect
                 ? {
                     selectedRowKeys: selected,
                     onChange: setSelected,

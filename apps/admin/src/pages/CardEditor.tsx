@@ -1,3 +1,7 @@
+import CardDuplicateWarning, {
+  useCardDuplicateCheck,
+} from "../components/CardDuplicateWarning";
+import { canPermission } from "../api/permissions";
 import { formatTime } from "../design/format";
 import { Form, Modal, useSingleSubmit } from "../components/admin";
 import TagSelect from "../components/TagSelect";
@@ -34,13 +38,8 @@ import {
   SendOutlined,
 } from "@ant-design/icons";
 import { ApiError, consoleApi, send } from "../api/client";
-import type { Card, FieldError, SourceInfo } from "../api/types";
-import {
-  emptyCard,
-  emptySource,
-  sourceKinds,
-  sourceLabels,
-} from "../api/types";
+import type { Card, FieldError } from "../api/types";
+import { emptyCard, sourceKinds, sourceLabels } from "../api/types";
 import { useConsole } from "../state";
 import {
   AppPreview,
@@ -64,24 +63,6 @@ const stepTitles = [
   "App 预览",
   "审核发布",
 ];
-const copyrightOptions = [
-  { value: "UNKNOWN", label: "待确认" },
-  { value: "OFFICIAL_SOURCE", label: "官方来源" },
-  { value: "AUTHORIZED", label: "已授权" },
-  { value: "FAIR_USE_REVIEW", label: "使用审核中" },
-  { value: "RESTRICTED", label: "限制使用" },
-  { value: "REMOVED", label: "已移除" },
-];
-const sourceOptions = [
-  { value: "OFFICIAL", label: "官方来源" },
-  { value: "SOCIAL_MEDIA", label: "社交媒体" },
-  { value: "ADMIN_UPLOAD", label: "运营上传" },
-  { value: "USER_SUBMITTED", label: "用户提交" },
-  { value: "PARTNER", label: "合作方" },
-  { value: "PUBLIC_DATABASE", label: "公开数据库" },
-  { value: "OTHER", label: "其他" },
-];
-
 export default function CardEditor() {
   const { id } = useParams();
   const location = useLocation();
@@ -105,6 +86,11 @@ export default function CardEditor() {
         }
       : {}),
   });
+  const duplicateCheck = useCardDuplicateCheck(
+    data.image_url || undefined,
+    isNew ? undefined : id,
+    isNew || initial?.status === "DRAFT" || initial?.status === "PENDING",
+  );
   const [step, setStep] = useState(
     savedErrors.length
       ? (fieldSteps[savedErrors[0].field.split(".")[0]] ?? 3)
@@ -159,7 +145,7 @@ export default function CardEditor() {
   const loaded = useRef(false);
   const canEdit =
     (isNew || (!!initial && editable(initial.status))) &&
-    actor.role !== "operation_admin";
+    canPermission(actor, "catalog.edit");
   useEffect(() => {
     if (initial && !loaded.current) {
       setData({ ...emptyCard(), ...initial });
@@ -182,6 +168,8 @@ export default function CardEditor() {
   useEffect(() => {
     if (params.get("tab") === "history" && initial) loadHistory();
   }, [initial?.id]);
+  const currentData = useRef(data);
+  currentData.current = data;
   const update = (key: string, value: any) => {
     setData((d) => ({
       ...d,
@@ -194,11 +182,6 @@ export default function CardEditor() {
     setErrors((e) => e.filter((x) => x.field !== key));
     setDirty(true);
   };
-  const setSource = (
-    key: "source_info" | "front_source" | "back_source",
-    field: keyof SourceInfo,
-    value: string,
-  ) => update(key, { ...(data[key] || emptySource()), [field]: value });
   const group = catalog.groups.find((g) => g.id === data.group_id);
   const idol = catalog.idols.find((i) => i.id === data.idol_id);
   const members = groupMembers(
@@ -286,73 +269,6 @@ export default function CardEditor() {
         )}
     </>
   );
-  const sourceFields = (
-    key: "front_source" | "back_source" | "source_info",
-    short = false,
-  ) => (
-    <div className="form-grid">
-      {field(
-        `${key}.source_type`,
-        "来源类型",
-        <Select
-          value={data[key]?.source_type || "ADMIN_UPLOAD"}
-          onChange={(v) => setSource(key, "source_type", v)}
-          options={sourceOptions}
-        />,
-      )}
-      {field(
-        `${key}.copyright_status`,
-        "版权状态",
-        <Select
-          value={data[key]?.copyright_status || "UNKNOWN"}
-          onChange={(v) => setSource(key, "copyright_status", v)}
-          options={copyrightOptions}
-        />,
-      )}
-      <div className="span-two">
-        {field(
-          `${key}.source_url`,
-          short ? "原始来源链接" : "来源链接 Source URL",
-          <Input
-            value={data[key]?.source_url}
-            placeholder="https:// 官方页面或来源地址"
-            onChange={(e) => setSource(key, "source_url", e.target.value)}
-          />,
-          key !== "source_info" && data[key]?.source_type !== "USER_SUBMITTED",
-        )}
-      </div>
-      {!short && (
-        <>
-          <div>
-            {field(
-              `${key}.source_platform`,
-              "来源平台",
-              <Input
-                value={data[key]?.source_platform}
-                placeholder="如：Official Store / Instagram"
-                onChange={(e) =>
-                  setSource(key, "source_platform", e.target.value)
-                }
-              />,
-            )}
-          </div>
-          <div>
-            {field(
-              `${key}.copyright_note`,
-              "授权说明",
-              <Input
-                value={data[key]?.copyright_note}
-                placeholder="授权凭证、许可范围或审核说明"
-                onChange={(e) =>
-                  setSource(key, "copyright_note", e.target.value)
-                }
-              />,
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  );
   function showErrors(list: FieldError[]) {
     setErrors(list);
     if (list.length) {
@@ -373,6 +289,11 @@ export default function CardEditor() {
     setBusy(true);
     let saved: Card | undefined;
     try {
+      if (!(await duplicateCheck.confirm())) return;
+      if (currentData.current !== data) {
+        message.info("图片或表单已更新，请核对后重新保存");
+        return;
+      }
       const result = await consoleApi<Card>(
         isNew ? "/cards" : `/cards/${id}`,
         send(
@@ -414,8 +335,10 @@ export default function CardEditor() {
     }
   });
   async function action(action: string) {
+    if (busy) return;
     setBusy(true);
     try {
+      if (action === "publish" && !(await duplicateCheck.confirm())) return;
       await consoleApi(`/cards/${id}/actions`, send({ action, reason }));
       message.success(
         action === "publish" ? "小卡已发布，App 图鉴已更新" : "操作成功",
@@ -467,7 +390,7 @@ export default function CardEditor() {
     <div className="editor-page">
       <div className="editor-heading">
         <div>
-          <button className="back-link" onClick={leave}>
+          <button className="back-link" onClick={leave} disabled={busy}>
             <ArrowLeftOutlined aria-hidden="true" /> 返回小卡列表
           </button>
           <h1>
@@ -482,7 +405,10 @@ export default function CardEditor() {
         </div>
         <Space>
           {!isNew && (
-            <Button onClick={() => navigate(`/catalog/cards/${id}/detail`)}>
+            <Button
+              disabled={busy}
+              onClick={() => navigate(`/catalog/cards/${id}/detail`)}
+            >
               档案详情
             </Button>
           )}
@@ -502,11 +428,12 @@ export default function CardEditor() {
           </Button>
         </Space>
       </div>
+      <CardDuplicateWarning check={duplicateCheck} />
       <section className="panel wizard-steps">
         <Steps
           size="small"
           current={step}
-          onChange={setStep}
+          onChange={busy ? undefined : setStep}
           items={stepTitles.map((title, index) => ({
             title,
             description: `STEP 0${index + 1}`,
@@ -546,7 +473,7 @@ export default function CardEditor() {
           style={{ marginBottom: 16 }}
         />
       )}
-      <Form layout="vertical" disabled={!canEdit} requiredMark>
+      <Form layout="vertical" disabled={!canEdit || busy} requiredMark>
         {step === 0 && (
           <Panel
             title="01 / 选择所属组合"
@@ -568,7 +495,7 @@ export default function CardEditor() {
                 .map((g) => (
                   <button
                     type="button"
-                    disabled={!canEdit}
+                    disabled={!canEdit || busy}
                     className={`selection-card ${data.group_id === g.id ? "selected" : ""}`}
                     key={g.id}
                     onClick={() => {
@@ -659,7 +586,7 @@ export default function CardEditor() {
               {members.map((i) => (
                 <button
                   type="button"
-                  disabled={!canEdit || data.is_group_pc}
+                  disabled={!canEdit || busy || data.is_group_pc}
                   key={i.id}
                   className={`selection-card ${data.idol_id === i.id ? "selected" : ""}`}
                   onClick={() => update("idol_id", i.id)}
@@ -700,7 +627,7 @@ export default function CardEditor() {
               {Object.entries(sourceLabels).map(([v, l]) => (
                 <button
                   type="button"
-                  disabled={!canEdit}
+                  disabled={!canEdit || busy}
                   key={v}
                   className={data.source_entity_type === v ? "selected" : ""}
                   onClick={() => {
@@ -969,7 +896,7 @@ export default function CardEditor() {
                       </span>
                       <ImageUpload
                         cropCard
-                        disabled={!canEdit}
+                        disabled={!canEdit || busy}
                         value={data[key]}
                         label={i ? "背面图片" : "正面图片"}
                         onChange={(v) => update(key, v)}
@@ -982,12 +909,6 @@ export default function CardEditor() {
                 </p>
               </Panel>
             </div>
-            <Panel
-              title="来源与版权"
-              extra={<Tag color="purple">仅内部可见</Tag>}
-            >
-              {sourceFields("source_info")}
-            </Panel>
           </>
         )}
         {step === 4 && (
@@ -998,14 +919,13 @@ export default function CardEditor() {
                 "Front Image",
                 <ImageUpload
                   cropCard
-                  disabled={!canEdit}
+                  disabled={!canEdit || busy}
                   label="正面图片"
                   value={data.image_url}
                   onChange={(v) => update("image_url", v)}
                 />,
                 true,
               )}
-              {sourceFields("front_source")}
             </Panel>
             <Panel title="背面图片" subtitle="双面卡需要同时上传背面。">
               {field(
@@ -1013,14 +933,13 @@ export default function CardEditor() {
                 "Back Image",
                 <ImageUpload
                   cropCard
-                  disabled={!canEdit}
+                  disabled={!canEdit || busy}
                   label="背面图片"
                   value={data.back_image_url}
                   onChange={(v) => update("back_image_url", v)}
                 />,
                 data.is_double_sided,
               )}
-              {sourceFields("back_source")}
             </Panel>
           </div>
         )}
@@ -1218,13 +1137,6 @@ export default function CardEditor() {
                   !!data.image_url &&
                   (!data.is_double_sided || !!data.back_image_url),
               },
-              {
-                label: "图片来源和版权已确认",
-                ok:
-                  validateCard(data, true).filter((e) =>
-                    e.field.includes("source."),
-                  ).length === 0,
-              },
             ].map((c) => (
               <div key={c.label} className={c.ok ? "complete" : ""}>
                 <CheckCircleOutlined aria-hidden="true" />
@@ -1236,16 +1148,20 @@ export default function CardEditor() {
         </Panel>
       )}
       <div className="editor-footer">
-        <Button onClick={leave}>取消</Button>
+        <Button onClick={leave} disabled={busy}>
+          取消
+        </Button>
         <span className="save-state">
           {dirty ? "有未保存的修改" : isNew ? "新建小卡档案" : "所有修改已保存"}
         </span>
         <Space>
           {step > 0 && (
-            <Button onClick={() => setStep(step - 1)}>上一步</Button>
+            <Button disabled={busy} onClick={() => setStep(step - 1)}>
+              上一步
+            </Button>
           )}
           {step < 7 && (
-            <Button onClick={() => setStep(step + 1)}>
+            <Button disabled={busy} onClick={() => setStep(step + 1)}>
               下一步 <ArrowRightOutlined aria-hidden="true" />
             </Button>
           )}
@@ -1268,28 +1184,29 @@ export default function CardEditor() {
               </Button>
             </>
           )}
-          {initial?.status === "PENDING" && actor.role === "admin" && (
-            <>
-              <Button onClick={() => setRejectOpen(true)}>驳回</Button>
-              <Button
-                type="primary"
-                loading={busy}
-                onClick={() =>
-                  modal.confirm({
-                    title: "确认审核通过并发布？",
-                    content: "发布后小卡将出现在 App 图鉴中。",
-                    onOk: () => action("publish"),
-                    okText: "确认发布",
-                    cancelText: "取消",
-                  })
-                }
-              >
-                审核通过并发布
-              </Button>
-            </>
-          )}
+          {initial?.status === "PENDING" &&
+            canPermission(actor, "catalog.publish") && (
+              <>
+                <Button onClick={() => setRejectOpen(true)}>驳回</Button>
+                <Button
+                  type="primary"
+                  loading={busy}
+                  onClick={() =>
+                    modal.confirm({
+                      title: "确认审核通过并发布？",
+                      content: "发布后小卡将出现在 App 图鉴中。",
+                      onOk: () => action("publish"),
+                      okText: "确认发布",
+                      cancelText: "取消",
+                    })
+                  }
+                >
+                  审核通过并发布
+                </Button>
+              </>
+            )}
           {initial?.status === "PUBLISHED" &&
-            actor.role !== "operation_admin" && (
+            canPermission(actor, "catalog.edit") && (
               <Button
                 onClick={() =>
                   modal.confirm({

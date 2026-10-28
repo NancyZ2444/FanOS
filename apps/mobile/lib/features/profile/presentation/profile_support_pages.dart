@@ -1,4 +1,4 @@
-import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/api/api_client.dart';
 import 'package:fan_os/core/data/profile_models.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
@@ -142,69 +142,108 @@ class ProfileRelationsPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final isFollowers = type == 'followers';
     final relation = ref.watch(profileRelationshipProvider);
-    final users = DemoUserProfiles.users.where((user) {
-      if (userId != 'current-user') return true;
-      return isFollowers
-          ? relation.followsMeIds.contains(user.id)
-          : relation.followingIds.contains(user.id);
-    }).toList();
+    final request = (userId: userId, type: type);
+    final usersAsync = ref.watch(userRelationsProvider(request));
+    final currentUserId = ref.watch(sessionProvider).userId;
 
     return Scaffold(
       appBar: AppBar(title: Text(isFollowers ? '粉丝' : '关注')),
-      body: users.isEmpty
-          ? FanEmptyState(
-              icon: isFollowers
-                  ? Icons.people_outline_rounded
-                  : Icons.person_add_alt_rounded,
-              title: isFollowers ? '还没有粉丝' : '还没有关注任何人',
-              message: '从搜索或其他用户主页发现同好。',
-            )
-          : ListView.separated(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 30),
-              itemCount: users.length,
-              separatorBuilder: (_, _) => const Divider(height: 1, indent: 66),
-              itemBuilder: (context, index) {
-                final user = users[index];
-                final status = relation.statusFor(user.id);
-                return ListTile(
-                  contentPadding: const EdgeInsets.symmetric(vertical: 5),
-                  onTap: () => context.push('/user/${user.id}'),
-                  leading: CircleAvatar(
-                    backgroundColor: FanColors.lavenderSoft,
-                    child: Text(
-                      user.initial,
+      body: usersAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (error, _) => FanEmptyState(
+          icon: error is ApiException && error.statusCode == 403
+              ? Icons.lock_outline
+              : Icons.cloud_off_outlined,
+          title: error is ApiException && error.statusCode == 403
+              ? '对方暂未公开该列表'
+              : '列表加载失败',
+          message: error is ApiException && error.statusCode == 403
+              ? '关注和粉丝列表由对方设置可见范围。'
+              : '请检查网络后重试。',
+          actionLabel: error is ApiException && error.statusCode == 403
+              ? null
+              : '重试',
+          onAction: () => ref.invalidate(userRelationsProvider(request)),
+        ),
+        data: (users) => users.isEmpty
+            ? FanEmptyState(
+                icon: isFollowers
+                    ? Icons.people_outline_rounded
+                    : Icons.person_add_alt_rounded,
+                title: isFollowers ? '还没有粉丝' : '还没有关注任何人',
+                message: '从搜索或其他用户主页发现同好。',
+              )
+            : ListView.separated(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 30),
+                itemCount: users.length,
+                separatorBuilder: (_, _) =>
+                    const Divider(height: 1, indent: 66),
+                itemBuilder: (context, index) {
+                  final user = users[index];
+                  final status = relation.statusFor(
+                    user.id,
+                    fallback: user.relationStatus,
+                  );
+                  return ListTile(
+                    contentPadding: const EdgeInsets.symmetric(vertical: 5),
+                    onTap: () => context.push('/user/${user.id}'),
+                    leading: ClipOval(
+                      child: SizedBox(
+                        width: 44,
+                        height: 44,
+                        child: FanImage(
+                          imageUrl: user.avatarPath,
+                          fallback: Center(child: Text(user.initial)),
+                        ),
+                      ),
+                    ),
+                    title: Text(
+                      user.displayName,
                       style: const TextStyle(fontWeight: FontWeight.w800),
                     ),
-                  ),
-                  title: Text(
-                    user.displayName,
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  subtitle: Text(
-                    'Lv.${user.level}${user.primaryIdolId == null ? '' : ' · ★ ${_idolLabel(user.primaryIdolId)}'}',
-                  ),
-                  trailing: userId == 'current-user'
-                      ? _RelationAction(
-                          status: status,
-                          busy: relation.busyUserIds.contains(user.id),
-                          onPressed: () => ref
-                              .read(profileRelationshipProvider.notifier)
-                              .toggleFollow(user.id),
-                        )
-                      : const Icon(Icons.chevron_right_rounded),
-                );
-              },
-            ),
+                    subtitle: Text(
+                      user.bio.isEmpty ? 'Lv.${user.level}' : user.bio,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing:
+                        userId == currentUserId && user.id != currentUserId
+                        ? _RelationAction(
+                            status: status,
+                            busy: relation.busyUserIds.contains(user.id),
+                            onPressed: () async {
+                              try {
+                                await ref
+                                    .read(profileRelationshipProvider.notifier)
+                                    .toggleFollow(
+                                      user.id,
+                                      currentStatus: status,
+                                    );
+                              } catch (_) {
+                                if (!context.mounted) return;
+                                await showDialog<void>(
+                                  context: context,
+                                  builder: (context) => AlertDialog(
+                                    title: const Text('关注状态未更新'),
+                                    content: const Text('请检查网络后重试，原有关注状态未改变。'),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(context),
+                                        child: const Text('知道了'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }
+                            },
+                          )
+                        : const Icon(Icons.chevron_right_rounded),
+                  );
+                },
+              ),
+      ),
     );
   }
-
-  String _idolLabel(String? id) => switch (id) {
-    'idol-aria' => 'Aria',
-    'idol-lin' => 'Lin',
-    'idol-mina' => 'Mina',
-    'idol-yuna' => 'Yuna',
-    _ => '未设置',
-  };
 }
 
 class _RelationAction extends StatelessWidget {

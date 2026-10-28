@@ -1,14 +1,11 @@
-def test_health_login_and_catalog_contract(client):
+def test_health_login_and_catalog_contract(client, auth_headers):
     health = client.get("/health")
     assert health.status_code == 200
     assert health.json()["data"]["status"] == "ok"
 
-    login = client.post(
-        "/api/v1/auth/login",
-        json={"method": "phone", "phone": "13800000000", "code": "666666"},
-    )
+    login = client.get("/api/v1/me/profile", headers=auth_headers)
     assert login.status_code == 200
-    assert login.json()["data"]["user"]["id"] == "current-user"
+    assert login.json()["data"]["id"] == "current-user"
 
     catalog = client.get("/api/v1/catalog/bootstrap").json()["data"]
     assert len(catalog["groups"]) == 3

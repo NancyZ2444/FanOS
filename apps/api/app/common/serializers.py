@@ -183,7 +183,32 @@ def relationship_status(db: Session, viewer_id: str, target_id: str) -> str:
     return "none"
 
 
+def social_counts(db: Session, user_id: str) -> tuple[int, int]:
+    """Count the same active accounts returned by the relationship lists."""
+    following = db.scalar(
+        select(func.count(User.id))
+        .join(UserFollow, UserFollow.following_id == User.id)
+        .where(UserFollow.follower_id == user_id, User.is_active.is_(True))
+    ) or 0
+    followers = db.scalar(
+        select(func.count(User.id))
+        .join(UserFollow, UserFollow.follower_id == User.id)
+        .where(UserFollow.following_id == user_id, User.is_active.is_(True))
+    ) or 0
+    return following, followers
+
+
 def profile_payload(db: Session, user: User, viewer: User | None = None) -> dict[str, object]:
+    from app.auth_models import TrustedIdentity
+    from app.modules.auth.service import user_payload
+
+    identity = db.scalar(
+        select(TrustedIdentity).where(
+            TrustedIdentity.user_id == user.id, TrustedIdentity.provider == "weibo"
+        )
+    )
+    auth_flags = user_payload(user, db)
+    weibo_profile_url = identity.profile_url if identity and user.weibo_visible else None
     is_self = viewer is not None and viewer.id == user.id
     favorite_rows = db.scalars(
         select(UserIdol)
@@ -203,23 +228,18 @@ def profile_payload(db: Session, user: User, viewer: User | None = None) -> dict
         select(CardAlbum).where(CardAlbum.user_id == user.id, CardAlbum.status != "DELETED")
     ).all()
     photos = db.scalars(select(ProfilePhoto).where(ProfilePhoto.user_id == user.id)).all()
-    following_count = (
-        db.scalar(
-            select(func.count()).select_from(UserFollow).where(UserFollow.follower_id == user.id)
-        )
-        or 0
-    )
-    followers_count = (
-        db.scalar(
-            select(func.count()).select_from(UserFollow).where(UserFollow.following_id == user.id)
-        )
-        or 0
-    )
+    following_count, followers_count = social_counts(db, user.id)
     privacy = privacy_payload(user)
     visible_albums = [
         row
         for row in albums
-        if is_self or (row.is_public and row.status == "PUBLISHED" and not row.is_moderated)
+        if is_self
+        or (
+            row.is_public
+            and row.status == "PUBLISHED"
+            and not row.is_moderated
+            and not row.publication_blocked
+        )
     ]
     visible_photos = [row for row in photos if is_self or row.is_public]
     return {
@@ -237,6 +257,8 @@ def profile_payload(db: Session, user: User, viewer: User | None = None) -> dict
         "favorite_idol_ids": favorite_ids if is_self or user.favorites_visible else [],
         "following_count": following_count,
         "followers_count": followers_count,
+        "following_list_visible": user.following_list_visible,
+        "followers_list_visible": user.followers_list_visible,
         "owned": (
             {row.card_id: row.quantity for row in owned}
             if is_self or user.collection_visible
@@ -251,7 +273,11 @@ def profile_payload(db: Session, user: User, viewer: User | None = None) -> dict
         "photos": [photo_payload(row) for row in visible_photos]
         if is_self or user.photos_visible
         else None,
-        "weibo_name": f"@{user.display_name}" if user.weibo_visible else None,
+        "weibo_name": identity.display_name if identity and user.weibo_visible else None,
+        "weibo_profile_url": weibo_profile_url,
+        "weibo_url": weibo_profile_url,
+        "onboarding_completed": auth_flags["onboarding_completed"],
+        "password_setup_required": auth_flags["password_setup_required"] if is_self else None,
         "privacy": privacy if is_self else None,
         "relation_status": relationship_status(db, viewer.id, user.id)
         if viewer and not is_self

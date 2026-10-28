@@ -13,6 +13,138 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test(
+    'approximate marker is explicit and older responses remain supported',
+    () {
+      const card = {
+        'id': 'card',
+        'title': 'Card',
+        'idol_name': 'Idol',
+        'group_name': 'Group',
+        'source': '',
+        'card_type': '',
+        'version': '',
+        'release_date': '',
+        'region': '',
+      };
+      ScanCandidate parse(Object? scores) => ScanCandidate.fromJson({
+        'card': card,
+        'similarity': .99,
+        'scores': scores,
+      });
+      expect(parse({'approximate': 1}).isApproximate, isTrue);
+      expect(parse({'approximate': 1.0}).isApproximate, isTrue);
+      for (final scores in [
+        null,
+        {},
+        {'approximate': 0},
+        {'approximate': '1'},
+        {'approximate': true},
+        {'approximate': double.nan},
+      ]) {
+        expect(parse(scores).isApproximate, isFalse);
+      }
+    },
+  );
+
+  for (final status in [
+    ScanRecognitionStatus.needsConfirmation,
+    ScanRecognitionStatus.recommended,
+  ]) {
+    testWidgets(
+      'approximate $status requires individual choice before saving',
+      (tester) async {
+        final repository = _RecordingRepository();
+        final card = DemoCatalog.cards.first;
+        final container = await _mount(
+          tester,
+          repository,
+          session: _approximateSession(status),
+        );
+        expect(find.text('相似候选，需手动确认'), findsOneWidget);
+        expect(_selected(tester, 'approximate'), isFalse);
+        expect(
+          find.byKey(const Key('scan-official-approximate')),
+          findsNothing,
+        );
+        await _selectRecommended(tester);
+        expect(_selected(tester, 'approximate'), isFalse);
+        expect(
+          tester
+              .widget<FilledButton>(find.byKey(const Key('scan-batch-confirm')))
+              .onPressed,
+          isNull,
+        );
+        expect(
+          tester
+              .widget<OutlinedButton>(
+                find.byKey(const Key('scan-batch-wishlist')),
+              )
+              .onPressed,
+          isNull,
+        );
+        expect(repository.calls, isEmpty);
+        expect(container.read(collectionProvider).owned, isEmpty);
+        expect(container.read(collectionProvider).wishlist, isEmpty);
+
+        await tester.tap(
+          find.byKey(const Key('scan-region-select-approximate')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('相似结果选择'), findsOneWidget);
+        expect(find.text('相似候选，需手动确认').hitTestable(), findsOneWidget);
+        final option = find.widgetWithText(ListTile, card.displayTitle);
+        expect(
+          find.descendant(
+            of: option,
+            matching: find.byIcon(Icons.check_circle_rounded),
+          ),
+          findsNothing,
+        );
+        expect(repository.calls, isEmpty);
+        await tester.tap(option);
+        await tester.pumpAndSettle();
+        expect(_selected(tester, 'approximate'), isTrue);
+        expect(find.text('相似候选 · 已手动确认'), findsOneWidget);
+        expect(repository.calls, isEmpty);
+        expect(container.read(collectionProvider).owned, isEmpty);
+        expect(container.read(collectionProvider).wishlist, isEmpty);
+
+        await tester.tap(find.byKey(const Key('scan-batch-confirm')));
+        await tester.pumpAndSettle();
+        expect(repository.calls.single.single.cardId, card.id);
+        expect(container.read(collectionProvider).quantity(card.id), 1);
+        expect(container.read(collectionProvider).wishlist, isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('inline approximate choice still needs an explicit save', (
+    tester,
+  ) async {
+    final repository = _RecordingRepository();
+    final card = DemoCatalog.cards.first;
+    final container = await _mount(
+      tester,
+      repository,
+      session: _approximateSession(ScanRecognitionStatus.needsConfirmation),
+    );
+    await tester.tap(find.byKey(Key('scan-choose-candidate-${card.id}')));
+    await tester.pumpAndSettle();
+    expect(_selected(tester, 'approximate'), isTrue);
+    expect(repository.calls, isEmpty);
+    expect(container.read(collectionProvider).owned, isEmpty);
+    expect(container.read(collectionProvider).wishlist, isEmpty);
+    await tester.tap(find.byKey(const Key('scan-batch-wishlist')));
+    await tester.pumpAndSettle();
+    expect(repository.calls.single.single.addToWishlist, isTrue);
+    expect(repository.calls.single.single.selected, isFalse);
+    expect(container.read(collectionProvider).isWished(card.id), isTrue);
+    expect(container.read(collectionProvider).owned, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'batch likes wait for the server and keep owned actions independent',
     (tester) async {
@@ -449,6 +581,24 @@ void main() {
     });
   }
 }
+
+ScanSession _approximateSession(ScanRecognitionStatus status) => ScanSession(
+  id: 'approximate-session',
+  detectedCards: [
+    DetectedScanCard(
+      id: 'approximate',
+      cropRegion: const ScanCropRegion(x: 0, y: 0, width: 1, height: 1),
+      candidates: [
+        ScanCandidate(
+          card: DemoCatalog.cards.first,
+          similarity: .72,
+          scores: const {'approximate': 1.0},
+        ),
+      ],
+      status: status,
+    ),
+  ],
+);
 
 Future<ProviderContainer> _mount(
   WidgetTester tester,

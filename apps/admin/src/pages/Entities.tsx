@@ -1,3 +1,4 @@
+import { canPermission, companyEnabled } from "../api/permissions";
 import { TableToolbar } from "../components/admin";
 import { useSingleSubmit } from "../components/admin";
 import { FilterBar, RowActions, RecordId } from "../components/admin";
@@ -59,7 +60,10 @@ export default function Entities({ kind }: { kind: Kind }) {
     setStatus("ALL");
     setParams({});
   };
-  const canEdit = actor.role !== "operation_admin";
+  const canEdit = canPermission(actor, "catalog.edit");
+  const canPublish = canPermission(actor, "catalog.publish");
+  const canDelete = canPermission(actor, "catalog.delete");
+  const canSelect = canEdit || canPublish || canDelete;
   const readOnly = !!record && !editable(record.status);
   const items = catalog[kind].filter(
     (r) =>
@@ -228,15 +232,19 @@ export default function Entities({ kind }: { kind: Kind }) {
   };
   const label = names[kind].replace("管理", "");
   const batchActions = [
-    {
-      key: "submit",
-      label: "批量提交审核",
-      states: ["DRAFT", "REJECTED", "OFFLINE"],
-    },
-    ...(actor.role === "admin"
+    ...(canEdit
+      ? [
+          {
+            key: "submit",
+            label: "批量提交审核",
+            states: ["DRAFT", "REJECTED", "OFFLINE"],
+          },
+        ]
+      : []),
+    ...(canPublish
       ? [{ key: "publish", label: "批量发布", states: ["PENDING"] }]
       : []),
-    ...(actor.role === "admin"
+    ...(canPublish
       ? [
           { key: "offline", label: "批量下架", states: ["PUBLISHED"] },
           {
@@ -246,8 +254,10 @@ export default function Entities({ kind }: { kind: Kind }) {
           },
         ]
       : []),
-    { key: "restore", label: "恢复草稿", states: ["ARCHIVED"] },
-    ...(actor.role === "admin"
+    ...(canPublish
+      ? [{ key: "restore", label: "恢复草稿", states: ["ARCHIVED"] }]
+      : []),
+    ...(canDelete
       ? [
           {
             key: "delete",
@@ -440,7 +450,7 @@ export default function Entities({ kind }: { kind: Kind }) {
             }))}
           />
         </TableToolbar>
-        {canEdit && selected.length > 0 && (
+        {canSelect && selected.length > 0 && (
           <div className="entity-batch-bar">
             <span>
               {selected.length
@@ -503,7 +513,7 @@ export default function Entities({ kind }: { kind: Kind }) {
           onCreate={canEdit ? () => edit() : undefined}
           createLabel={`新增${label}`}
           rowSelection={
-            canEdit
+            canSelect
               ? {
                   selectedRowKeys: selected,
                   onChange: setSelected,
@@ -629,73 +639,69 @@ export default function Entities({ kind }: { kind: Kind }) {
                       ? "已发布内容需先下架，待审核内容需先驳回"
                       : undefined
                   }
-                  items={
-                    canEdit
+                  items={[
+                    ...(canEdit && editable(r.status)
                       ? [
-                          ...(editable(r.status)
-                            ? [
-                                {
-                                  key: "submit",
-                                  label: "提交审核",
-                                  onClick: () => action(r, "submit"),
-                                },
-                              ]
-                            : []),
-                          ...(actor.role === "admin" && r.status === "PENDING"
-                            ? [
-                                {
-                                  key: "publish",
-                                  label: "审核发布",
-                                  onClick: () => action(r, "publish"),
-                                },
-                                {
-                                  key: "reject",
-                                  label: "驳回审核",
-                                  onClick: () => action(r, "reject"),
-                                },
-                              ]
-                            : []),
-                          ...(actor.role === "admin" && r.status === "PUBLISHED"
-                            ? [
-                                {
-                                  key: "offline",
-                                  label: "下架",
-                                  onClick: () => action(r, "offline"),
-                                },
-                              ]
-                            : []),
-                          ...(r.status === "ARCHIVED"
-                            ? [
-                                {
-                                  key: "restore",
-                                  label: "恢复草稿",
-                                  onClick: () => action(r, "restore"),
-                                },
-                              ]
-                            : []),
-                          ...(actor.role === "admin" && editable(r.status)
-                            ? [
-                                {
-                                  key: "archive",
-                                  label: "归档",
-                                  onClick: () => action(r, "archive"),
-                                },
-                              ]
-                            : []),
-                          ...(actor.role === "admin" &&
-                          ["DRAFT", "OFFLINE", "ARCHIVED"].includes(r.status)
-                            ? [
-                                {
-                                  key: "delete",
-                                  label: "删除",
-                                  danger: true,
-                                  onClick: () => action(r, "delete"),
-                                },
-                              ]
-                            : []),
+                          {
+                            key: "submit",
+                            label: "提交审核",
+                            onClick: () => action(r, "submit"),
+                          },
                         ]
-                      : []
-                  }
+                      : []),
+                    ...(canPublish && r.status === "PENDING"
+                      ? [
+                          {
+                            key: "publish",
+                            label: "审核发布",
+                            onClick: () => action(r, "publish"),
+                          },
+                          {
+                            key: "reject",
+                            label: "驳回审核",
+                            onClick: () => action(r, "reject"),
+                          },
+                        ]
+                      : []),
+                    ...(canPublish && r.status === "PUBLISHED"
+                      ? [
+                          {
+                            key: "offline",
+                            label: "下架",
+                            onClick: () => action(r, "offline"),
+                          },
+                        ]
+                      : []),
+                    ...(canPublish && r.status === "ARCHIVED"
+                      ? [
+                          {
+                            key: "restore",
+                            label: "恢复草稿",
+                            onClick: () => action(r, "restore"),
+                          },
+                        ]
+                      : []),
+                    ...(canPublish && editable(r.status)
+                      ? [
+                          {
+                            key: "archive",
+                            label: "归档",
+                            onClick: () => action(r, "archive"),
+                          },
+                        ]
+                      : []),
+                    ...(canDelete &&
+                    ["DRAFT", "OFFLINE", "ARCHIVED"].includes(r.status)
+                      ? [
+                          {
+                            key: "delete",
+                            label: "删除",
+                            danger: true,
+                            onClick: () => action(r, "delete"),
+                          },
+                        ]
+                      : []),
+                  ]}
                 />
               ),
             },
@@ -769,8 +775,11 @@ export default function Entities({ kind }: { kind: Kind }) {
                 <Input type="date" />
               </Form.Item>
               <div className="span-two">
-                <Form.Item name="image_url" label="封面图片地址">
-                  <Input placeholder="https://…" />
+                <Form.Item name="image_url" label="封面图片">
+                  <ImageUpload
+                    label="封面图片"
+                    disabled={!canEdit || readOnly}
+                  />
                 </Form.Item>
                 <Form.Item name="description" label="说明">
                   <Input.TextArea rows={4} maxLength={2000} />
@@ -998,10 +1007,17 @@ export default function Entities({ kind }: { kind: Kind }) {
                         showSearch
                         optionFilterProp="label"
                         placeholder="请选择公司"
-                        options={companies.map((c) => ({
-                          value: c.id,
-                          label: c.data.name,
-                        }))}
+                        options={companies
+                          .filter(
+                            (c) =>
+                              companyEnabled(c) ||
+                              record?.company_ids?.includes(c.id),
+                          )
+                          .map((c) => ({
+                            value: c.id,
+                            label: `${c.data.name}${companyEnabled(c) ? "" : "（已关闭，历史关联）"}`,
+                            disabled: !companyEnabled(c),
+                          }))}
                       />
                     </Form.Item>
                     {selectedCompanies !== undefined &&
@@ -1077,49 +1093,6 @@ export default function Entities({ kind }: { kind: Kind }) {
                       label="封面图片"
                       disabled={!canEdit || readOnly}
                     />
-                  </Form.Item>
-                </div>
-              </div>
-              <h3 className="form-section-title">
-                来源与版权 <Tag>仅内部可见</Tag>
-              </h3>
-              <div className="form-grid">
-                <Form.Item
-                  name={["source_info", "source_type"]}
-                  label="来源类型"
-                >
-                  <Select
-                    options={[
-                      "OFFICIAL",
-                      "SOCIAL_MEDIA",
-                      "ADMIN_UPLOAD",
-                      "PARTNER",
-                      "OTHER",
-                    ].map((value) => ({ value, label: value }))}
-                  />
-                </Form.Item>
-                <Form.Item
-                  name={["source_info", "copyright_status"]}
-                  label="版权状态"
-                >
-                  <Select
-                    options={[
-                      "UNKNOWN",
-                      "AUTHORIZED",
-                      "OFFICIAL_SOURCE",
-                      "RESTRICTED",
-                    ].map((value) => ({ value, label: value }))}
-                  />
-                </Form.Item>
-                <div className="span-two">
-                  <Form.Item
-                    name={["source_info", "source_url"]}
-                    label="来源链接"
-                    rules={[
-                      { type: "url", message: "请输入有效的 HTTP(S) 链接" },
-                    ]}
-                  >
-                    <Input placeholder="https://" />
                   </Form.Item>
                 </div>
               </div>

@@ -11,7 +11,10 @@ from sqlalchemy.orm import Session
 from app.common.response import DomainError
 from app.common.serializers import card_payload
 from app.integrations.card_matcher.adapter import CardMatcherAdapter
-from app.integrations.card_matcher.portrait_detector import PortraitDetectorUnavailable
+from app.integrations.card_matcher.portrait_detector import (
+    PortraitDetector,
+    PortraitDetectorUnavailable,
+)
 from app.integrations.storage import get_storage
 from app.models import (
     Card,
@@ -35,6 +38,39 @@ def known_cards(db: Session) -> dict[str, str | None]:
 
 def readiness(db: Session) -> dict[str, Any]:
     return CardMatcherAdapter().readiness(known_cards(db))
+
+
+def recognition_status(ranked: list[dict[str, Any]]) -> str:
+    if not ranked or ranked[0]["similarity"] < 0.6:
+        return "unrecognized"
+    top = ranked[0]
+    # Approximate artwork is a suggestion for manual review even if a future
+    # scoring change raises its numeric score. It cannot become a sure match.
+    if (
+        not top.get("feature_scores", {}).get("approximate")
+        and top["similarity"] >= 0.9
+        and (len(ranked) == 1 or top["similarity"] - ranked[1]["similarity"] >= 0.04)
+    ):
+        return "recommended"
+    return "needs_confirmation"
+
+
+def crop_display_metadata(image: Any, region: dict[str, Any], ranked: list[dict[str, Any]]) -> dict:
+    """Persist an optional display hint without touching crop pixels/coordinates.
+
+    Verified candidate geometry is preferred and already persisted with each
+    candidate. When there is no such evidence, an upright portrait may provide
+    a fallback. This best-effort presentation step cannot fail recognition.
+    """
+    if ranked and "display_rotation_quarter_turns" in ranked[0].get("feature_scores", {}):
+        return region
+    try:
+        turns = PortraitDetector().display_rotation_quarter_turns(image)
+    except PortraitDetectorUnavailable:
+        return region
+    if turns is None:
+        return region
+    return {**region, "display_rotation_quarter_turns": turns}
 
 
 def detect(db: Session, user: User, content: bytes) -> dict[str, Any]:
@@ -64,12 +100,14 @@ def detect(db: Session, user: User, content: bytes) -> dict[str, Any]:
     db.flush()
     for region in regions:
         buffer = io.BytesIO()
-        region.crop.save(buffer, format="JPEG", quality=90)
+        # Selection matches the persisted crop. Keep those pixels identical to
+        # direct recognition; another JPEG pass can erase weak local features.
+        region.crop.save(buffer, format="PNG")
         db.add(
             DetectedCard(
                 scan_session_id=session.id,
                 crop_image_url=storage.save_bytes(
-                    buffer.getvalue(), "crop.jpg", f"scans/{user.id}/{session.id}"
+                    buffer.getvalue(), "crop.png", f"scans/{user.id}/{session.id}"
                 ),
                 crop_region=region.payload(),
                 recognition_status="detected",
@@ -102,38 +140,38 @@ def recognize_selection(db: Session, user: User, session_id: str, ids: list[str]
     if not ids or not set(ids).issubset({region.id for region in regions}):
         raise DomainError("INVALID_SCAN_SELECTION", "请选择本次照片中的小卡")
     matched_ids = {r.id for r in regions if r.recognition_status != "detected"}
+    failed_ids = {r.id for r in regions if r.recognition_status == "failed"}
     if session.status == "completed":
-        if set(ids) != matched_ids:
+        # A retry may address just failed objects; completed results stay intact.
+        if set(ids) != matched_ids and not set(ids).issubset(failed_ids):
             raise DomainError("SCAN_ALREADY_COMPLETED", "本次扫描已完成，请重新拍摄", 409)
-        return session_payload(db, session)
+        if not failed_ids.intersection(ids):
+            return session_payload(db, session)
     matcher = CardMatcherAdapter()
     cards = known_cards(db)
     if not matcher.readiness(cards)["available"]:
         raise DomainError("SCAN_INDEX_UNAVAILABLE", "图鉴识别服务暂未就绪，请稍后重试", 503)
     storage = get_storage()
+    unreadable = 0
+    attempted = 0
     for region in regions:
-        if region.id not in ids:
+        if region.id not in ids or region.recognition_status not in {"detected", "failed"}:
             continue
+        attempted += 1
         try:
             image = Image.open(io.BytesIO(storage.read_bytes(region.crop_image_url))).convert("RGB")
-        except Exception as exc:
-            # Roll back the entire matching transaction, retaining the detection session for retry.
-            raise DomainError(
-                "SCAN_IMAGE_UNAVAILABLE", "扫描照片暂时无法读取，请重试或重新拍摄", 503
-            ) from exc
+        except Exception:
+            unreadable += 1
+            region.recognition_status = "failed"
+            continue
         try:
             ranked = matcher.rank(image, cards)
         except Exception:
             logging.getLogger(__name__).exception("One selected scan region could not be matched")
-            ranked = []
-        score = ranked[0]["similarity"] if ranked else 0.0
-        region.recognition_status = (
-            "recommended"
-            if score >= 0.9 and (len(ranked) == 1 or score - ranked[1]["similarity"] >= 0.04)
-            else "needs_confirmation"
-            if score >= 0.6
-            else "unrecognized"
-        )
+            region.recognition_status = "failed"
+            continue
+        region.recognition_status = recognition_status(ranked)
+        region.crop_region = crop_display_metadata(image, region.crop_region, ranked)
         for rank, candidate in enumerate(ranked, start=1):
             db.add(
                 ScanCandidate(
@@ -144,6 +182,9 @@ def recognize_selection(db: Session, user: User, session_id: str, ids: list[str]
                     rank=rank,
                 )
             )
+    if attempted and unreadable == attempted:
+        # Preserve the existing whole-request retry for unavailable storage.
+        raise DomainError("SCAN_IMAGE_UNAVAILABLE", "扫描照片暂时无法读取，请重试或重新拍摄", 503)
     session.status = "completed"
     db.commit()
     return session_payload(db, session)
@@ -178,28 +219,20 @@ def recognize(db: Session, user: User, content: bytes, filename: str) -> dict[st
     db.flush()
     for region in regions:
         crop_buffer = io.BytesIO()
-        region.crop.save(crop_buffer, format="JPEG", quality=90)
+        region.crop.save(crop_buffer, format="PNG")
         crop_url = get_storage().save_bytes(
-            crop_buffer.getvalue(), "crop.jpg", f"scans/{user.id}/{session.id}"
+            crop_buffer.getvalue(), "crop.png", f"scans/{user.id}/{session.id}"
         )
         try:
             ranked = matcher.rank(region.crop, cards)
         except Exception:
             logging.getLogger(__name__).exception("One scan region could not be matched")
             ranked = []
-        top_score = ranked[0]["similarity"] if ranked else 0.0
-        status = (
-            "recommended"
-            if top_score >= 0.9
-            and (len(ranked) == 1 or top_score - ranked[1]["similarity"] >= 0.04)
-            else "needs_confirmation"
-            if top_score >= 0.6
-            else "unrecognized"
-        )
+        status = recognition_status(ranked)
         detected = DetectedCard(
             scan_session_id=session.id,
             crop_image_url=crop_url,
-            crop_region=region.payload(),
+            crop_region=crop_display_metadata(region.crop, region.payload(), ranked),
             recognition_status=status,
         )
         db.add(detected)
@@ -260,11 +293,25 @@ def session_payload(
                 candidate_payloads.append(
                     {"similarity": 0, "scores": {}, "card": card_payload(db, confirmed)}
                 )
+        preferred = next(
+            (
+                item
+                for item in candidate_payloads
+                if item["card"]["id"] == detected.user_confirmed_card_id
+            ),
+            candidate_payloads[0] if candidate_payloads else None,
+        )
+        rotation = (preferred or {}).get("scores", {}).get("display_rotation_quarter_turns")
+        if rotation not in (0, 1, 2, 3):
+            rotation = (detected.crop_region or {}).get("display_rotation_quarter_turns", 0)
+        if rotation not in (0, 1, 2, 3):
+            rotation = 0
         result.append(
             {
                 "detected_card_id": detected.id,
                 "crop_image_path": detected.crop_image_url if include_server_images else None,
                 "crop_region": detected.crop_region,
+                "display_rotation_quarter_turns": rotation,
                 "recognition_status": detected.recognition_status,
                 "user_confirmed_card_id": detected.user_confirmed_card_id,
                 "owned_added": detected.owned_added_at is not None,
@@ -297,7 +344,29 @@ def confirm(
             raise DomainError("CARD_NOT_FOUND", "小卡不存在", 404)
         if detected.owned_added_at and detected.user_confirmed_card_id != item.card_id:
             raise DomainError("SCAN_ALREADY_ADDED", "此扫描对象已加入收藏，请在收藏中修改", 409)
-        if item.selected:
+        if item.ensure_owned:
+            # This write serializes SQLite before the relationship read; the
+            # user lock above serializes PostgreSQL across different objects.
+            db.execute(
+                update(DetectedCard)
+                .where(DetectedCard.id == detected.id, DetectedCard.owned_added_at.is_(None))
+                .values(user_confirmed_card_id=item.card_id)
+            )
+            owned = db.scalar(
+                select(UserCollectionItem).where(
+                    UserCollectionItem.user_id == user.id,
+                    UserCollectionItem.card_id == item.card_id,
+                )
+            )
+            if owned is None:
+                owned = UserCollectionItem(user_id=user.id, card_id=item.card_id, quantity=1)
+                db.add(owned)
+                added += 1
+            elif owned.quantity < 1:
+                owned.quantity = 1
+                added += 1
+            quantities[item.card_id] = owned.quantity
+        elif item.selected:
             claim = db.execute(
                 update(DetectedCard)
                 .where(DetectedCard.id == detected.id, DetectedCard.owned_added_at.is_(None))

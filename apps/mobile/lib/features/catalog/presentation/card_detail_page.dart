@@ -4,7 +4,7 @@ import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:flutter/material.dart';
-import 'package:fan_os/features/feedback/feedback_center.dart';
+import 'package:fan_os/features/feedback/catalog_contributors.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -167,7 +167,7 @@ class _CardDetailPageState extends ConsumerState<CardDetailPage> {
                 onOpen: () => _showImagePreview(card),
               ),
               const SizedBox(height: 16),
-              CardContributors(cardId: card.id),
+              CatalogContributors(kind: 'cards', entityId: card.id),
               Text(idolName, style: Theme.of(context).textTheme.headlineMedium),
               const SizedBox(height: 2),
               Text(

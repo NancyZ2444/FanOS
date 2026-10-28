@@ -40,6 +40,7 @@ abstract class AlbumFavoritesRepository {
     String? userId,
     String? groupId,
     int offset = 0,
+    String workMode = 'ALL',
   });
   Future<void> save(String albumId, String? groupId, {bool move = false});
   Future<void> remove(String albumId);
@@ -92,10 +93,11 @@ class ApiAlbumFavoritesRepository implements AlbumFavoritesRepository {
     String? userId,
     String? groupId,
     int offset = 0,
+    String workMode = 'ALL',
   }) async => AlbumShelfData.fromJson(
     await client.getData(
       '/users/${userId ?? this.userId}/favorite-albums',
-      query: {'offset': offset, 'group_id': ?groupId},
+      query: {'offset': offset, 'group_id': ?groupId, 'work_mode': workMode},
     ) as AlbumJson,
   );
   @override
@@ -180,12 +182,17 @@ class LocalAlbumFavoritesRepository implements AlbumFavoritesRepository {
     String? userId,
     String? groupId,
     int offset = 0,
+    String workMode = 'ALL',
   }) async {
     if (userId != null) return AlbumShelfData([]);
     final data = await _load();
     final albums =
         (data['albums'] as List)
             .cast<AlbumJson>()
+            .where(
+              (a) =>
+                  workMode == 'ALL' || PhotocardAlbum(a).workMode == workMode,
+            )
             .where(
               (a) =>
                   groupId == null ||

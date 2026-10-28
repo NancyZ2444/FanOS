@@ -44,6 +44,7 @@ class _Favorites implements AlbumFavoritesRepository {
     String? userId,
     String? groupId,
     int offset = 0,
+    String workMode = 'ALL',
   }) async {
     lists.add((userId, groupId, offset));
     return AlbumShelfData([]);
@@ -63,7 +64,11 @@ class _Favorites implements AlbumFavoritesRepository {
   Future<void> remove(String albumId) async {}
 }
 
-Future<void> _mount(WidgetTester tester, _Favorites repo, {Widget? page}) async {
+Future<void> _mount(
+  WidgetTester tester,
+  _Favorites repo, {
+  Widget? page,
+}) async {
   tester.view.physicalSize = const Size(375, 812);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
@@ -189,26 +194,38 @@ void main() {
       expect(find.text('我的相册'), findsNothing);
       expect(find.byType(TextField), findsNothing);
       expect(find.text('草稿'), findsNothing);
-      expect(find.text('最近更新'), findsOneWidget);
-      await tester.tap(find.text('最近更新'));
+      expect(find.text('最近更新'), findsNothing);
+      expect(find.byTooltip('切换网格'), findsNothing);
+      await tester.tap(find.byKey(const Key('album-filter')));
       await tester.pumpAndSettle();
       expect(find.text('最近创建'), findsOneWidget);
       await tester.tap(find.text('名称'));
+      await tester.tap(find.text('确定'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('所属范围'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('我收藏的'));
       await tester.pumpAndSettle();
-      expect(find.text('按收藏时间'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('album-filter')));
+      await tester.pumpAndSettle();
+      expect(find.text('按收藏时间 · 最新收藏在前'), findsOneWidget);
       expect(find.text('名称'), findsNothing);
-      await tester.tap(find.text('我的收藏'));
+      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('我的收藏').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('确定'));
       await tester.pumpAndSettle();
       expect(repo.lists.last, (null, 'g0', 0));
-      await tester.tap(find.byTooltip('编辑分组与可见性'));
+      await tester.tap(find.byKey(const Key('album-filter')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('编辑分组与可见性'));
       await tester.pumpAndSettle();
       await tester.tap(find.byType(SwitchListTile));
       await tester.tap(find.text('保存'));
       await tester.pumpAndSettle();
       expect(repo.groups.single.isPublic, isTrue);
-      expect(find.byIcon(Icons.public), findsOneWidget);
+      expect(find.byKey(const Key('album-filter')), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -225,11 +242,20 @@ void main() {
         repo,
         page: const AlbumShelfBody(profileMode: true, userId: 'other-user'),
       );
+      await tester.tap(find.byTooltip('所属范围'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('TA 收藏的'));
       await tester.pumpAndSettle();
       expect(find.text('未分组'), findsNothing);
       expect(find.byTooltip('新建收藏分组'), findsNothing);
-      await tester.tap(find.text('公开收藏'));
+      await tester.tap(find.byKey(const Key('album-filter')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('公开收藏').last);
+      await tester.pumpAndSettle();
+      expect(find.text('编辑分组与可见性'), findsNothing);
+      await tester.tap(find.text('确定'));
       await tester.pumpAndSettle();
       expect(repo.lists.last, ('other-user', 'g0', 0));
       expect(find.byTooltip('编辑分组与可见性'), findsNothing);

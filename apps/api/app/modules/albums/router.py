@@ -13,15 +13,14 @@ from app.album_models import (
     AlbumFavoritePlacement,
     AlbumPreferences,
     AlbumReaction,
-    AlbumResource,
-    AlbumSettings,
+    AlbumWork,
 )
 from app.common.response import DomainError, success
 from app.core.database import get_db
 from app.core.security import current_admin, current_user, optional_user
 from app.models import Card, CardAlbum, Report, User, new_id
-from app.modules.admin.catalog_service import audit, permit
-from app.modules.albums import service
+from app.modules.admin.catalog_service import audit
+from app.modules.albums import materials, operations, service
 from app.modules.albums.favorites import FavoriteInput, assign_group, owned_group
 from app.modules.albums.schemas import (
     AlbumCreate,
@@ -59,8 +58,20 @@ def quota(user: User = Depends(current_user), db: Session = Depends(get_db)):
 
 
 @router.get("/albums/resources")
-def resources(db: Session = Depends(get_db)):
-    return success({"items": service.resources(db)})
+def resources(
+    scene: Literal["ALL", "SHELF", "ALBUM_COVER", "ALBUM_PAGE", "CARD_BACKGROUND"] = "ALL",
+    user: User | None = Depends(optional_user),
+    db: Session = Depends(get_db),
+):
+    plan = service.quota(db, user)["plan"] if user else "NORMAL"
+    items = []
+    for resource in service.resources(db):
+        if scene != "ALL" and resource["scene"] != scene:
+            continue
+        available = materials.allowed(resource, plan)
+        if available or resource.get("locked_preview", True):
+            items.append({**resource, "available": available})
+    return success({"items": items})
 
 
 @router.post("/albums/card-assets")
@@ -97,13 +108,24 @@ def preferences(user: User = Depends(current_user), db: Session = Depends(get_db
 def set_preferences(
     data: PreferencesPatch, user: User = Depends(current_user), db: Session = Depends(get_db)
 ):
-    available = {r["id"] for r in service.resources(db) if r["kind"] == "SHELF"}
-    if data.shelf_theme not in available:
-        raise DomainError("ALBUM_THEME_UNAVAILABLE", "书架主题暂不可用", 422)
+    resource_catalog = materials.catalog(db)
     row = db.get(AlbumPreferences, user.id)
+    if row and row.shelf_theme == data.shelf_theme:
+        historical = row.shelf_snapshot or (
+            materials.snapshot(resource_catalog[data.shelf_theme])
+            if data.shelf_theme in resource_catalog
+            else None
+        )
+    else:
+        resource = materials.require_resource(
+            resource_catalog, data.shelf_theme, service.quota(db, user)["plan"], {"SHELF"}
+        )
+        historical = materials.snapshot(resource)
     if not row:
         row = AlbumPreferences(user_id=user.id)
         db.add(row)
+    row.shelf_snapshot = historical
+    materials.mark_used(db, data.shelf_theme)
     row.shelf_theme, row.view_mode = data.shelf_theme, data.view_mode
     db.commit()
     return success(service.preferences(db, user))
@@ -114,12 +136,15 @@ def albums(
     q: str = Query(default="", max_length=50),
     status: Literal["ALL", "PUBLISHED", "DRAFT"] = "ALL",
     sort: str = "updated",
+    work_mode: Literal["ALL", "BOOK", "CARDS"] = "ALL",
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=50),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
     query = select(CardAlbum).where(CardAlbum.user_id == user.id, CardAlbum.status != "DELETED")
+    if work_mode != "ALL":
+        query = query.join(AlbumWork).where(AlbumWork.mode == work_mode)
     if status != "ALL":
         query = query.where(CardAlbum.status == status)
     if q:
@@ -152,6 +177,7 @@ def create(data: AlbumCreate, user: User = Depends(current_user), db: Session = 
 def favorites(
     q: str = Query(default="", max_length=50),
     sort: str = "updated",
+    work_mode: Literal["ALL", "BOOK", "CARDS"] = "ALL",
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=50),
     user: User = Depends(current_user),
@@ -163,11 +189,16 @@ def favorites(
         .join(CardAlbum, CardAlbum.id == AlbumReaction.album_id)
         .where(AlbumReaction.user_id == user.id, AlbumReaction.kind == "FAVORITE")
     )
+    if work_mode != "ALL":
+        query = query.join(AlbumWork, AlbumWork.album_id == CardAlbum.id).where(
+            AlbumWork.mode == work_mode
+        )
     if q:
         query = query.where(
             title.ilike(f"%{q}%"),
             CardAlbum.is_public.is_(True),
             CardAlbum.is_moderated.is_(False),
+            CardAlbum.publication_blocked.is_(False),
             CardAlbum.status == "PUBLISHED",
         )
     order = {
@@ -202,6 +233,7 @@ def public_albums(
     user_id: str,
     q: str = Query(default="", max_length=50),
     sort: str = "updated",
+    work_mode: Literal["ALL", "BOOK", "CARDS"] = "ALL",
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=50),
     viewer: User | None = Depends(optional_user),
@@ -213,11 +245,14 @@ def public_albums(
     if not owner.albums_visible and (not viewer or viewer.id != owner.id):
         return success({"items": [], "next_offset": None})
     query = select(CardAlbum).where(CardAlbum.user_id == user_id, CardAlbum.status != "DELETED")
+    if work_mode != "ALL":
+        query = query.join(AlbumWork).where(AlbumWork.mode == work_mode)
     if not viewer or viewer.id != user_id:
         query = query.where(
             CardAlbum.is_public.is_(True),
             CardAlbum.status == "PUBLISHED",
             CardAlbum.is_moderated.is_(False),
+            CardAlbum.publication_blocked.is_(False),
         )
     title = func.coalesce(CardAlbum.published_snapshot["name"].as_string(), CardAlbum.name)
     if q:
@@ -292,23 +327,33 @@ def publish(
 def duplicate(
     album_id: str, data: Revision, user: User = Depends(current_user), db: Session = Depends(get_db)
 ):
+    service.lock_quota(db, user)
     source = service.get_album(db, album_id, user, edit=True)
     if source.revision != data.revision:
         raise DomainError("ALBUM_REVISION_CONFLICT", "相册已更新，请重新加载", 409)
-    doc = service.duplicate_document(service.document(db, source))
+    source_doc = service.document(db, source)
+    materials.validate_copy(db, user, source, source_doc)
+    doc = service.duplicate_document(source_doc)
     if len(doc["pages"]) > service.quota(db, user)["max_page_per_album"]:
         raise DomainError("ALBUM_PAGE_QUOTA_EXCEEDED", "复制相册超过当前页面额度", 409)
+    if (
+        doc.get("work_mode") == "CARDS"
+        and len(service.occupied(doc)) > service.quota(db, user)["max_cards_per_work"]
+    ):
+        raise DomainError("ALBUM_CARD_QUOTA_EXCEEDED", "复制作品超过当前卡片容量", 409)
     target = service.create(
         db,
         user,
         AlbumCreate(
+            work_mode=doc.get("work_mode", "BOOK"),
             name=(source.name[:45] + " 副本"),
             description=source.description,
-            display_type=source.display_type,
-            visual_style=source.visual_style,
+            display_type=source.display_type if doc.get("work_mode") == "BOOK" else None,
+            visual_style=source.visual_style if doc.get("work_mode") == "BOOK" else None,
         ),
     )
     target.cover_config, target.card_view_config = doc["cover"], doc["card_view"]
+    db.get(AlbumWork, target.id).instances = doc.get("card_instances", [])
     service.persist_pages(db, target, doc["pages"])
     return saved(db, target, user)
 
@@ -452,6 +497,7 @@ def copy_page(
     db: Session = Depends(get_db),
 ):
     album, doc, page = edit_page(db, album_id, page_id, user)
+    materials.validate_copy(db, user, album, {"cover": {}, "card_view": {}, "pages": [page]})
     clone = deepcopy(page)
     clone["id"] = new_id("page")
     for slot in clone["slots"]:
@@ -619,13 +665,16 @@ def admin_albums(
     q: str = "",
     user_id: str = "",
     status: str = "",
+    work_mode: Literal["", "BOOK", "CARDS", "REVIEW"] = "",
     created_from: str = "",
     created_to: str = "",
     actor: User = Depends(current_admin),
     db: Session = Depends(get_db),
 ):
-    permit(actor, "reports")
+    operations.admin_read(actor)
     query = select(CardAlbum)
+    if work_mode:
+        query = query.join(AlbumWork).where(AlbumWork.mode == work_mode)
     if q:
         query = query.where(CardAlbum.name.ilike(f"%{q}%"))
     if user_id:
@@ -662,20 +711,12 @@ def moderate(
     actor: User = Depends(current_admin),
     db: Session = Depends(get_db),
 ):
-    permit(actor, "reports", "offline")
-    row = db.get(CardAlbum, album_id)
-    if not row:
-        raise DomainError("ALBUM_NOT_FOUND", "相册不存在", 404)
-    before = {"is_moderated": row.is_moderated}
-    row.is_moderated = data.offline
-    audit(db, actor, "moderate", "digital_albums", row.id, before, data.model_dump())
-    db.commit()
-    return success({"is_moderated": row.is_moderated})
+    return success(operations.moderate(db, actor, album_id, data))
 
 
 @router.get("/admin/console/album-settings")
 def admin_settings(actor: User = Depends(current_admin), db: Session = Depends(get_db)):
-    permit(actor, "reports")
+    operations.admin_read(actor)
     return success(
         {"limits": service.limits(db), "resources": service.resources(db, include_offline=True)}
     )
@@ -683,19 +724,12 @@ def admin_settings(actor: User = Depends(current_admin), db: Session = Depends(g
 
 @router.put("/admin/console/album-settings")
 def save_settings(
-    data: AlbumLimits, actor: User = Depends(current_admin), db: Session = Depends(get_db)
+    data: AlbumLimits,
+    confirm_impact: str = "",
+    actor: User = Depends(current_admin),
+    db: Session = Depends(get_db),
 ):
-    if actor.role != "admin":
-        raise DomainError("PERMISSION_DENIED", "仅系统管理员可以修改相册额度", 403)
-    row = db.get(AlbumSettings, "global")
-    before = service.limits(db)
-    if not row:
-        row = AlbumSettings(id="global")
-        db.add(row)
-    row.config = data.model_dump()
-    audit(db, actor, "configure", "album_settings", "global", before, row.config)
-    db.commit()
-    return success(service.limits(db))
+    return success(operations.save_settings(db, actor, data, confirm_impact))
 
 
 @router.put("/admin/console/album-resources/{resource_id}")
@@ -705,21 +739,9 @@ def save_resource(
     actor: User = Depends(current_admin),
     db: Session = Depends(get_db),
 ):
-    if actor.role != "admin":
-        raise DomainError("PERMISSION_DENIED", "仅系统管理员可以管理相册资源", 403)
     if resource_id != data.id:
-        raise DomainError("INVALID_RESOURCE_ID", "资源 ID 不一致", 422)
-    row = db.get(AlbumResource, resource_id)
-    before = service.resource_payload(row) if row else None
-    if not row:
-        row = AlbumResource(id=resource_id)
-        db.add(row)
-    for key, value in data.model_dump().items():
-        setattr(row, key, value)
-    db.flush()
-    audit(db, actor, "configure", "album_resources", row.id, before, service.resource_payload(row))
-    db.commit()
-    return success(service.resource_payload(row))
+        raise DomainError("INVALID_RESOURCE_ID", "素材 ID 不一致", 422)
+    return success(operations.save_resource(db, actor, data))
 
 
 @router.put("/admin/console/album-entitlements/{user_id}")
@@ -729,8 +751,7 @@ def entitlement(
     actor: User = Depends(current_admin),
     db: Session = Depends(get_db),
 ):
-    if actor.role != "admin":
-        raise DomainError("PERMISSION_DENIED", "仅系统管理员可以管理会员权益", 403)
+    operations.admin_only(actor)
     user = db.get(User, user_id)
     if not user:
         raise DomainError("USER_NOT_FOUND", "用户不存在", 404)

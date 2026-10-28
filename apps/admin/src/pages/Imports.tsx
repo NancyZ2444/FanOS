@@ -1,3 +1,7 @@
+import CardDuplicateWarning, {
+  useCardDuplicateCheck,
+} from "../components/CardDuplicateWarning";
+import { canPermission } from "../api/permissions";
 import { PageHeader } from "../components/admin";
 import { Table, Modal, Form } from "../components/admin";
 import { useEffect, useState } from "react";
@@ -145,6 +149,10 @@ export default function Imports() {
     );
   };
   const { message, modal } = App.useApp();
+  const [similarRow, setSimilarRow] = useState<{
+    image_url: string;
+    id?: string;
+  }>();
   const [tasks, setTasks] = useState<ImportTask[]>([]);
   const [task, setTask] = useState<ImportTask>();
   const [busy, setBusy] = useState(false);
@@ -234,15 +242,17 @@ export default function Imports() {
         : isAlbum
           ? `确认导入 ${task?.rows.length} 行专辑与版本数据？`
           : `确认导入 ${task?.rows.length} 条${label}？`,
-      content: isCompany
-        ? "导入后建立公司档案，可立即在组合和艺人资料中选择；已有公司不会被覆盖。"
-        : isCombined
-          ? `${skip ? "将跳过错误行。" : ""}group_id / idol_id 为空时新增对应档案，填写系统唯一 ID 时更新对应档案；公司存在时自动复用，不存在时自动创建，并同时关联组合与艺人。`
-          : isAlbum
-            ? `${skip ? "将跳过错误行。" : ""}同名且参与艺人相同的不同版本归入同一专辑；可向已有专辑追加新版本，不覆盖专辑的其他字段。新增专辑保存为草稿。`
-            : skip
-              ? "将跳过错误行，其余内容保存为草稿，之后仍需审核发布。"
-              : "导入后保存为草稿，之后仍需审核发布。",
+      content: isCard
+        ? "请先逐行核对相似小卡。导入只建立草稿，不会自动合并或发布；外部图片尚未入库时无法查重，需在图片入库后打开草稿继续核对。"
+        : isCompany
+          ? "导入后建立公司档案，可立即在组合和艺人资料中选择；已有公司不会被覆盖。"
+          : isCombined
+            ? `${skip ? "将跳过错误行。" : ""}group_id / idol_id 为空时新增对应档案，填写系统唯一 ID 时更新对应档案；公司存在时自动复用，不存在时自动创建，并同时关联组合与艺人。`
+            : isAlbum
+              ? `${skip ? "将跳过错误行。" : ""}同名且参与艺人相同的不同版本归入同一专辑；可向已有专辑追加新版本，不覆盖专辑的其他字段。新增专辑保存为草稿。`
+              : skip
+                ? "将跳过错误行，其余内容保存为草稿，之后仍需审核发布。"
+                : "导入后保存为草稿，之后仍需审核发布。",
       okText: "确认导入",
       cancelText: "返回检查",
       onOk: async () => {
@@ -336,7 +346,7 @@ export default function Imports() {
               : isCombined
                 ? "每行填写一位组合成员；group_* 与 idol_* 分别维护完整资料，系统同时建立成员及公司关系。"
                 : isCard
-                  ? "小卡需要已发布的组合、艺人与来源，并完整填写图片和版权字段。"
+                  ? "小卡需要已发布的组合、艺人与来源，并完整填写图片。"
                   : isAlbum
                     ? "name 填专辑作品名；versions 填版本名，多个版本用 | 分隔。artist_names 可填写多个组合或个人艺人名称，用 | 分隔并精确匹配已有档案。"
                     : kind === "others"
@@ -388,7 +398,7 @@ export default function Imports() {
         >
           <Upload.Dragger
             accept=".csv,.xlsx"
-            disabled={busy || actor.role === "operation_admin"}
+            disabled={busy || !canPermission(actor, "catalog.edit")}
             beforeUpload={upload}
             showUploadList={false}
           >
@@ -462,13 +472,13 @@ export default function Imports() {
               ],
               [
                 "03",
-                isCard ? "图片与版权" : "重复检查",
+                isCard ? "图片完整性" : "重复检查",
                 isCompany
                   ? "检查文件内及公司管理中同名记录，包含归档公司"
                   : isCombined
                     ? "拦截同组资料冲突、重复成员关系与同名歧义"
                     : isCard
-                      ? "检查双面卡素材、来源链接与授权状态"
+                      ? "检查小卡正面、双面卡背面及图片格式"
                       : isAlbum
                         ? "同名且参与艺人相同的不同版本归入同一专辑，重复版本报错"
                         : "检查文件内及数据库中同组合同名的记录",
@@ -497,6 +507,14 @@ export default function Imports() {
             </Space>
           }
         >
+          {isCard && (
+            <Alert
+              showIcon
+              type="warning"
+              message="新增前请核对相似小卡"
+              description="每行可打开相似卡检查。外部图片尚未入库时请在导入完成后打开草稿核对；检查不完整不代表没有重复。"
+            />
+          )}
           <div className="import-result-summary">
             <div>
               <strong>{task.rows.length}</strong>
@@ -522,6 +540,41 @@ export default function Imports() {
               scroll={{ x: isAlbum || isCombined ? 950 : 650 }}
               columns={[
                 { title: "表格行号", dataIndex: "row" },
+                ...(isCard
+                  ? [
+                      {
+                        title: "相似小卡",
+                        render: (_: unknown, r: ImportTask["rows"][number]) => (
+                          <Space wrap>
+                            <Button
+                              type="link"
+                              onClick={() =>
+                                setSimilarRow({
+                                  image_url:
+                                    catalog.cards.find(
+                                      (c) => c.id === r.created_id,
+                                    )?.image_url ||
+                                    String(r.data.image_url || ""),
+                                  id: r.created_id,
+                                })
+                              }
+                            >
+                              核对相似卡
+                            </Button>
+                            {r.created_id && (
+                              <a
+                                href={`/catalog/cards/${r.created_id}`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                打开草稿
+                              </a>
+                            )}
+                          </Space>
+                        ),
+                      },
+                    ]
+                  : []),
                 {
                   title: "修正 / 跳过",
                   render: (_, r) =>
@@ -662,7 +715,7 @@ export default function Imports() {
                   type="primary"
                   loading={busy}
                   disabled={
-                    actor.role === "operation_admin" ||
+                    !canPermission(actor, "catalog.edit") ||
                     !task.rows.length ||
                     (!!task.errors.length && !skip)
                   }
@@ -672,6 +725,24 @@ export default function Imports() {
                 </Button>
               </>
             )}
+            <Modal
+              title="核对相似小卡"
+              open={!!similarRow}
+              onCancel={() => setSimilarRow(undefined)}
+              footer={
+                <Button onClick={() => setSimilarRow(undefined)}>关闭</Button>
+              }
+              width={720}
+              destroyOnClose
+            >
+              {similarRow && (
+                <ImportedCardSimilarity
+                  key={`${similarRow.image_url}-${similarRow.id}`}
+                  imageUrl={similarRow.image_url}
+                  cardId={similarRow.id}
+                />
+              )}
+            </Modal>
           </div>
         </Panel>
       )}
@@ -732,13 +803,42 @@ export default function Imports() {
         }
       >
         <Form form={rowForm} layout="vertical">
-          {Object.keys(rawRow).map((field) => (
-            <Form.Item key={field} name={field} label={importFieldLabel(field)}>
-              <Input />
-            </Form.Item>
-          ))}
+          {Object.keys(rawRow)
+            .filter(
+              (field) =>
+                !/(source_type|source_url|copyright_status|copyright_note)$/.test(
+                  field,
+                ),
+            )
+            .map((field) => (
+              <Form.Item
+                key={field}
+                name={field}
+                label={importFieldLabel(field)}
+              >
+                <Input />
+              </Form.Item>
+            ))}
         </Form>
       </Modal>
     </>
+  );
+}
+
+function ImportedCardSimilarity({
+  imageUrl,
+  cardId,
+}: {
+  imageUrl: string;
+  cardId?: string;
+}) {
+  const check = useCardDuplicateCheck(imageUrl, cardId);
+  return imageUrl ? (
+    <CardDuplicateWarning check={check} />
+  ) : (
+    <Alert
+      type="warning"
+      message="当前没有可比对图片，请上传正面图片后核对。"
+    />
   );
 }

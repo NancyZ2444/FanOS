@@ -8,9 +8,13 @@ class StrictModel(BaseModel):
 
 
 class Background(StrictModel):
-    type: Literal["SOLID", "GRADIENT"] = "SOLID"
+    type: Literal["SOLID", "GRADIENT", "IMAGE"] = "SOLID"
     colors: list[str] = Field(default_factory=lambda: ["#E8EBE3"], min_length=1, max_length=4)
     angle: float = Field(default=45, ge=-360, le=360)
+
+    image_url: str | None = Field(default=None, max_length=1000)
+    resource_id: str | None = Field(default=None, max_length=64)
+    resource_snapshot: dict | None = None
 
     @model_validator(mode="after")
     def valid_colors(self):
@@ -44,6 +48,7 @@ class Element(StrictModel):
     rotation: float = Field(default=0, ge=-3600, le=3600)
     z_index: int = Field(default=0, ge=0, le=10000)
     style: ElementStyle = Field(default_factory=ElementStyle)
+    resource_snapshot: dict | None = None
 
     @model_validator(mode="after")
     def valid_stroke(self):
@@ -93,16 +98,25 @@ class CardView(StrictModel):
     animation_style: Literal["STACK"] = "STACK"
     default_mode: Literal["BOOK", "CARDS"] = "BOOK"
     cover_style: Literal["AUTO", "STACK_V1", "CUSTOM"] = "AUTO"
+    name_display_mode: Literal["remark", "official", "combined"] = "remark"
     display_fields: list[
         Literal["idol", "group", "source", "type", "version", "release", "region", "size"]
     ] = Field(default_factory=lambda: ["idol", "group", "source"], max_length=8)
 
 
 class AlbumCreate(StrictModel):
+    work_mode: Literal["BOOK", "CARDS"]
+    request_id: str | None = Field(default=None, min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=50)
     description: str = Field(default="", max_length=200)
-    display_type: Literal["SINGLE", "DOUBLE"] = "SINGLE"
-    visual_style: Literal["REALISTIC", "MINIMAL"] = "REALISTIC"
+    display_type: Literal["SINGLE", "DOUBLE"] | None = None
+    visual_style: Literal["REALISTIC", "MINIMAL"] | None = None
+
+    @model_validator(mode="after")
+    def mode_fields(self):
+        if self.work_mode == "CARDS" and (self.display_type or self.visual_style):
+            raise ValueError("卡片作品不接受相册展示设置")
+        return self
 
 
 class Revision(StrictModel):
@@ -110,6 +124,8 @@ class Revision(StrictModel):
 
 
 class AlbumPatch(Revision):
+    work_mode: Literal["BOOK", "CARDS"] | None = None
+    card_instances: list[Slot] | None = Field(default=None, max_length=450)
     name: str | None = Field(default=None, min_length=1, max_length=50)
     description: str | None = Field(default=None, max_length=200)
     display_type: Literal["SINGLE", "DOUBLE"] | None = None
@@ -165,11 +181,17 @@ class PreferencesPatch(StrictModel):
 
 
 class AlbumLimits(StrictModel):
+    normal_cards: int = Field(default=15, ge=1, le=450)
+    pro_cards: int = Field(default=15, ge=1, le=450)
     normal_albums: int = Field(default=10, ge=1, le=100)
     pro_albums: int = Field(default=30, ge=1, le=100)
     normal_pages: int = Field(default=10, ge=1, le=50)
     pro_pages: int = Field(default=20, ge=1, le=50)
     max_card_per_page: int = Field(default=9, ge=1, le=9)
+    normal_color_daily: int = Field(default=3, ge=0, le=10000)
+    normal_color_monthly: int = Field(default=20, ge=0, le=100000)
+    pro_color_daily: int = Field(default=30, ge=0, le=10000)
+    pro_color_monthly: int = Field(default=300, ge=0, le=100000)
     blocked_terms: list[str] = Field(default_factory=list, max_length=200)
 
 
@@ -179,10 +201,13 @@ class EntitlementPatch(StrictModel):
 
 
 class ResourcePatch(StrictModel):
-    id: str = Field(min_length=1, max_length=64)
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     name: str = Field(min_length=1, max_length=80)
-    kind: Literal["SHELF", "STICKER", "BACKGROUND"]
-    status: Literal["PUBLISHED", "OFFLINE"] = "PUBLISHED"
+    kind: Literal["SHELF", "STICKER", "BACKGROUND", "COLOR"]
+    status: Literal["DRAFT", "PUBLISHED", "OFFLINE"] = "PUBLISHED"
+    scene: Literal["SHELF", "ALBUM_COVER", "ALBUM_PAGE", "CARD_BACKGROUND"]
+    membership: Literal["ALL", "PRO"] = "ALL"
+    locked_preview: bool = True
     sort_order: int = 0
     config: dict = Field(default_factory=dict)
 
@@ -190,28 +215,47 @@ class ResourcePatch(StrictModel):
     def valid_config(self):
         import re
 
-        if self.kind == "BACKGROUND":
-            self.config = Background.model_validate(self.config).model_dump()
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("请填写素材名称")
+        if (self.kind == "SHELF") != (self.scene == "SHELF"):
+            raise ValueError("书架主题必须使用独立书架场景")
+        if self.kind == "STICKER" and self.scene not in {"ALBUM_COVER", "ALBUM_PAGE"}:
+            raise ValueError("该场景不支持贴纸")
+        if self.kind == "STICKER" and self.scene == "ALBUM_PAGE" and self.status == "PUBLISHED":
+            raise ValueError("内页贴纸暂未开放，不能上架")
+        if self.kind == "SHELF" and len(self.id) > 40:
+            raise ValueError("书架素材 ID 不能超过 40 个字符")
+        if self.kind in {"BACKGROUND", "COLOR"}:
+            parsed = Background.model_validate(self.config)
+            if parsed.resource_id or parsed.resource_snapshot:
+                raise ValueError("素材配置不能引用其他素材")
+            if self.kind == "COLOR" and parsed.type == "IMAGE":
+                raise ValueError("颜色素材不支持图片")
+            if parsed.type == "IMAGE" and not parsed.image_url:
+                raise ValueError("请选择背景图片")
+            self.config = parsed.model_dump(exclude_none=True)
         elif self.kind == "STICKER":
-            if (
-                set(self.config) != {"symbol"}
-                or not isinstance(self.config["symbol"], str)
-                or not 1 <= len(self.config["symbol"]) <= 24
-            ):
-                raise ValueError("系统贴纸须提供 1–24 个字符的 symbol")
+            symbol = self.config.get("symbol")
+            image = self.config.get("image_url")
+            if not (
+                set(self.config) == {"symbol"}
+                and isinstance(symbol, str)
+                and 1 <= len(symbol) <= 24
+            ) and not (set(self.config) == {"image_url"} and isinstance(image, str) and image):
+                raise ValueError("贴纸须提供符号或已上传图片")
         else:
             colors = self.config.get("colors", [])
             ledge = self.config.get("ledge", "")
             if (
-                set(self.config) != {"colors", "ledge"}
-                or not isinstance(colors, list)
+                set(self.config) - {"colors", "ledge", "image_url"}
                 or not 2 <= len(colors) <= 4
                 or any(
                     not isinstance(c, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", c)
                     for c in [*colors, ledge]
                 )
             ):
-                raise ValueError("书架须提供 2–4 个 #RRGGBB 颜色和 ledge 颜色")
+                raise ValueError("书架须提供 2–4 个 #RRGGBB 颜色和层板颜色")
         return self
 
 
@@ -224,5 +268,38 @@ class AlbumReport(StrictModel):
 
 
 class ModerationPatch(StrictModel):
-    offline: bool
+    offline: bool | None = None
+    status: Literal["NORMAL", "RESTRICTED", "OFFLINE"] | None = None
+    reason_code: Literal[
+        "PORNOGRAPHY",
+        "ILLEGAL",
+        "PRIVACY",
+        "COPYRIGHT",
+        "MALICIOUS",
+        "SPAM",
+        "TEXT",
+        "IMAGE",
+        "OTHER",
+    ] = "OTHER"
     reason: str = Field(min_length=1, max_length=200)
+    note: str = Field(default="", max_length=1000)
+    resolve_report_ids: list[str] = Field(default_factory=list, max_length=200)
+    review_id: str | None = None
+
+    @model_validator(mode="after")
+    def valid_action(self):
+        self.reason = self.reason.strip()
+        if not self.reason or (self.status is None and self.offline is None):
+            raise ValueError("请选择处理动作并填写原因")
+        if (
+            self.status is not None
+            and self.offline is not None
+            and self.offline != (self.status != "NORMAL")
+        ):
+            raise ValueError("处理状态不一致")
+        return self
+
+
+class ReviewReject(StrictModel):
+    review_id: str
+    reason: str = Field(min_length=1, max_length=500)

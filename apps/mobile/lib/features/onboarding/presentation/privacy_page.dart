@@ -1,3 +1,4 @@
+import 'package:fan_os/features/onboarding/presentation/auth_help_page.dart';
 import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/widgets/fan_widgets.dart';
 import 'package:flutter/material.dart';
@@ -55,8 +56,13 @@ class _PrivacyPageState extends State<PrivacyPage> {
                           title: Text(agreements[i].$2),
                           subtitle: Text(agreements[i].$3),
                           trailing: const Icon(Icons.chevron_right_rounded),
-                          onTap: () =>
-                              showFanToast(context, '${agreements[i].$2}为演示内容'),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute<void>(
+                              builder: (_) =>
+                                  AuthLegalPage(title: agreements[i].$2),
+                            ),
+                          ),
                         ),
                         if (i < agreements.length - 1)
                           const Divider(height: 1, indent: 56),
@@ -108,7 +114,7 @@ class _PrivacyPageState extends State<PrivacyPage> {
                 child: FilledButton(
                   key: const Key('privacy-agree-continue'),
                   onPressed: _agreed
-                      ? () => context.pushReplacement('/login')
+                      ? () => context.go('/login?from=/home')
                       : null,
                   child: Text(_agreed ? '同意并继续' : '请先勾选协议'),
                 ),

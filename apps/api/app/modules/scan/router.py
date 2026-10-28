@@ -129,6 +129,11 @@ def _source_matches(
     return True
 
 
+def _legacy_version_id(source_id: str, name: str) -> str:
+    digest = sha256(f"{source_id}\0{name}".encode()).hexdigest()[:32]
+    return f"legacy_version_{digest}"
+
+
 def _source_versions(db: Session, kind: str, row) -> list[dict[str, str]]:
     from app.modules.admin.catalog_extensions import CatalogRecord
 
@@ -151,8 +156,7 @@ def _source_versions(db: Session, kind: str, row) -> list[dict[str, str]]:
     structural_names = {str(record.data.get("name", "")).casefold() for record in records}
     for name in getattr(row, "versions", []) or []:
         if isinstance(name, str) and name and name.casefold() not in structural_names:
-            digest = sha256(f"{row.id}\0{name}".encode()).hexdigest()[:32]
-            result.append({"id": f"legacy_version_{digest}", "name": name})
+            result.append({"id": _legacy_version_id(row.id, name), "name": name})
             structural_names.add(name.casefold())
     return result
 
@@ -182,9 +186,25 @@ def _validate_source_reference(db: Session, payload: dict) -> dict:
         raise DomainError("INVALID_FEEDBACK", "来源不存在、尚未发布或不属于所选组合/艺人")
     result["source_name"] = _source_name(row)
     if version_id := payload.get("source_version_id"):
-        version = next((v for v in _source_versions(db, kind, row) if v["id"] == version_id), None)
+        versions = _source_versions(db, kind, row)
+        version = next((v for v in versions if v["id"] == version_id), None)
+        if version is None and str(version_id).startswith("legacy_version_"):
+            from app.modules.admin.album_versions import version_key
+
+            # Saving an operator draft materializes legacy names into real version
+            # records. Keep previously submitted references usable for resubmission,
+            # while resolving only within this source and its currently active versions.
+            legacy_names = {
+                version_key(name)
+                for name in getattr(row, "versions", []) or []
+                if isinstance(name, str) and version_id == _legacy_version_id(row.id, name)
+            }
+            matches = [v for v in versions if version_key(v["name"]) in legacy_names]
+            if len(matches) == 1:
+                version = matches[0]
         if version is None:
             raise DomainError("INVALID_FEEDBACK", "版本不存在、已归档或不属于所选来源")
+        result["source_version_id"] = version["id"]
         result["source_version_name"] = version["name"]
     return result
 
@@ -359,7 +379,6 @@ def scan_history(user: User = Depends(current_user), db: Session = Depends(get_d
     return success({"items": [service.session_payload(db, item) for item in sessions]})
 
 
-@router.post("/feedback")
 async def submit_feedback(
     metadata: str = Form(...),
     original_image: UploadFile | None = File(default=None),

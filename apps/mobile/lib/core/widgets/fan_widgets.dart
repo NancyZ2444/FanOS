@@ -6,6 +6,7 @@ import 'package:fan_os/core/widgets/portrait_image.dart';
 
 import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/data/models.dart';
+import 'package:fan_os/core/data/name_preferences.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,17 +15,55 @@ String entityDisplayName(
   WidgetRef ref,
   String kind,
   String id,
-  String fallback,
-) {
+  String fallback, {
+  NameDisplayMode? nameMode,
+}) {
+  if (kind != 'idols' && kind != 'groups') return fallback;
   final catalog = ref.watch(catalogProvider).value;
   if (kind == 'idols') {
-    final idol = catalog?.idols.where((i) => i.id == id).firstOrNull;
-    if (idol != null) return idol.displayName;
+    final matches = catalog?.idols
+        .where(
+          (i) => id.isNotEmpty
+              ? i.id == id
+              : fallback.isNotEmpty &&
+                    [
+                      i.name,
+                      i.nameEn,
+                      i.nameKo,
+                      i.officialDisplayName,
+                    ].contains(fallback),
+        )
+        .toList();
+    final idol = matches?.length == 1 ? matches!.single : null;
+    if (idol != null) {
+      return ref
+          .watch(namePreferencesProvider)
+          .display(kind, idol.id, idol.officialDisplayName, mode: nameMode);
+    }
   } else if (kind == 'groups') {
-    final group = catalog?.groups.where((g) => g.id == id).firstOrNull;
-    if (group != null) return group.displayName;
+    final matches = catalog?.groups
+        .where(
+          (g) => id.isNotEmpty
+              ? g.id == id
+              : fallback.isNotEmpty &&
+                    [
+                      g.name,
+                      g.nameEn,
+                      g.nameKo,
+                      g.officialDisplayName,
+                    ].contains(fallback),
+        )
+        .toList();
+    final group = matches?.length == 1 ? matches!.single : null;
+    if (group != null) {
+      return ref
+          .watch(namePreferencesProvider)
+          .display(kind, group.id, group.officialDisplayName, mode: nameMode);
+    }
   }
-  return ref.watch(namePreferencesProvider).display(kind, id, fallback);
+  return ref
+      .watch(namePreferencesProvider)
+      .display(kind, id, fallback, mode: nameMode);
 }
 
 class FanEntityName extends ConsumerWidget {
@@ -33,18 +72,19 @@ class FanEntityName extends ConsumerWidget {
     required this.id,
     required this.officialName,
     this.suffix = '',
+    this.prefix = '',
     this.style,
     this.maxLines,
     this.overflow,
     super.key,
   });
-  final String kind, id, officialName, suffix;
+  final String kind, id, officialName, suffix, prefix;
   final TextStyle? style;
   final int? maxLines;
   final TextOverflow? overflow;
   @override
   Widget build(BuildContext context, WidgetRef ref) => Text(
-    '${entityDisplayName(ref, kind, id, officialName)}$suffix',
+    '$prefix${entityDisplayName(ref, kind, id, officialName)}$suffix',
     style: style,
     maxLines: maxLines,
     overflow: overflow,
@@ -194,7 +234,9 @@ class FanImage extends StatelessWidget {
     super.key,
     this.fit = BoxFit.cover,
     this.fallbackImageUrl,
+    this.loadingPlaceholder,
   });
+  final Widget? loadingPlaceholder;
   final String? imageUrl;
   final Widget fallback;
   final BoxFit fit;
@@ -205,7 +247,12 @@ class FanImage extends StatelessWidget {
     final source = ApiClient.resolveMediaUrl(imageUrl?.trim() ?? '');
     final alternate = ApiClient.resolveMediaUrl(fallbackImageUrl?.trim() ?? '');
     final errorFallback = alternate.isNotEmpty && alternate != source
-        ? FanImage(imageUrl: alternate, fallback: fallback, fit: fit)
+        ? FanImage(
+            imageUrl: alternate,
+            fallback: fallback,
+            loadingPlaceholder: loadingPlaceholder,
+            fit: fit,
+          )
         : fallback;
     if (source.isEmpty) return errorFallback;
     final uri = Uri.tryParse(source);
@@ -217,7 +264,7 @@ class FanImage extends StatelessWidget {
         return PortraitImage(
           key: ValueKey(publicThumbnailSource(source)),
           url: publicThumbnailSource(source),
-          fallback: fallback,
+          fallback: loadingPlaceholder ?? fallback,
           errorFallback: errorFallback,
           fit: fit,
         );
@@ -228,7 +275,9 @@ class FanImage extends StatelessWidget {
         width: double.infinity,
         height: double.infinity,
         frameBuilder: (_, child, frame, synchronous) =>
-            synchronous || frame != null ? child : fallback,
+            synchronous || frame != null
+            ? child
+            : (loadingPlaceholder ?? fallback),
         errorBuilder: (_, _, _) => errorFallback,
       );
     }
@@ -793,9 +842,11 @@ class CollectibleCardTile extends StatelessWidget {
             )
           else
             FanEntityName(
-              kind: 'idols',
-              id: card.idolId,
-              officialName: card.idolName,
+              kind: card.hasIndividualIdol ? 'idols' : 'groups',
+              id: card.hasIndividualIdol ? card.idolId : card.groupId,
+              officialName: card.hasIndividualIdol
+                  ? card.officialIdolName
+                  : card.officialGroupName,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
@@ -932,12 +983,14 @@ class FanEmptyState extends StatelessWidget {
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
-                const SizedBox(height: 6),
-                Text(
-                  message,
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+                if (message.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
                 if (actionLabel != null) ...[
                   const SizedBox(height: 18),
                   SizedBox(

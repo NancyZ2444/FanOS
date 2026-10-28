@@ -7,7 +7,7 @@ BASE = "/api/v1/albums"
 
 
 def test_stacked_cover_summary_tracks_main_order_and_published_snapshot(client, auth_headers):
-    album = create(client, auth_headers)
+    album = create(client, auth_headers, mode="CARDS")
     pages = [page(["card-aria-01", "card-lin-01"] * 3)]
     ids = [s["id"] for s in pages[0]["slots"]]
     view = {
@@ -24,7 +24,7 @@ def test_stacked_cover_summary_tracks_main_order_and_published_snapshot(client, 
             client,
             auth_headers,
             album,
-            pages=pages,
+            card_instances=pages[0]["slots"],
             card_view=view,
             confirm_duplicates=True,
             visibility="PUBLIC",
@@ -66,8 +66,8 @@ def data(response):
     return response.json()["data"]
 
 
-def create(client, headers, name="我的小卡册"):
-    return data(client.post(BASE, headers=headers, json={"name": name}))
+def create(client, headers, name="我的小卡册", mode="BOOK"):
+    return data(client.post(BASE, headers=headers, json={"name": name, "work_mode": mode}))
 
 
 def page(card_ids, grid=None):
@@ -88,11 +88,11 @@ def patch(client, headers, album, **changes):
     )
 
 
-def test_private_draft_publish_and_revision_conflict(client, auth_headers, admin_headers):
+def test_private_draft_publish_and_revision_conflict(client, auth_headers, second_app_headers):
     album = create(client, auth_headers)
     assert album["visibility"] == "PRIVATE" and album["status"] == "DRAFT"
     assert client.get(f"{BASE}/{album['id']}").status_code == 403
-    assert client.get(f"{BASE}/{album['id']}", headers=admin_headers).status_code == 403
+    assert client.get(f"{BASE}/{album['id']}", headers=second_app_headers).status_code == 403
     newer = data(patch(client, auth_headers, album, name="新名称", visibility="PUBLIC"))
     assert patch(client, auth_headers, album, name="过期覆盖").status_code == 409
     assert client.get(f"{BASE}/{album['id']}").status_code == 403  # public draft is not published
@@ -213,7 +213,12 @@ def test_quota_normal_pro_expiry_and_legacy_endpoint(client, auth_headers, admin
     initial = data(client.get(f"{BASE}/quota", headers=auth_headers))["album_count"]
     for index in range(10 - initial):
         create(client, auth_headers, f"Normal {index}")
-    assert client.post(BASE, headers=auth_headers, json={"name": "第11本"}).status_code == 409
+    assert (
+        client.post(
+            BASE, headers=auth_headers, json={"name": "第11本", "work_mode": "BOOK"}
+        ).status_code
+        == 409
+    )
     assert (
         client.post(
             "/api/v1/me/card-albums", headers=auth_headers, json={"name": "旧接口绕过"}
@@ -229,7 +234,12 @@ def test_quota_normal_pro_expiry_and_legacy_endpoint(client, auth_headers, admin
     )
     for index in range(20):
         create(client, auth_headers, f"Pro {index}")
-    assert client.post(BASE, headers=auth_headers, json={"name": "第31本"}).status_code == 409
+    assert (
+        client.post(
+            BASE, headers=auth_headers, json={"name": "第31本", "work_mode": "BOOK"}
+        ).status_code
+        == 409
+    )
     album = data(client.get(BASE, headers=auth_headers))["items"][0]
     album = data(client.get(f"{BASE}/{album['id']}", headers=auth_headers))
     album = data(patch(client, auth_headers, album, pages=[page([], 1) for _ in range(20)]))
@@ -298,7 +308,7 @@ def test_copyright_redaction_on_all_views_and_snapshot(client, auth_headers):
 
 
 def test_social_favorites_are_references_and_permission_enforced(
-    client, auth_headers, admin_headers
+    client, auth_headers, second_app_headers
 ):
     album = create(client, auth_headers)
     album = data(patch(client, auth_headers, album, visibility="PUBLIC"))
@@ -311,23 +321,23 @@ def test_social_favorites_are_references_and_permission_enforced(
     )
     assert client.post(f"{BASE}/{album['id']}/like", headers=auth_headers).status_code == 422
     for _ in range(2):
-        data(client.post(f"{BASE}/{album['id']}/like", headers=admin_headers))
-        data(client.post(f"{BASE}/{album['id']}/favorite", headers=admin_headers))
-    assert data(client.get(f"{BASE}/{album['id']}", headers=admin_headers))["like_count"] == 1
-    assert patch(client, admin_headers, album, name="他人修改").status_code == 403
+        data(client.post(f"{BASE}/{album['id']}/like", headers=second_app_headers))
+        data(client.post(f"{BASE}/{album['id']}/favorite", headers=second_app_headers))
+    assert data(client.get(f"{BASE}/{album['id']}", headers=second_app_headers))["like_count"] == 1
+    assert patch(client, second_app_headers, album, name="他人修改").status_code == 403
     assert (
-        data(client.get("/api/v1/users/me/favorite-albums", headers=admin_headers))["items"][0][
-            "id"
-        ]
+        data(client.get("/api/v1/users/me/favorite-albums", headers=second_app_headers))["items"][
+            0
+        ]["id"]
         == album["id"]
     )
     album = data(patch(client, auth_headers, album, visibility="PRIVATE"))
-    assert client.get(f"{BASE}/{album['id']}", headers=admin_headers).status_code == 403
-    unavailable = data(client.get("/api/v1/users/me/favorite-albums", headers=admin_headers))[
+    assert client.get(f"{BASE}/{album['id']}", headers=second_app_headers).status_code == 403
+    unavailable = data(client.get("/api/v1/users/me/favorite-albums", headers=second_app_headers))[
         "items"
     ][0]
     assert unavailable["unavailable"]
-    data(client.delete(f"{BASE}/{album['id']}/favorite", headers=admin_headers))
+    data(client.delete(f"{BASE}/{album['id']}/favorite", headers=second_app_headers))
 
 
 def test_id_collisions_foreign_cards_and_moderation(client, auth_headers, admin_headers):
@@ -370,7 +380,7 @@ def test_id_collisions_foreign_cards_and_moderation(client, auth_headers, admin_
         client.put(
             "/api/v1/admin/console/album-settings", headers=auth_headers, json={}
         ).status_code
-        == 403
+        == 401
     )
 
 
@@ -441,7 +451,9 @@ def test_publication_cannot_bypass_moderation_via_private_publish(
     )
 
 
-def test_assets_and_system_resource_validation_and_roles(client, auth_headers, admin_headers):
+def test_assets_and_system_resource_validation_and_roles(
+    client, auth_headers, admin_headers, second_app_headers
+):
     assets = data(
         client.post(
             f"{BASE}/card-assets",
@@ -452,8 +464,14 @@ def test_assets_and_system_resource_validation_and_roles(client, auth_headers, a
     assert assets["card-aria-01"]["available"] and not assets["not-real"]["available"]
     assert client.post(f"{BASE}/card-assets", json={"card_ids": []}).status_code == 401
     path = "/api/v1/admin/console/album-resources/test-star"
-    resource = {"id": "test-star", "name": "测试贴纸", "kind": "STICKER", "config": {"symbol": "✦"}}
-    assert client.put(path, headers=auth_headers, json=resource).status_code == 403
+    resource = {
+        "id": "test-star",
+        "name": "测试贴纸",
+        "kind": "STICKER",
+        "scene": "ALBUM_COVER",
+        "config": {"symbol": "✦"},
+    }
+    assert client.put(path, headers=auth_headers, json=resource).status_code == 401
     data(client.put(path, headers=admin_headers, json=resource))
     assert (
         client.put(
@@ -482,7 +500,9 @@ def test_assets_and_system_resource_validation_and_roles(client, auth_headers, a
     )
     data(
         client.post(
-            f"{BASE}/{book['id']}/report", headers=admin_headers, json={"reason": "需要运营复核"}
+            f"{BASE}/{book['id']}/report",
+            headers=second_app_headers,
+            json={"reason": "需要运营复核"},
         )
     )
     assert (
@@ -494,7 +514,7 @@ def test_assets_and_system_resource_validation_and_roles(client, auth_headers, a
 
 
 def test_search_pagination_and_favorites_do_not_expose_unpublished_name(
-    client, auth_headers, admin_headers
+    client, auth_headers, second_app_headers
 ):
     book = create(client, auth_headers, "Published Star")
     book = data(patch(client, auth_headers, book, visibility="PUBLIC"))
@@ -505,13 +525,14 @@ def test_search_pagination_and_favorites_do_not_expose_unpublished_name(
             json={"revision": book["revision"]},
         )
     )
-    data(client.post(f"{BASE}/{book['id']}/favorite", headers=admin_headers))
+    data(client.post(f"{BASE}/{book['id']}/favorite", headers=second_app_headers))
     data(patch(client, auth_headers, book, name="Private Work In Progress"))
     path = "/api/v1/users/me/favorite-albums"
     assert (
-        len(data(client.get(path + "?q=Published&sort=name", headers=admin_headers))["items"]) == 1
+        len(data(client.get(path + "?q=Published&sort=name", headers=second_app_headers))["items"])
+        == 1
     )
-    assert data(client.get(path + "?q=Private", headers=admin_headers))["items"] == []
+    assert data(client.get(path + "?q=Private", headers=second_app_headers))["items"] == []
     public = "/api/v1/users/current-user/albums"
     assert data(client.get(public + "?q=Private"))["items"] == []
     assert len(data(client.get(public + "?q=Published"))["items"]) == 1

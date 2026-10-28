@@ -2,7 +2,7 @@ import 'package:fan_os/core/data/models.dart';
 
 enum NameDisplayMode {
   official('official', '官方名'),
-  remark('remark', '仅备注名'),
+  remark('remark', '备注优先'),
   combined('combined', '官方名（备注名）');
 
   const NameDisplayMode(this.value, this.label);
@@ -32,10 +32,22 @@ class NamePreferences {
       );
 
   String remark(String kind, String id) => aliases[kind]?[id]?.trim() ?? '';
-  String display(String kind, String id, String official) {
+  String display(
+    String kind,
+    String id,
+    String official, {
+    NameDisplayMode? mode,
+  }) {
     final value = remark(kind, id);
-    if (value.isEmpty || mode == NameDisplayMode.official) return official;
-    return mode == NameDisplayMode.remark ? value : '$official（$value）';
+    // The legacy global setting no longer overrides the remark-first rule.
+    // An explicit override is reserved for album presentation.
+    final effectiveMode = mode ?? NameDisplayMode.remark;
+    if (value.isEmpty || effectiveMode == NameDisplayMode.official) {
+      return official;
+    }
+    return effectiveMode == NameDisplayMode.remark
+        ? value
+        : '$official（$value）';
   }
 
   CatalogBundle apply(CatalogBundle data) => CatalogBundle(
@@ -44,16 +56,32 @@ class NamePreferences {
           (i) => _NamedIdol(
             i,
             this,
-            data.groups.where((g) => g.name == i.groupName).firstOrNull,
+            data.groups
+                .where(
+                  (g) => i.groupIds.contains(g.id) || g.name == i.groupName,
+                )
+                .firstOrNull,
           ),
         )
         .toList(),
     groups: data.groups.map((g) => _NamedGroup(g, this)).toList(),
     cards: data.cards.map((c) {
       final idol = data.idols.where((i) => i.id == c.idolId).firstOrNull;
-      return idol == null || !c.hasIndividualIdol
-          ? c
-          : c.withIdolName(display('idols', idol.id, idol.officialDisplayName));
+      final group = data.groups.where((g) => g.id == c.groupId).firstOrNull;
+      return c.withIdolName(
+        c.hasIndividualIdol
+            ? display(
+                'idols',
+                c.idolId,
+                idol?.officialDisplayName ?? c.officialIdolName,
+              )
+            : c.officialIdolName,
+        group: display(
+          'groups',
+          c.groupId,
+          group?.officialDisplayName ?? c.officialGroupName,
+        ),
+      );
     }).toList(),
     albums: data.albums,
     events: data.events,
@@ -74,6 +102,7 @@ class _NamedIdol extends IdolProfile {
         bio: original.bio,
         company: original.company,
         birthDate: original.birthDate,
+        debutDate: original.debutDate,
         region: original.region,
         role: original.role,
         careers: original.careers,
@@ -98,10 +127,7 @@ class _NamedIdol extends IdolProfile {
       preferences.display('idols', id, original.displayName);
   @override
   String get secondaryName =>
-      preferences.mode == NameDisplayMode.remark &&
-          preferences.remark('idols', id).isNotEmpty
-      ? ''
-      : original.secondaryName;
+      preferences.remark('idols', id).isNotEmpty ? '' : original.secondaryName;
 }
 
 class _NamedGroup extends FanGroup {
@@ -132,8 +158,5 @@ class _NamedGroup extends FanGroup {
       preferences.display('groups', id, original.displayName);
   @override
   String get secondaryName =>
-      preferences.mode == NameDisplayMode.remark &&
-          preferences.remark('groups', id).isNotEmpty
-      ? ''
-      : original.secondaryName;
+      preferences.remark('groups', id).isNotEmpty ? '' : original.secondaryName;
 }

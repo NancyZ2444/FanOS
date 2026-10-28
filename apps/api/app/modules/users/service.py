@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.common.response import DomainError
-from app.common.serializers import profile_payload, relationship_status
+from app.common.serializers import profile_payload, relationship_status, social_counts
 from app.models import Idol, User, UserFollow, UserIdol
 from app.modules.users.schemas import FavoriteUpdate, ProfilePatch
 
@@ -21,6 +21,11 @@ PRIVACY_FIELDS = {
 
 
 def update_profile(db: Session, user: User, payload: ProfilePatch) -> dict[str, object]:
+    if payload.weibo_visible:
+        from app.auth_models import TrustedIdentity
+        identity = db.scalar(select(TrustedIdentity).where(TrustedIdentity.user_id == user.id, TrustedIdentity.provider == "weibo"))
+        if not identity:
+            raise DomainError("IDENTITY_NOT_BOUND", "绑定可信微博身份后才能公开展示", 409)
     for field in ("display_name", "bio", "avatar_url", "weibo_visible"):
         value = getattr(payload, field)
         if value is not None:
@@ -73,15 +78,13 @@ def toggle_follow(db: Session, user: User, target: User, follow: bool) -> dict[s
     elif not follow and row is not None:
         db.delete(row)
     db.commit()
-    follower_count = (
-        db.scalar(
-            select(func.count()).select_from(UserFollow).where(UserFollow.following_id == target.id)
-        )
-        or 0
-    )
+    _, follower_count = social_counts(db, target.id)
+    my_following_count, my_followers_count = social_counts(db, user.id)
     return {
         "relation_status": relationship_status(db, user.id, target.id),
         "followers_count": follower_count,
+        "my_following_count": my_following_count,
+        "my_followers_count": my_followers_count,
     }
 
 
@@ -104,7 +107,10 @@ def relation_users(
     )
     ids = db.scalars(select(id_column).where(condition)).all()
     users = (
-        db.scalars(select(User).where(User.id.in_(ids), User.is_active.is_(True))).all()
+        db.scalars(
+            select(User).where(User.id.in_(ids), User.is_active.is_(True))
+            .order_by(User.display_name, User.id)
+        ).all()
         if ids
         else []
     )

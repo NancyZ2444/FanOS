@@ -1,6 +1,7 @@
 """Source selectors and trusted structured metadata for unrecognized-card feedback."""
 
 import json
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -17,6 +18,7 @@ from app.models import (
     UserWishlistItem,
 )
 from app.modules.admin.catalog_extensions import CatalogRecord
+from app.modules.feedback.models import Feedback
 
 
 def _session():
@@ -54,9 +56,16 @@ def _options(client, auth_headers, source="专辑", **params):
     )
 
 
-def _submit(client, auth_headers, metadata):
+def _submit(client, auth_headers, metadata, *, notes=""):
     return client.post(
-        "/api/v1/scan/feedback", headers=auth_headers, data={"metadata": json.dumps(metadata)}
+        "/api/v1/feedback",
+        headers=auth_headers,
+        json={
+            "kind": "MISSING_CARD",
+            "request_key": str(uuid4()),
+            "missing": metadata,
+            "notes": notes,
+        },
     )
 
 
@@ -214,69 +223,80 @@ def test_feedback_persists_trusted_source_version_and_recognition_context(client
         **_session(),
         "group_id": "group-lumina",
         "idol_id": "idol-aria",
-        "source": "专辑",
-        "source_mode": "KNOWN",
         "source_entity_type": "ALBUM",
         "source_entity_id": album["id"],
         "source_version_id": version["id"],
         "source_name": "Forged client name",
         "source_version_name": "Forged client version",
-        "ai_candidates": [{"card_id": "card-yuna-01", "similarity": 1}],
+        "ai_candidates": json.dumps([{"card_id": "card-yuna-01", "similarity": 1}]),
         "user_id": "admin-user",
         "original_image_url": "http://example.com/forged.jpg",
-        "notes": "请核对官方版本",
     }
-    response = _submit(client, auth_headers, metadata)
+    response = _submit(client, auth_headers, metadata, notes="请核对官方版本")
     assert response.status_code == 200, response.text
-    feedback_id = response.json()["data"]["feedback_id"]
-    detail = client.get(f"/api/v1/scan/feedback/{feedback_id}", headers=auth_headers).json()["data"]
-    assert detail["source_name"] == album["name"]
-    assert detail["source_version_name"] == version["name"]
-    assert detail["source_mode"] == "KNOWN"
-    assert detail["source_entity_id"] == album["id"]
-    assert detail["source_version_id"] == version["id"]
-    assert detail["group_id"] == "group-lumina" and detail["idol_id"] == "idol-aria"
+    feedback_id = response.json()["data"]["id"]
+    detail = client.get(f"/api/v1/feedback/records/{feedback_id}", headers=auth_headers)
+    assert detail.status_code == 200, detail.text
+    submission = detail.json()["data"]["submission"]
+    source = submission["missing"]
+    assert source["source_name"] == album["name"]
+    assert source["source_version_name"] == version["name"]
+    assert source["source_entity_type"] == "ALBUM"
+    assert source["source_entity_id"] == album["id"]
+    assert source["source_version_id"] == version["id"]
+    assert source["group_id"] == "group-lumina" and source["idol_id"] == "idol-aria"
+    assert submission["notes"] == "请核对官方版本"
+    assert not {"ai_candidates", "user_id", "original_image_url"} & source.keys()
     with SessionLocal() as db:
-        data = db.get(ScanFeedback, feedback_id).payload
-        assert data["user_id"] == "current-user"
-        assert data["original_image_url"] == "http://testserver/media/scan.jpg"
-        assert data["ai_candidates"] == [{"card_id": "card-aria-01", "similarity": 0.43}]
+        saved = db.get(Feedback, feedback_id)
+        assert saved.user_id == "current-user"
+        scan = saved.data["scan"]
+        assert scan["original_image_url"] == "http://testserver/media/scan.jpg"
+        assert scan["candidates"] == [{"card_id": "card-aria-01", "similarity": 0.43}]
+        assert db.scalars(select(ScanFeedback)).all() == []
 
 
 @pytest.mark.parametrize(
-    "changes",
+    ("changes", "status", "error_code"),
     [
-        {"source_entity_type": "EVENT"},
-        {"source_entity_id": "album-bloom"},
-        {"source_version_id": "missing-version"},
-        {"source_mode": "OTHER"},
-        {"source_mode": "UNCERTAIN"},
-        {"source": "签售"},
+        ({"source_entity_type": "EVENT"}, 400, "INVALID_FEEDBACK"),
+        ({"source_entity_id": "album-bloom"}, 400, "INVALID_FEEDBACK"),
+        ({"source_version_id": "missing-version"}, 400, "INVALID_FEEDBACK"),
+        ({"source_entity_type": "OTHER"}, 400, "INVALID_FEEDBACK"),
+        ({"idol_id": "idol-yuna"}, 400, "INVALID_FEEDBACK"),
+        ({"source_entity_type": "COLLECTION"}, 422, "SOURCE_REQUIRED"),
+        ({"source_entity_type": "MERCHANDISE"}, 422, "SOURCE_REQUIRED"),
+        (
+            {"source_entity_id": None, "source_version_id": "orphan-version"},
+            422,
+            "SOURCE_REQUIRED",
+        ),
     ],
 )
-def test_invalid_structured_source_references_are_rejected(client, auth_headers, changes):
+def test_invalid_structured_source_references_are_rejected(
+    client, auth_headers, changes, status, error_code
+):
     metadata = {
         **_session(),
         "group_id": "group-lumina",
         "idol_id": "idol-aria",
-        "source": "专辑",
-        "source_mode": "KNOWN",
         "source_entity_type": "ALBUM",
         "source_entity_id": "album-starlit",
         **changes,
     }
     response = _submit(client, auth_headers, metadata)
-    assert response.status_code == 400, response.text
-    assert response.json()["error_code"] == "INVALID_FEEDBACK"
+    assert response.status_code == status, response.text
+    assert response.json()["error_code"] == error_code
     with SessionLocal() as db:
+        assert db.scalars(select(Feedback)).all() == []
         assert db.scalars(select(ScanFeedback)).all() == []
 
 
 def test_unpublished_source_and_version_cannot_be_submitted(client, auth_headers):
     metadata = {
         **_session(),
-        "source": "专辑",
-        "source_mode": "KNOWN",
+        "group_id": "group-lumina",
+        "idol_id": "idol-aria",
         "source_entity_type": "ALBUM",
         "source_entity_id": "album-starlit",
     }
@@ -304,23 +324,49 @@ def test_unpublished_source_and_version_cannot_be_submitted(client, auth_headers
     )
 
 
-def test_unknown_other_and_legacy_category_feedback_remain_compatible(client, auth_headers):
+def test_scan_clue_and_other_sources_use_current_feedback_workflow(client, auth_headers):
     session = _session()
-    for source, mode in [("不确定", "UNCERTAIN"), ("其他", "OTHER")]:
-        data = _options(client, auth_headers, source).json()["data"]
-        assert data["source_mode"] == ("KNOWN" if source == "其他" else mode)
-        assert bool(data["items"]) == (source == "其他")
-        response = _submit(
-            client,
-            auth_headers,
-            {**session, "source": source, "source_mode": mode, "notes": "已知但资料暂缺"},
-        )
+    uncertain = _options(client, auth_headers, "不确定").json()["data"]
+    assert uncertain["source_mode"] == "UNCERTAIN" and uncertain["items"] == []
+    other = _options(client, auth_headers, "其他").json()["data"]
+    assert other["source_mode"] == "KNOWN" and other["items"]
+    actors = {"group_id": "group-lumina", "idol_id": "idol-aria"}
+    submissions = [
+        {"feedback_mode": "SCAN_CLUE"},
+        {**actors, "source_entity_type": "OTHER", "source_entity_id": other["items"][0]["id"]},
+        {**actors, "source_entity_type": "OTHER", "missing_source_name": "未登记的品牌联名"},
+        {**actors, "source_entity_type": "ALBUM", "missing_source_name": "未登记的新专辑"},
+    ]
+    ids = set()
+    for values in submissions:
+        response = _submit(client, auth_headers, {**session, **values}, notes="已知但资料暂缺")
         assert response.status_code == 200, response.text
-    assert _submit(client, auth_headers, {**session, "source": "专辑"}).status_code == 200
-    assert _submit(client, auth_headers, session).status_code == 200
-    history = client.get("/api/v1/scan/feedback", headers=auth_headers).json()["data"]["items"]
+        row = response.json()["data"]
+        ids.add(row["id"])
+        assert row["kind"] == "MISSING_CARD" and row["result"] == "PENDING"
+        assert row["submission"]["scan"]["detected_card_id"] == session["detected_card_id"]
+    # A normal submission requires actor/source selections; only scan clues may omit them.
+    assert _submit(client, auth_headers, session).json()["error_code"] == "ACTOR_REQUIRED"
+    assert (
+        _submit(client, auth_headers, {**session, **actors, "source_entity_type": "ALBUM"}).json()[
+            "error_code"
+        ]
+        == "SOURCE_REQUIRED"
+    )
+    history = client.get("/api/v1/feedback", headers=auth_headers).json()["data"]["items"]
+    assert {item["id"] for item in history} == ids
     assert len(history) == 4
-    assert {item["source_mode"] for item in history} == {"KNOWN", "OTHER", "UNCERTAIN"}
+
+
+@pytest.mark.parametrize("metadata", ["{}", "not json"])
+def test_retired_scan_feedback_cannot_create_records(client, auth_headers, metadata):
+    response = client.post(
+        "/api/v1/scan/feedback", headers=auth_headers, data={"metadata": metadata}
+    )
+    assert response.status_code == 405
+    with SessionLocal() as db:
+        assert db.scalars(select(ScanFeedback)).all() == []
+        assert db.scalars(select(Feedback)).all() == []
 
 
 def test_source_selector_auth_and_parameter_validation(client, auth_headers):

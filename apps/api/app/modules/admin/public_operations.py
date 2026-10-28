@@ -1,9 +1,10 @@
 """User-facing reads of approved operational content."""
 
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.admin_models import ContentMetadata
@@ -38,13 +39,37 @@ def announcements(db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/notifications/inbox")
-def inbox(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
-    from app.modules.feedback.service import deliver_notices
+def inbox(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+    category: Literal["NOTIFICATION", "FEEDBACK_RESULT"] | None = None,
+) -> dict:
+    from app.modules.feedback.models import FeedbackNotice
+    from app.modules.feedback.service import PUBLIC_RESULTS, deliver_notices
 
     deliver_notices(db, user.id)
+    is_feedback = or_(
+        NotificationInboxItem.category == "CATALOG_FEEDBACK",
+        NotificationInboxItem.payload["feedback_id"].as_string().is_not(None),
+    )
     rows = db.scalars(
         select(NotificationInboxItem)
-        .where(NotificationInboxItem.user_id == user.id)
+        .outerjoin(FeedbackNotice, FeedbackNotice.id == NotificationInboxItem.id)
+        .where(
+            NotificationInboxItem.user_id == user.id,
+            is_feedback
+            if category == "FEEDBACK_RESULT"
+            else ~is_feedback
+            if category == "NOTIFICATION"
+            else True,
+            # Previous versions sent notifications for internal drafts and validation
+            # failures. Hide those notices without deleting the historical audit data.
+            or_(
+                FeedbackNotice.id.is_(None),
+                FeedbackNotice.data["result"].as_string().in_(PUBLIC_RESULTS),
+                FeedbackNotice.data["review_decision"].as_string() == "ACCEPTED",
+            ),
+        )
         .order_by(NotificationInboxItem.created_at.desc())
         .limit(100)
     )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import mimetypes
 from abc import ABC, abstractmethod
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 from app.core.config import get_settings
@@ -17,13 +17,51 @@ class ObjectStorage(ABC):
         raise NotImplementedError
 
 
-def _owned_key(url: str, base: str) -> str:
+def _owned_key(url: str, base: str, *, allow_loopback_aliases: bool = False) -> str:
     # Only read our own persisted objects; never fetch a caller-provided URL.
-    prefix = base.rstrip("/") + "/"
-    if not url.startswith(prefix):
+    if any(ord(char) <= 32 or ord(char) == 127 for char in url + base) or "\\" in url + base:
         raise ValueError("Object does not belong to this storage")
-    key = unquote(url[len(prefix) :])
-    if not key or any(part in {"", ".", ".."} for part in key.split("/")) or "\\" in key:
+    source, configured = urlsplit(url), urlsplit(base)
+    if (
+        source.username is not None
+        or source.password is not None
+        or configured.username is not None
+        or configured.password is not None
+        or source.query
+        or source.fragment
+        or configured.query
+        or configured.fragment
+    ):
+        raise ValueError("Object does not belong to this storage")
+    prefix = base.rstrip("/") + "/"
+    owns_url = url.startswith(prefix)
+    loopback_hosts = {"localhost", "127.0.0.1", "::1"}
+    if allow_loopback_aliases and configured.hostname in loopback_hosts:
+        default_ports = {"http": 80, "https": 443}
+        same_origin = (
+            configured.scheme in default_ports
+            and source.scheme == configured.scheme
+            and source.hostname in loopback_hosts
+            and (source.port if source.port is not None else default_ports[source.scheme])
+            == (
+                configured.port
+                if configured.port is not None
+                else default_ports[configured.scheme]
+            )
+        )
+        path_prefix = configured.path.rstrip("/") + "/"
+        owns_url = same_origin and source.path.startswith(path_prefix)
+        key = unquote(source.path[len(path_prefix) :])
+    else:
+        key = unquote(url[len(prefix) :])
+    if not owns_url:
+        raise ValueError("Object does not belong to this storage")
+    if (
+        not key
+        or any(part in {"", ".", ".."} for part in key.split("/"))
+        or "\\" in key
+        or any(ord(char) < 32 or ord(char) == 127 for char in key)
+    ):
         raise ValueError("Invalid object key")
     return key
 
@@ -32,7 +70,9 @@ class LocalStorage(ObjectStorage):
     def read_bytes(self, url: str) -> bytes:
         settings = get_settings()
         root = settings.local_media_root.resolve()
-        target = (root / _owned_key(url, settings.public_media_base_url)).resolve()
+        target = (
+            root / _owned_key(url, settings.public_media_base_url, allow_loopback_aliases=True)
+        ).resolve()
         if not target.is_relative_to(root):
             raise ValueError("Invalid object path")
         return target.read_bytes()

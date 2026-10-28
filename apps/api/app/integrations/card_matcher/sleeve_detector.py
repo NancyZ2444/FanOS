@@ -49,7 +49,9 @@ def _deskew(gray: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
-def detect_sleeve_quadrilaterals(rgb: np.ndarray) -> list[np.ndarray]:
+def detect_sleeve_quadrilaterals(
+    rgb: np.ndarray, *, supplemental_points: list[np.ndarray] | None = None
+) -> list[np.ndarray]:
     """Return TL/TR/BR/BL corners for an evidence-supported portrait-card grid.
 
     This intentionally returns nothing for single cards, missing rectangular
@@ -58,6 +60,12 @@ def detect_sleeve_quadrilaterals(rgb: np.ndarray) -> list[np.ndarray]:
     """
     if rgb.ndim != 3 or rgb.shape[2] != 3:
         return []
+    if supplemental_points:
+        # Preserve an already confirmed sleeve grid: numerous interior artwork
+        # contours must not change its modal dimensions or crop boundaries.
+        observed_grid = detect_sleeve_quadrilaterals(rgb)
+        if observed_grid:
+            return observed_grid
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     gray, inverse = _deskew(gray)
     height, width = gray.shape
@@ -105,7 +113,29 @@ def detect_sleeve_quadrilaterals(rgb: np.ndarray) -> list[np.ndarray]:
                     for other in candidates
                 ):
                     candidates.append(box)
-    if len(candidates) < 4:
+    # Ordinary perspective contours sometimes recover a cell whose sleeve
+    # seam stayed connected to its neighbour. They can seed the same observed
+    # grid, provided their edges are nearly axis-aligned after deskewing.
+    if supplemental_points:
+        forward = cv2.invertAffineTransform(inverse)
+        for points in supplemental_points:
+            aligned = cv2.transform(np.asarray(points, dtype=np.float32)[None], forward)[0]
+            x, y, w, h = cv2.boundingRect(aligned)
+            if not (0.48 <= w / h <= 0.82 and 0.006 <= w * h / (width * height) <= 0.24):
+                continue
+            if min(w, h) < short * 0.05 or abs(cv2.contourArea(aligned)) / (w * h) < 0.90:
+                continue
+            if x < 2 or y < 2 or x + w > width - 2 or y + h > height - 2:
+                continue
+            if float(gray[y + h // 10 : y + h - h // 10, x + w // 10 : x + w - w // 10].std()) < 18:
+                continue
+            box = (x, y, w, h)
+            if not any(
+                sum(abs(a - b) for a, b in zip(box, other, strict=True)) < short * 0.035
+                for other in candidates
+            ):
+                candidates.append(box)
+    if len(candidates) < 3:
         return []
 
     # Modal *observed* dimensions reject cropped edge cards, faces and whole pages.
@@ -146,12 +176,12 @@ def detect_sleeve_quadrilaterals(rgb: np.ndarray) -> list[np.ndarray]:
         other = occupied.get(key)
         if other is None or error < abs(other[2] / median_w - 1) + abs(other[3] / median_h - 1):
             occupied[key] = box
-    if len(occupied) < 4 or len(occupied) / (len(rows) * len(columns)) < 0.65:
+    if len(occupied) < 3 or len(occupied) / (len(rows) * len(columns)) < 0.65:
         return []
     observed = len(occupied)
     maximum_filled = math.ceil(observed * 0.35)
     # A small missing contour may be proposed from measured neighbouring cells,
-    # but must have four strong boundaries and non-empty artwork of its own.
+    # but must have supported boundaries and non-empty artwork of its own.
     for row, cy in enumerate(rows):
         row_boxes = [box for (r, _), box in occupied.items() if r == row]
         rw, rh = np.median([box[2:] for box in row_boxes], axis=0)
@@ -213,11 +243,20 @@ def detect_sleeve_quadrilaterals(rgb: np.ndarray) -> list[np.ndarray]:
                 gy[y - 3 : y + 4, x + w // 12 : x + w - w // 12].max(axis=0),
                 gy[y + h - 3 : y + h + 4, x + w // 12 : x + w - w // 12].max(axis=0),
             )
-            if min(float((strip > 30).mean()) for strip in strips) < 0.60:
+            support = sorted(float((strip > 30).mean()) for strip in strips)
+            # Glare or a foreground object can hide part of one edge while
+            # leaving three nearly complete boundaries. Only allow that case
+            # inside an already observed grid, with visible evidence on the
+            # fourth edge too; never fill a slot from grid spacing alone.
+            complete = support[0] >= 0.60
+            partly_occluded = observed >= 4 and support[0] >= 0.20 and support[1] >= 0.85
+            if not (complete or partly_occluded):
                 continue
             if float(gray[y + h // 10 : y + h - h // 10, x + w // 10 : x + w - w // 10].std()) < 18:
                 continue
             occupied[(row, column)] = (x, y, w, h)
+    if len(occupied) < 4:
+        return []
     output = []
     for _key, (x, y, w, h) in sorted(occupied.items()):
         points = np.float32([[x, y], [x + w - 1, y], [x + w - 1, y + h - 1], [x, y + h - 1]])

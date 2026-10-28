@@ -1,3 +1,4 @@
+import { ProfileRelations } from "./ProfileRelations";
 import {
   useCallback,
   useEffect,
@@ -6,8 +7,9 @@ import {
   type ReactNode,
 } from "react";
 import { Alert, Checkbox, Image, Input, Select } from "antd";
-import { api } from "../../api/client";
-import { Form, RecordId } from "../../components/admin";
+import { consoleApi } from "../../api/client";
+import { companyEnabled } from "../../api/permissions";
+import { Form } from "../../components/admin";
 import { displayValue } from "../../design/format";
 import { useConsole } from "../../state";
 import type { Field, Values } from "./types";
@@ -56,20 +58,69 @@ export function ReviewField({
 }
 export function ValueView({ field, value }: { field: Field; value: any }) {
   const { catalog } = useConsole();
+  const catalogRows = Object.values(catalog).flat() as Values[];
+  const relationName = (r: Values) =>
+    r.name ||
+    r.handle ||
+    r.data?.handle ||
+    field.current?.find?.((v: Values) => v.id === r.id)?.name ||
+    Object.values(catalog)
+      .flat()
+      .find((v: any) => v?.id === r.data?.target_id)?.name ||
+    "关联资料";
   if (field.type === "image" && value)
     return (
       <Image className="feedback-field-image" src={value} alt={field.label} />
     );
   if (field.reference && typeof value === "string" && value) {
     const choices =
-      (catalog as unknown as Record<string, Values[]>)[field.reference] || [];
+      (catalog as unknown as Record<string, Values[]>)[field.reference] ||
+      catalogRows;
     const item = choices.find((v) => v.id === value);
     return item ? (
       <span className="feedback-value">{item.name || item.title}</span>
     ) : (
-      <RecordId value={value} />
+      <span className="feedback-value">关联资料暂不可用</span>
     );
   }
+  if (field.type === "multi_reference" && Array.isArray(value)) {
+    return (
+      <span className="feedback-value">
+        {value
+          .map(
+            (v) =>
+              v.name ||
+              catalogRows.find((row) => row.id === v.id)?.name ||
+              "关联资料暂不可用",
+          )
+          .join("、") || "—"}
+      </span>
+    );
+  }
+  if (field.type === "relations" && Array.isArray(value))
+    return (
+      <div style={{ whiteSpace: "pre-wrap" }}>
+        {value.map((r, i) => (
+          <p key={i}>
+            {r.operation
+              ? ({ ADD: "新增", UPDATE: "修改", DELETE: "作废" } as Values)[
+                  r.operation
+                ]
+              : ""}{" "}
+            {relationName(r)}{" "}
+            {[
+              r.start_date || r.data?.start_date,
+              r.end_date || r.data?.end_date,
+              r.status || r.data?.status,
+              r.role || r.data?.role,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+            {r.reason && <span> · {r.reason}</span>}
+          </p>
+        ))}
+      </div>
+    );
   const shown = Array.isArray(value)
     ? value
         .map((v) =>
@@ -79,7 +130,14 @@ export function ValueView({ field, value }: { field: Field; value: any }) {
         )
         .join("、") || "—"
     : displayValue(value);
-  return <span className="feedback-value">{shown}</span>;
+  return (
+    <span
+      className="feedback-value"
+      style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+    >
+      {shown}
+    </span>
+  );
 }
 export function ValueEditor({
   field,
@@ -102,13 +160,40 @@ export function ValueEditor({
     async (q = "") => {
       if (!field.reference) return;
       const ticket = ++sequence.current;
+      if (field.reference === "versions" && !field.parent_id) {
+        setChoices([]);
+        setLoading(false);
+        setError("");
+        return;
+      }
       setLoading(true);
       try {
-        const response = await api(
-          `/feedback/objects?entity_type=${field.reference}&q=${encodeURIComponent(q)}`,
-        );
+        const query = new URLSearchParams({
+          entity_type: field.reference,
+          q,
+          ...(field.parent_id ? { parent_id: field.parent_id } : {}),
+        });
+        const response =
+          field.reference === "companies"
+            ? await consoleApi("/records/companies")
+            : await consoleApi(`/feedback/objects?${query}`);
+        const items =
+          field.reference === "companies"
+            ? response.items
+                .filter(
+                  (row: Values) =>
+                    companyEnabled(row) &&
+                    (!q ||
+                      row.data.name.toLowerCase().includes(q.toLowerCase())),
+                )
+                .map((row: Values) => ({
+                  ...row,
+                  name: row.data.name,
+                  entity_type: "companies",
+                }))
+            : response.items;
         if (ticket === sequence.current) {
-          setChoices(response.items);
+          setChoices(items);
           setError("");
         }
       } catch (e) {
@@ -117,15 +202,25 @@ export function ValueEditor({
         if (ticket === sequence.current) setLoading(false);
       }
     },
-    [field.reference],
+    [field.reference, field.parent_id],
   );
   useEffect(() => {
+    setChoices([]);
     void load();
     return () => {
       sequence.current++;
     };
   }, [load]);
   const label = field.label + "采用值";
+  if (field.type === "relations")
+    return (
+      <ProfileRelations
+        field={field}
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+      />
+    );
   if (field.type === "boolean")
     return (
       <Checkbox
@@ -164,7 +259,15 @@ export function ValueEditor({
         <Select
           id={id}
           aria-label={label}
-          disabled={disabled}
+          disabled={
+            disabled ||
+            (field.reference === "versions" && (!field.parent_id || loading))
+          }
+          placeholder={
+            field.reference === "versions" && !field.parent_id
+              ? "请先选择正式来源"
+              : "搜索并选择"
+          }
           loading={loading}
           className="feedback-select"
           showSearch
@@ -213,8 +316,9 @@ export function ValueEditor({
       id={id}
       aria-label={label}
       disabled={disabled}
-      rows={2}
-      maxLength={2000}
+      autoSize={{ minRows: field.type === "long_text" ? 6 : 2, maxRows: 18 }}
+      showCount
+      maxLength={field.max_length ?? 2000}
       value={Array.isArray(value) ? value.join("\n") : (value ?? "")}
       placeholder={
         field.type === "date"

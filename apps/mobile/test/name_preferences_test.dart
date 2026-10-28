@@ -2,6 +2,7 @@ import 'package:fan_os/app/theme.dart';
 import 'package:fan_os/core/data/demo_catalog.dart';
 import 'package:fan_os/core/data/models.dart';
 import 'package:fan_os/core/data/name_preferences.dart';
+import 'package:fan_os/features/albums/presentation/album_card_picker.dart';
 import 'package:fan_os/core/data/repositories.dart';
 import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/features/onboarding/presentation/favorite_setup_page.dart';
@@ -28,16 +29,36 @@ void main() {
         final idol = data.idols.firstWhere((i) => i.id == 'idol-aria');
         expect(group.name, 'LUMINA');
         expect(idol.groupName, 'LUMINA');
-        expect(group.displayName, switch (mode) {
-          NameDisplayMode.official => 'LUMINA',
-          NameDisplayMode.remark => '我的团',
-          NameDisplayMode.combined => 'LUMINA（我的团）',
-        });
-        expect(idol.displayName, switch (mode) {
-          NameDisplayMode.official => '艾莉娅',
-          NameDisplayMode.remark => '小星星',
-          NameDisplayMode.combined => '艾莉娅（小星星）',
-        });
+        expect(group.displayName, '我的团');
+        expect(
+          names.display(
+            'groups',
+            group.id,
+            group.officialDisplayName,
+            mode: mode,
+          ),
+          switch (mode) {
+            NameDisplayMode.official => 'LUMINA',
+            NameDisplayMode.remark => '我的团',
+            NameDisplayMode.combined => 'LUMINA（我的团）',
+          },
+        );
+        expect(idol.displayName, '小星星');
+        expect(idol.displayGroupName, '我的团');
+        expect(idol.secondaryName, '');
+        final card = data.cards.firstWhere((c) => c.idolId == idol.id);
+        expect(card.idolName, '小星星');
+        expect(card.groupName, '我的团');
+        expect(albumCardJson(card)['idol_name'], isNot('小星星'));
+        expect(albumCardJson(card)['group_name'], 'LUMINA');
+        expect(data.artistLabel([], 'LUMINA'), '我的团');
+        expect(data.artistLabel([], ''), '');
+        expect(
+          DemoCatalog.bundle.idols
+              .firstWhere((i) => i.id == idol.id)
+              .displayName,
+          '艾莉娅',
+        );
         expect(
           data.idols.firstWhere((i) => i.id == 'idol-lin').displayName,
           '琳',

@@ -1,4 +1,5 @@
 import 'package:fan_os/app/theme.dart';
+import 'package:fan_os/core/state/app_state.dart';
 import 'package:fan_os/features/albums/data/album_models.dart';
 import 'package:fan_os/features/albums/data/album_repository.dart';
 import 'package:fan_os/features/albums/presentation/album_card_scene.dart';
@@ -49,6 +50,45 @@ PhotocardAlbum sceneAlbum({int count = 5}) => PhotocardAlbum({
 });
 
 void main() {
+  testWidgets('album name choice affects both actors without storing remarks', (
+    tester,
+  ) async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    await container
+        .read(namePreferencesProvider.notifier)
+        .setRemark('idols', 'idol', '小星星');
+    await container
+        .read(namePreferencesProvider.notifier)
+        .setRemark('groups', 'group', '我的团');
+    for (final entry in {
+      'remark': '小星星 · 我的团',
+      'official': 'MIRA · LUNE',
+      'combined': 'MIRA（小星星） · LUNE（我的团）',
+    }.entries) {
+      final album = sceneAlbum().edit((d) {
+        (d['card_view'] as AlbumJson)['name_display_mode'] = entry.key;
+        (d['card_view'] as AlbumJson)['display_fields'] = ['idol', 'group'];
+      });
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            theme: FanOsTheme.light,
+            home: AlbumViewer(
+              key: ValueKey(entry.key),
+              album: album,
+              preview: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text(entry.value), findsOneWidget);
+      expect(album.json.toString(), isNot(contains('小星星')));
+      expect(tester.takeException(), isNull);
+    }
+  });
   test('cover is deterministic, featured first, at most five actual slots', () {
     final album = sceneAlbum(count: 8);
     expect(album.coverSlots.map((s) => s['id']), [
@@ -173,7 +213,7 @@ void main() {
       );
       await tester.tap(find.byKey(const ValueKey('album-scene-card-s3')));
       await tester.pumpAndSettle();
-      expect(find.text('暂无背面'), findsOneWidget);
+      expect(find.text('暂无背面图片'), findsOneWidget);
       await tester.tap(find.byTooltip('关闭放大'));
       await tester.pumpAndSettle();
       expect(find.text('04 / 05'), findsOneWidget);
@@ -235,4 +275,45 @@ void main() {
       expect(tester.takeException(), isNull);
     }
   });
+
+  testWidgets(
+    'card preview keeps the story reachable without duplicate instructions',
+    (tester) async {
+      final album = sceneAlbum().edit((data) {
+        data['description'] = List.generate(
+          20,
+          (i) => '第 ${i + 1} 段真实收藏故事。',
+        ).join('\n');
+      });
+      await show(tester, album, size: const Size(360, 640));
+      expect(find.text('收藏故事'), findsNothing);
+      expect(find.text('查看官方图鉴详情'), findsNothing);
+      expect(find.textContaining('左右滑动浏览'), findsNothing);
+      expect(find.byKey(const Key('album-pocket-page')), findsNothing);
+      final scroll = tester.state<ScrollableState>(
+        find
+            .descendant(
+              of: find.byKey(const Key('album-scene-scroll')),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      expect(scroll.position.maxScrollExtent, greaterThan(0));
+      scroll.position.jumpTo(scroll.position.maxScrollExtent);
+      await tester.pumpAndSettle();
+      final story = tester.getRect(find.byKey(const Key('album-scene-story')));
+      final viewport = tester.getRect(
+        find.byKey(const Key('album-scene-scroll')),
+      );
+      expect(story.bottom, lessThanOrEqualTo(viewport.bottom));
+      expect(tester.takeException(), isNull);
+      scroll.position.jumpTo(0);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('album-scene-card-s2')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('轻点小卡翻面'), findsNothing);
+      expect(find.text('查看官方图鉴详情'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

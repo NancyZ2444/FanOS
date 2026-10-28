@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:fan_os/app/theme.dart';
 
 import '../data/album_models.dart';
+import '../data/album_resources.dart';
+import 'album_resource_tile.dart';
 import 'album_widgets.dart';
 
 const albumPigments = [
@@ -173,18 +175,48 @@ class AlbumBackgroundPanel extends StatefulWidget {
     required this.original,
     required this.onClose,
     this.onPreview,
+    this.resources = const [],
+    this.scene = 'COVER',
+    this.plan,
+    this.onExtractColors,
   });
   final AlbumJson original;
   final ValueChanged<AlbumJson?> onClose;
   final ValueChanged<AlbumJson>? onPreview;
+  final List<AlbumJson> resources;
+  final String scene;
+  final String? plan;
+  final Future<List<String>?> Function()? onExtractColors;
   @override
   State<AlbumBackgroundPanel> createState() => _AlbumBackgroundPanelState();
 }
 
 class _AlbumBackgroundPanelState extends State<AlbumBackgroundPanel> {
   late final bg = cloneAlbumJson(widget.original);
-  late final first = TextEditingController(text: (bg['colors'] as List).first);
-  late final second = TextEditingController(text: (bg['colors'] as List).last);
+  late final first = TextEditingController(
+    text: ((bg['colors'] as List?) ?? ['#FFFFFF']).first,
+  );
+  late final second = TextEditingController(
+    text: ((bg['colors'] as List?) ?? ['#FFFFFF']).last,
+  );
+  bool extracting = false;
+
+  void makeCustom() {
+    bg.remove('resource_id');
+    bg.remove('resource_snapshot');
+    bg.remove('image_url');
+  }
+
+  void selectResource(AlbumJson resource) => setState(() {
+    bg
+      ..clear()
+      ..addAll(albumResourceBackground(resource));
+    final colors = (bg['colors'] as List?) ?? ['#FFFFFF'];
+    first.text = colors.first;
+    second.text = colors.last;
+    error = null;
+    widget.onPreview?.call(cloneAlbumJson(bg));
+  });
   String? error;
   @override
   void dispose() {
@@ -194,6 +226,7 @@ class _AlbumBackgroundPanelState extends State<AlbumBackgroundPanel> {
   }
 
   void update(List<String> colors) => setState(() {
+    makeCustom();
     bg['colors'] = colors;
     first.text = colors.first;
     second.text = colors.last;
@@ -205,22 +238,33 @@ class _AlbumBackgroundPanelState extends State<AlbumBackgroundPanel> {
     title: '背景设置',
     onCancel: () => widget.onClose(null),
     onDone: () {
+      if (extracting) return;
+      if (bg['type'] == 'IMAGE') {
+        widget.onClose(bg);
+        return;
+      }
       final valid = RegExp(r'^#[0-9a-fA-F]{6}$');
       if (!valid.hasMatch(first.text) ||
           (bg['type'] == 'GRADIENT' && !valid.hasMatch(second.text))) {
         setState(() => error = '请输入 #RRGGBB 格式的颜色');
         return;
       }
-      bg['colors'] = [first.text, if (bg['type'] == 'GRADIENT') second.text];
+      final colors = [first.text, if (bg['type'] == 'GRADIENT') second.text];
+      if (colors.join(',') != ((bg['colors'] as List?) ?? []).join(',')) {
+        makeCustom();
+      }
+      bg['colors'] = colors;
       widget.onClose(bg);
     },
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SegmentedButton<String>(
-          segments: const [
-            ButtonSegment(value: 'SOLID', label: Text('纯色')),
-            ButtonSegment(value: 'GRADIENT', label: Text('渐变')),
+          segments: [
+            const ButtonSegment(value: 'SOLID', label: Text('纯色')),
+            const ButtonSegment(value: 'GRADIENT', label: Text('渐变')),
+            if (bg['type'] == 'IMAGE')
+              const ButtonSegment(value: 'IMAGE', label: Text('图片')),
           ],
           selected: {bg['type']},
           onSelectionChanged: (v) {
@@ -230,9 +274,46 @@ class _AlbumBackgroundPanelState extends State<AlbumBackgroundPanel> {
             );
           },
         ),
+        if (albumResourceChoices(
+          widget.resources,
+          kinds: {'BACKGROUND', 'COLOR'},
+          scene: widget.scene,
+          plan: widget.plan,
+        ).isNotEmpty) ...[
+          const SizedBox(height: 16),
+          const Text(
+            '平台素材',
+            style: TextStyle(fontSize: 14, color: FanColors.textSecondary),
+          ),
+          const SizedBox(height: 12),
+          LayoutBuilder(
+            builder: (context, bounds) => Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                for (final resource in albumResourceChoices(
+                  widget.resources,
+                  kinds: {'BACKGROUND', 'COLOR'},
+                  scene: widget.scene,
+                  plan: widget.plan,
+                ))
+                  SizedBox(
+                    width: (bounds.maxWidth - 24) / 3,
+                    height: 94,
+                    child: AlbumResourceTile(
+                      resource: resource,
+                      plan: widget.plan,
+                      selected: bg['resource_id'] == resource['id'],
+                      onSelected: () => selectResource(resource),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 16),
         const Text(
-          '常用推荐',
+          '基础颜色',
           style: TextStyle(fontSize: 14, color: FanColors.textSecondary),
         ),
         const SizedBox(height: 12),
@@ -268,56 +349,83 @@ class _AlbumBackgroundPanelState extends State<AlbumBackgroundPanel> {
                 ),
           ],
         ),
-        const SizedBox(height: 24),
-        const Text(
-          '自定义颜色',
-          style: TextStyle(fontSize: 14, color: FanColors.textSecondary),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: first,
-                decoration: const InputDecoration(labelText: '起点 · HEX'),
-              ),
-            ),
-            if (bg['type'] == 'GRADIENT') ...[
-              const SizedBox(width: 12),
-              Expanded(
-                child: TextField(
-                  controller: second,
-                  decoration: const InputDecoration(labelText: '终点 · HEX'),
-                ),
-              ),
-            ],
-          ],
-        ),
-        if (error != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(error!, style: const TextStyle(color: FanColors.coral)),
-          ),
-        if (bg['type'] == 'GRADIENT') ...[
+        if (widget.onExtractColors != null) ...[
           const SizedBox(height: 16),
+          OutlinedButton.icon(
+            onPressed: extracting
+                ? null
+                : () async {
+                    setState(() => extracting = true);
+                    try {
+                      final colors = await widget.onExtractColors!();
+                      if (mounted && colors != null && colors.isNotEmpty) {
+                        bg['type'] = colors.length > 1 ? 'GRADIENT' : 'SOLID';
+                        update(colors);
+                      }
+                    } finally {
+                      if (mounted) setState(() => extracting = false);
+                    }
+                  },
+            icon: const Icon(Icons.colorize_outlined),
+            label: const Text('从图片取色'),
+          ),
+        ],
+        if (bg['type'] != 'IMAGE') ...[
+          const SizedBox(height: 24),
+          const Text(
+            '自定义颜色',
+            style: TextStyle(fontSize: 14, color: FanColors.textSecondary),
+          ),
+          const SizedBox(height: 8),
           Row(
             children: [
-              const Text('方向'),
               Expanded(
-                child: Slider(
-                  min: 0,
-                  max: 360,
-                  divisions: 72,
-                  value: (bg['angle'] as num).toDouble(),
-                  onChanged: (v) => setState(() {
-                    bg['angle'] = v;
-                    widget.onPreview?.call(cloneAlbumJson(bg));
-                  }),
+                child: TextField(
+                  controller: first,
+                  decoration: const InputDecoration(labelText: '起点 · HEX'),
                 ),
               ),
-              Text('${(bg['angle'] as num).round()}°'),
+              if (bg['type'] == 'GRADIENT') ...[
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: second,
+                    decoration: const InputDecoration(labelText: '终点 · HEX'),
+                  ),
+                ),
+              ],
             ],
           ),
+          if (error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                error!,
+                style: const TextStyle(color: FanColors.coral),
+              ),
+            ),
+          if (bg['type'] == 'GRADIENT') ...[
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                const Text('方向'),
+                Expanded(
+                  child: Slider(
+                    min: 0,
+                    max: 360,
+                    divisions: 72,
+                    value: (bg['angle'] as num).toDouble(),
+                    onChanged: (v) => setState(() {
+                      makeCustom();
+                      bg['angle'] = v;
+                      widget.onPreview?.call(cloneAlbumJson(bg));
+                    }),
+                  ),
+                ),
+                Text('${(bg['angle'] as num).round()}°'),
+              ],
+            ),
+          ],
         ],
       ],
     ),
