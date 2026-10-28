@@ -1,4 +1,5 @@
 import type { Actor, FieldError } from "./types";
+import { createRequestKey } from "./requestKey";
 const base = import.meta.env.VITE_API_BASE_URL || "/api/v1";
 const sessionKey = "fanos-admin-session";
 const refreshRequestKey = "fanos-admin-refresh-request";
@@ -30,10 +31,10 @@ async function refresh() {
     refreshPromise = (async () => {
       const token = session().refresh_token;
       if (!token) return false;
-      const requestId =
-        sessionStorage.getItem(refreshRequestKey) || crypto.randomUUID();
-      sessionStorage.setItem(refreshRequestKey, requestId);
       try {
+        const requestId =
+          sessionStorage.getItem(refreshRequestKey) || createRequestKey();
+        sessionStorage.setItem(refreshRequestKey, requestId);
         const res = await fetch(base + "/admin/auth/refresh", {
           method: "POST",
           headers: {

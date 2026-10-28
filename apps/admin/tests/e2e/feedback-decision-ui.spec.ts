@@ -14,7 +14,12 @@ const publishLabel = (kind: Kind) =>
 const routePath = (kind: Kind) =>
   `/catalog/${kind === "CORRECTION" ? "corrections" : "additions"}/fb-decisions`;
 
-async function fixture(page: Page, kind: Kind, permissions?: string[]) {
+async function fixture(
+  page: Page,
+  kind: Kind,
+  permissions?: string[],
+  options: { missingSource?: boolean; missingAlbum?: boolean } = {},
+) {
   const requests: any[] = [];
   let failNext = false;
   const group = { id: "group-ui", name: "测试组合", status: "PUBLISHED" };
@@ -55,7 +60,12 @@ async function fixture(page: Page, kind: Kind, permissions?: string[]) {
     created_at: "2026-10-28T00:00:00Z",
     public_note: "",
     internal_note: "",
-    entity_type: kind === "MISSING_CARD" ? "cards" : "groups",
+    entity_type:
+      kind === "MISSING_CARD"
+        ? "cards"
+        : options.missingAlbum
+          ? "albums"
+          : "groups",
     entity_id: kind === "CORRECTION" ? group.id : "",
     submission:
       kind === "MISSING_CARD"
@@ -65,12 +75,26 @@ async function fixture(page: Page, kind: Kind, permissions?: string[]) {
               group_id: group.id,
               idol_id: idol.id,
               source_entity_type: "ALBUM",
-              source_entity_id: album.id,
+              source_entity_id: options.missingSource ? "" : album.id,
+              ...(options.missingSource
+                ? { missing_source_name: "用户待补充专辑" }
+                : {}),
               card_type: "REGULAR",
             },
           }
         : kind === "MISSING_CATALOG"
-          ? { catalog: { name: "新组合" }, catalog_schema: fields }
+          ? options.missingAlbum
+            ? {
+                catalog: {
+                  name: "待核实专辑",
+                  artists: [{ type: "groups", id: group.id }],
+                },
+                catalog_schema: [
+                  ...fields,
+                  { key: "versions", label: "专辑版本", type: "list" },
+                ],
+              }
+            : { catalog: { name: "新组合" }, catalog_schema: fields }
           : { fields },
     review: {},
     latest: { version: "v1", fields },
@@ -103,6 +127,20 @@ async function fixture(page: Page, kind: Kind, permissions?: string[]) {
         tags: [],
         records: [],
       };
+    else if (path.endsWith("/console/records/versions"))
+      data = {
+        items: [
+          {
+            id: "version-ui",
+            entity_type: "albums",
+            entity_id: album.id,
+            status: "PUBLISHED",
+            data: { name: "已核实版本" },
+          },
+        ],
+      };
+    else if (path.endsWith("/console/cards/similar"))
+      data = { candidates: [], indexed_count: 0, unavailable_count: 0 };
     else if (path.includes("/console/feedback/fb-decisions")) {
       if (route.request().method() === "POST") {
         const body = route.request().postDataJSON();
@@ -178,12 +216,14 @@ async function edit(page: Page, kind: Kind) {
     await page.getByRole("button", { name: "编辑", exact: true }).click();
 }
 async function submit(page: Page, kind: Kind) {
-  await page.getByRole("button", { name: "提交处理结果", exact: true }).click();
-  if (kind !== "MISSING_CATALOG")
-    await page
-      .getByRole("dialog")
+  await page.getByLabel("提交处理结果", { exact: true }).click();
+  if (kind !== "MISSING_CATALOG") {
+    const dialog = page.getByRole("dialog");
+    await dialog
       .getByRole("button", { name: "提交处理结果", exact: true })
       .click();
+    await expect(dialog).toBeHidden();
+  }
 }
 async function publish(page: Page, kind: Kind) {
   await page
@@ -353,6 +393,146 @@ for (const kind of kinds) {
     );
     expect(state.requests).toHaveLength(2);
     expect(state.requests[1]).toEqual(state.requests[0]);
+  });
+}
+
+for (const kind of ["MISSING_CARD", "MISSING_CATALOG"] as const) {
+  test(`${kind}: HTTP without randomUUID saves added album/version and retries decisions idempotently`, async ({
+    page,
+  }) => {
+    const state = await fixture(page, kind, undefined, {
+      missingSource: kind === "MISSING_CARD",
+      missingAlbum: kind === "MISSING_CATALOG",
+    });
+    await page.addInitScript(() => {
+      Object.defineProperty(crypto, "randomUUID", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await edit(page, kind);
+    expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe(
+      "undefined",
+    );
+    if (kind === "MISSING_CARD") {
+      const select = async (id: string, text: string) => {
+        await page
+          .locator(".ant-select")
+          .filter({ has: page.locator(`#${id}`) })
+          .click();
+        await page
+          .locator(".ant-select-dropdown:visible")
+          .getByText(text, { exact: true })
+          .click();
+      };
+      await select("feedback-source", "测试专辑");
+      await expect(page.locator("#feedback-version")).toBeEnabled();
+      await select("feedback-version", "已核实版本");
+    } else {
+      await page.getByLabel("名称", { exact: true }).fill("已补全专辑");
+      await page
+        .getByLabel("专辑版本采用值", { exact: true })
+        .fill("已核实版本");
+    }
+    const expectedChanges =
+      kind === "MISSING_CARD"
+        ? {
+            source_entity_id: "album-ui",
+            entity_version_id: "version-ui",
+            version: "已核实版本",
+          }
+        : { name: "已补全专辑", versions: ["已核实版本"] };
+    const save = page.getByRole("button", { name: "保存草稿", exact: true });
+    state.fail();
+    await save.click();
+    await expect(page.getByText("模拟保存失败", { exact: true })).toBeVisible();
+    await expect(save).toBeEnabled();
+    await save.click();
+    await expect(page.getByText("模拟保存失败", { exact: true })).toHaveCount(
+      0,
+    );
+    await expect.poll(() => state.requests.length).toBe(2);
+    expect(state.requests[0].changes).toMatchObject(expectedChanges);
+    expect(state.requests[1]).toEqual(state.requests[0]);
+    expect(state.requests[0].request_key).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    await page
+      .locator(".feedback-result-options label")
+      .filter({ hasText: /^已采纳$/ })
+      .click();
+    state.fail();
+    await submit(page, kind);
+    await expect(page.getByText("模拟保存失败", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("公开处理说明", { exact: true })).toHaveValue(
+      acceptedNote,
+    );
+    await submit(page, kind);
+    await expect(
+      page.getByRole("button", { name: publishLabel(kind), exact: true }),
+    ).toBeVisible();
+    expect(state.requests).toHaveLength(4);
+    expect(state.requests[2]).toMatchObject({
+      action: "decide",
+      revision: 2,
+      review_decision: "ACCEPTED",
+      public_note: acceptedNote,
+      changes: expectedChanges,
+    });
+    expect(state.requests[3]).toEqual(state.requests[2]);
+    expect(state.requests[2].request_key).not.toBe(
+      state.requests[0].request_key,
+    );
+    expect(errors).toEqual([]);
+  });
+
+  test(`${kind}: key generation failure preserves input and releases save lock`, async ({
+    page,
+  }) => {
+    const state = await fixture(page, kind);
+    await page.addInitScript(() => {
+      Object.defineProperty(crypto, "randomUUID", {
+        configurable: true,
+        value: undefined,
+      });
+      Object.defineProperty(crypto, "getRandomValues", {
+        configurable: true,
+        value: undefined,
+      });
+    });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await edit(page, kind);
+    await page
+      .getByLabel("公开处理说明", { exact: true })
+      .fill("生成编号失败后保留填写内容");
+    const save = page.getByRole("button", { name: "保存草稿", exact: true });
+    await save.click();
+    await expect(
+      page.getByText(
+        "当前浏览器无法生成安全请求编号，请刷新页面或更换浏览器后重试。",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(save).toBeEnabled();
+    await expect(save).not.toHaveClass(/ant-btn-loading/);
+    expect(state.requests).toHaveLength(0);
+    await expect(page.getByLabel("公开处理说明", { exact: true })).toHaveValue(
+      "生成编号失败后保留填写内容",
+    );
+    await page.evaluate(() => {
+      Object.defineProperty(crypto, "getRandomValues", {
+        configurable: true,
+        value: Crypto.prototype.getRandomValues,
+      });
+    });
+    await save.click();
+    await expect.poll(() => state.requests.length).toBe(1);
+    await expect(save).not.toHaveClass(/ant-btn-loading/);
+    expect(state.requests[0].public_note).toBe("生成编号失败后保留填写内容");
+    expect(errors).toEqual([]);
   });
 }
 

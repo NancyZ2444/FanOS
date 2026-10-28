@@ -13,6 +13,7 @@ import {
   Timeline,
 } from "antd";
 import { ApiError, consoleApi } from "../../api/client";
+import { createRequestKey } from "../../api/requestKey";
 import {
   Form,
   PageHeader,
@@ -202,13 +203,13 @@ export default function MissingCatalogReview({
             review_decision: reviewResult.decision,
             internal_note: internalNote,
           };
-    const signature = JSON.stringify(body);
-    if (request.current?.signature !== signature)
-      request.current = { signature, key: crypto.randomUUID() };
     setBusy(true);
     setError("");
     setNoteError("");
     try {
+      const signature = JSON.stringify(body);
+      if (request.current?.signature !== signature)
+        request.current = { signature, key: createRequestKey() };
       const data = await consoleApi<FeedbackRecord>(
         `/feedback/${item.id}/actions`,
         {

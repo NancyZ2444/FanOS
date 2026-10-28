@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Collapse, Input, Modal, Spin, Tabs } from "antd";
 import { consoleApi } from "../api/client";
+import { createRequestKey } from "../api/requestKey";
 import { canPermission } from "../api/permissions";
 import { useConsole } from "../state";
 import { Form, useFormGuard } from "../components/admin";
@@ -84,13 +85,13 @@ export default function CatalogProfile({
       expected: data.version,
       draft_version: data.draft_version,
     };
-    const signature = JSON.stringify(payload);
-    if (request.current?.signature !== signature)
-      request.current = { signature, key: crypto.randomUUID() };
     setBusy(true);
     setError("");
     setValidation("");
     try {
+      const signature = JSON.stringify(payload);
+      if (request.current?.signature !== signature)
+        request.current = { signature, key: createRequestKey() };
       const response = await consoleApi(
         path + (publish ? "/publish" : "/draft"),
         {

@@ -19,6 +19,7 @@ import {
 import { ArrowLeftOutlined, DownOutlined } from "@ant-design/icons";
 import { Link } from "react-router-dom";
 import { ApiError, consoleApi } from "../../api/client";
+import { createRequestKey } from "../../api/requestKey";
 import {
   EmptyState,
   Form,
@@ -312,13 +313,13 @@ export default function FeedbackReview({
             decisions,
             object_version: item.latest?.version,
           };
-    const signature = JSON.stringify(body);
-    const key =
-      request.current?.signature === signature
-        ? request.current.key
-        : crypto.randomUUID();
-    request.current = { signature, key };
     try {
+      const signature = JSON.stringify(body);
+      const key =
+        request.current?.signature === signature
+          ? request.current.key
+          : createRequestKey();
+      request.current = { signature, key };
       if (
         missing &&
         (action === "draft" ||

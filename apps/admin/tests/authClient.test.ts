@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, login, logout } from "../src/api/client";
 import { authorizationLabel, filtersQuery } from "../src/pages/auth/shared";
+import { webcrypto } from "node:crypto";
 
 const stored = new Map<string, string>();
 const response = (data: unknown, status = 200) =>
@@ -82,6 +83,65 @@ describe("independent admin authentication", () => {
       "已保留本地登录信息",
     );
     expect(stored.has("fanos-admin-session")).toBe(true);
+  });
+  it("refreshes on HTTP and reuses the refresh key after a temporary outage", async () => {
+    vi.stubGlobal("crypto", {
+      getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
+    });
+    stored.set(
+      "fanos-admin-session",
+      JSON.stringify({
+        access_token: "expired",
+        refresh_token: "admin-refresh",
+      }),
+    );
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({}, 401))
+      .mockRejectedValueOnce(new TypeError("temporary network failure"))
+      .mockResolvedValueOnce(response({}, 401))
+      .mockResolvedValueOnce(
+        response({ access_token: "new", refresh_token: "new-refresh" }),
+      )
+      .mockResolvedValueOnce(response({ items: [] }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(api("/admin/auth/users")).rejects.toThrow(
+      "已保留本地登录信息",
+    );
+    const key = stored.get("fanos-admin-refresh-request");
+    expect(key).toMatch(/^[0-9a-f-]{36}$/);
+    await expect(api("/admin/auth/users")).resolves.toEqual({ items: [] });
+    expect(fetch.mock.calls[1][1].headers["Idempotency-Key"]).toBe(key);
+    expect(fetch.mock.calls[3][1].headers["Idempotency-Key"]).toBe(key);
+    expect(stored.has("fanos-admin-refresh-request")).toBe(false);
+  });
+  it("preserves the session and permits retry after key generation fails", async () => {
+    vi.stubGlobal("crypto", {});
+    stored.set(
+      "fanos-admin-session",
+      JSON.stringify({
+        access_token: "expired",
+        refresh_token: "admin-refresh",
+      }),
+    );
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({}, 401))
+      .mockResolvedValueOnce(response({}, 401))
+      .mockResolvedValueOnce(
+        response({ access_token: "new", refresh_token: "new-refresh" }),
+      )
+      .mockResolvedValueOnce(response({ items: [] }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(api("/admin/auth/users")).rejects.toThrow(
+      "已保留本地登录信息",
+    );
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(stored.has("fanos-admin-session")).toBe(true);
+    vi.stubGlobal("crypto", {
+      getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
+    });
+    await expect(api("/admin/auth/users")).resolves.toEqual({ items: [] });
   });
   it("revokes the server session before clearing local credentials", async () => {
     stored.set(
